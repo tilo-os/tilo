@@ -208,7 +208,7 @@ impl TaskApi for Api {
         };
         let reply = self.line.ask(&json!({
             "reading": {
-                "app": app,
+                "app": tilolang_tilo::platform::published_as(&target.ty),
                 "resource": resource,
                 "type": ty,
             },

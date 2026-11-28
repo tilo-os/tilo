@@ -2,14 +2,14 @@
 //! session or a peer when a test only needs it to answer one way and to
 //! remember what it was asked.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use tilo_lock::MutexRecover as _;
 
 use crate::outcome::{ActionOutput, InvocationId};
 use crate::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
-    InvocationState, InvokeRequest, Pending, ReceiptStatus,
+    InvocationState, InvokeRequest, Pending, ReceiptStatus, ResourceReads,
 };
 
 type Catalogue =
@@ -28,6 +28,7 @@ pub struct TestProvider {
     answer: Box<Answer>,
     asked: Mutex<Vec<InvokeRequest>>,
     callers: Mutex<Vec<Caller>>,
+    reads: OnceLock<Arc<dyn ResourceReads>>,
 }
 
 impl Default for TestProvider {
@@ -52,7 +53,13 @@ impl TestProvider {
             }),
             asked: Mutex::new(Vec::new()),
             callers: Mutex::new(Vec::new()),
+            reads: OnceLock::new(),
         }
+    }
+
+    /// Read records through `reads` from now on ([`ActionProvider::resource_reads`]).
+    pub fn reading(&self, reads: Arc<dyn ResourceReads>) {
+        let _ = self.reads.set(reads);
     }
 
     /// Answer a catalogue query with what `catalogue` makes of it.
@@ -116,6 +123,10 @@ impl TestProvider {
 }
 
 impl ActionProvider for TestProvider {
+    fn resource_reads(&self) -> Option<Arc<dyn ResourceReads>> {
+        self.reads.get().cloned()
+    }
+
     fn query(
         &self,
         caller: &Caller,

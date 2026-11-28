@@ -17,7 +17,7 @@ use tilo_actions::remote::session_actions;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery, Completer,
     InvocationReceipt, InvocationState, InvokeRequest, MAX_REMOTE_WAIT, Pending, ReceiptStatus,
-    RemoteActionFrame, RemoteActionMessage, UpdateMark,
+    RemoteActionFrame, RemoteActionMessage, ResourceReads, UpdateMark,
 };
 use tilo_actions::{ActionAddress, ActionFailure, InvocationId, InvocationUpdate};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
@@ -61,6 +61,15 @@ impl Served {
         let catalogue = read(&provider, catalogue)?;
         let link = Arc::new_cyclic(|me| LinkProvider {
             me: me.clone(),
+            reads: (provider == crate::seat::PROVIDER).then(|| {
+                Arc::new(crate::seat::SeatReads {
+                    seat: crate::seat::Seat::new(
+                        providers.clone(),
+                        tokio::runtime::Handle::current(),
+                    ),
+                    serving: seat,
+                }) as Arc<dyn ResourceReads>
+            }),
             provider: provider.clone(),
             catalogue: RwLock::new(catalogue),
             channel,
@@ -142,6 +151,9 @@ fn read(provider: &str, catalogue: &str) -> Result<CataloguePage, String> {
 /// What the dispatch calls for a provider the shell serves.
 struct LinkProvider {
     me: std::sync::Weak<LinkProvider>,
+    /// The seat's reads of what the person's desktop session publishes itself, through the seat's
+    /// own snapshot of it ([`crate::seat::SeatReads`]); `None` for every other provider.
+    reads: Option<Arc<dyn ResourceReads>>,
     provider: String,
     /// What the shell last said the provider offers.
     catalogue: RwLock<CataloguePage>,
@@ -382,6 +394,11 @@ fn standing(receipt: &InvocationReceipt) -> Option<InvocationUpdate> {
 const LOOK_AGAIN: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl ActionProvider for LinkProvider {
+    /// The seat reads what the session publishes; no other provider a shell serves reads records.
+    fn resource_reads(&self) -> Option<Arc<dyn ResourceReads>> {
+        self.reads.clone()
+    }
+
     /// What the shell last said it offers, a page at a time: the dispatch lists it at once.
     fn query(
         &self,

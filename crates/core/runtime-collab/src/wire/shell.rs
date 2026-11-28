@@ -638,7 +638,7 @@ pub const SEAT_PROVIDERS: &[(&str, &str)] = {
         MACHINES_PROVIDER, MODELS_PROVIDER, SERVER_ACCOUNT_PROVIDER, WORKSPACE_EVENTS_PROVIDER,
         settings_resources, workspace_activity,
     };
-    const SETTINGS: &str = "so.tilo.settings";
+    const SETTINGS: &str = settings_resources::APP;
     &[
         (workspace_activity::PROVIDER, workspace_activity::APP_ID),
         (MACHINES_PROVIDER, "so.tilo.imager"),

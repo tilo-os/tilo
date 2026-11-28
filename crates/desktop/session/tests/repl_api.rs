@@ -308,7 +308,7 @@ fn a_record_the_sessions_services_publish_is_found_through_the_server() {
     });
     let repl = Api::open(&mut session, root.path());
 
-    let listed = every_page(&repl, &mut session);
+    let listed = repl.every_row(&mut session, "session");
     // The session's records are listed, each row naming its type the way a program types it
     // (`tasks.Tasks`, `chat.Conversations` ): the name this listing is for, and the name a path
     // walks back by. Never the kind the app publishes it under (`tl.<app>.<Type>`), which no
@@ -360,23 +360,6 @@ fn a_record_the_sessions_services_publish_is_found_through_the_server() {
         found.iter().any(|hit| hit["label"] == NOTE_TITLE),
         "the note is found by its title: {found:?}"
     );
-}
-
-/// Every row of the session's listing, page by page as its cursors read on.
-fn every_page(repl: &Api, session: &mut Session) -> Vec<Value> {
-    let mut listed = Vec::new();
-    let mut cursor = None;
-    for _ in 0..20 {
-        let page = repl
-            .listing(session, "session", cursor.as_deref())
-            .unwrap_or_else(|why| panic!("the session lists: {why}"));
-        listed.extend(Api::rows(&page).cloned());
-        let Some(next) = page["next_cursor"].as_str() else {
-            break;
-        };
-        cursor = Some(next.to_owned());
-    }
-    listed
 }
 
 /// The path of the row of `rows` whose type is `form`: what a program reads the record by.

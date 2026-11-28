@@ -823,6 +823,12 @@ impl RecordReads {
         {
             return reads.answer_read(&caller, correlation, read).await;
         }
+        // What the person's desktop session publishes itself (Settings' sections) is read where it
+        // is published: the seat answers its reading over its link.
+        if let Some((seat, record)) = self.seat_publishing(&caller, &address).await {
+            let read = ResourceReadRequest { record, ..read };
+            return seat.answer_read(&caller, correlation, read).await;
+        }
         if self.own(&caller, &address).await.is_some() {
             return tilo_action_calls::answer_read(self, caller, correlation, read).await;
         }
@@ -830,6 +836,48 @@ impl RecordReads {
             return served.answer_read(&caller, correlation, read).await;
         }
         tilo_action_calls::answer_read(self, caller, correlation, read).await
+    }
+
+    /// The seat's reader, and the resource it reads, when `address` names a resource a provider
+    /// on this device lists under its app and `caller` is the person at this device: what their
+    /// desktop session publishes itself. A resource a view names by the device's key
+    /// (`devices/{device}/settings/power`) is read at this device's.
+    async fn seat_publishing(
+        &self,
+        caller: &Caller,
+        address: &ResourceAddress,
+    ) -> Option<(Arc<dyn ResourceReads>, String)> {
+        let workspaces = self.workspaces.as_ref()?.upgrade()?;
+        let providers = workspaces.providers();
+        let reads = providers.seat()?.resource_reads()?;
+        // At this device: its own key, or a program a seat here handed over, which only this
+        // device's daemon marks so (the seat refuses another seat's).
+        let here = workspaces.signing_device().device();
+        if !caller.acting().is_person()
+            || (caller.device_public_key() != Some(&here) && caller.handing_seat().is_none())
+        {
+            return None;
+        }
+        let record = address.record.replace(
+            tilo_actions::remote::settings_resources::DEVICE_KEY,
+            &hex::encode(here),
+        );
+        let query = tilo_actions::remote::CatalogueQuery {
+            resource_name: Some(record.clone()),
+            ..tilo_actions::remote::CatalogueQuery::default()
+        };
+        for registered in providers.all().into_iter().filter(|registered| {
+            *registered.app == *address.app
+                && registered.reach == super::providers::Reach::ThisDevice
+        }) {
+            let listed = registered.answers.query(caller, query.clone()).await;
+            if listed.is_some_and(|listed| {
+                listed.is_ok_and(|page| page.rows.iter().any(|row| row.resource.id == record))
+            }) {
+                return Some((reads, record));
+            }
+        }
+        None
     }
 
     /// The workspace `address` names as this device holds it, when it does and this reader still

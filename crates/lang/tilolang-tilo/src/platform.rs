@@ -286,10 +286,7 @@ const CONTACTS_ROOTS: &[(&str, &str, &str)] = &[(
 /// test, beside them).
 const SECTIONS_SURFACE: &str = include_str!("../../../desktop/settings-sections/published.json");
 
-/// What stands for the device's key in the address of one of the device's settings
-/// (`devices/{device}/settings/power`): a view names the device's settings wherever it runs, and
-/// the host reads and sets them on the device it runs on ([`on_device`]).
-pub const DEVICE_KEY: &str = "{device}";
+pub use tilo_actions::remote::settings_resources::DEVICE_KEY;
 
 /// The resource `published` (as a view names it, [`platform_roots`]) on the device `device` (its
 /// key in lowercase hex): where the session publishes it there.
@@ -609,6 +606,25 @@ pub fn platform_roots() -> Vec<(String, String)> {
                 .collect()
         })
         .clone()
+}
+
+/// The type of the platform root published at `published`, when one is ([`platform_roots`]).
+#[must_use]
+pub fn root_type(published: &str) -> Option<String> {
+    platform_roots()
+        .into_iter()
+        .find_map(|(root, ty)| (root == published).then_some(ty))
+}
+
+/// The app the platform root of type `ty` (`<app>#<type>`) is published as: the app whose package
+/// types it, but for Settings' sections, which their own surface types ([`SECTIONS_APP`]) and
+/// Settings publishes.
+#[must_use]
+pub fn published_as(ty: &str) -> &str {
+    match ty.split_once('#').map_or(ty, |(app, _)| app) {
+        SECTIONS_APP => tilo_actions::remote::settings_resources::APP,
+        app => app,
+    }
 }
 
 /// Settings' roots as [`platform_roots`] lists them: where each section is published, and the

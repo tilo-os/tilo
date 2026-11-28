@@ -1596,7 +1596,14 @@ impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
             )
             .await;
         if first.as_ref().is_ok_and(published) {
-            return first;
+            // An app several services publish (Settings: its sections, its Wi-Fi, its models)
+            // is what all of them list: one service's resources are not the whole app.
+            return match first {
+                Ok(found) if list && found.node.is_none() => {
+                    self.with_services(parsed, found, forms, reaching).await
+                }
+                other => other,
+            };
         }
         // The levels here are the newest instance's: an older one keeps its
         // directory, and reading it under this one's name would name the wrong
@@ -1630,6 +1637,55 @@ impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
             }
         }
         first
+    }
+
+    /// `found`, the app's own level as one service publishing the app lists it, with what every
+    /// other service publishing the app lists beside it.
+    async fn with_services(
+        &self,
+        parsed: &Address,
+        mut found: Resolved,
+        forms: Option<&dyn TypeNames>,
+        reaching: usize,
+    ) -> Result<Resolved, Unresolved> {
+        let providers = self.providers().await?.1;
+        // A window, or a record a device serves, is the app live: it lists what it shows.
+        if (providers.iter()).any(|(peer, app)| *peer == found.provider && is_window(peer, app)) {
+            return Ok(found);
+        }
+        let services: Vec<String> = providers
+            .into_iter()
+            .filter(|(peer, app)| {
+                app["app_id"].as_str() == Some(found.app_id.as_str())
+                    && *peer != found.provider
+                    && !is_window(peer, app)
+            })
+            .map(|(peer, _)| peer)
+            .collect();
+        for provider in services {
+            let (app_id, mut levels) = (found.app_id.clone(), Levels::new());
+            let other = self
+                .resolve_in(parsed, app_id, provider, true, forms, &mut levels, reaching)
+                .await?;
+            let children: Vec<Node> = other
+                .children
+                .into_iter()
+                .filter(|child| !found.children.iter().any(|kept| kept.id == child.id))
+                .collect();
+            let actions: Vec<ActionDescriptor> = other
+                .actions
+                .into_iter()
+                .filter(|action| {
+                    !found
+                        .actions
+                        .iter()
+                        .any(|kept| kept.address == action.address)
+                })
+                .collect();
+            found.children.extend(children);
+            found.actions.extend(actions);
+        }
+        Ok(found)
     }
 
     /// Resolve the segments of `parsed` in the running app `app_id`, whose

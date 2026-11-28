@@ -426,6 +426,75 @@ impl SeatReading {
     }
 }
 
+/// What the person's desktop session publishes itself (Settings' sections), read as any record
+/// is: the seat's own snapshot of it, as an app here reads it. The daemon's reader of records
+/// decides who reads it and where it stands on this device before it asks here; a program
+/// another seat's shell handed over (`serving` is this seat's) never reads it.
+pub struct SeatReads {
+    pub seat: Seat,
+    pub serving: Option<u64>,
+}
+
+impl tilo_actions::remote::ResourceReads for SeatReads {
+    fn answer_read(
+        self: Arc<Self>,
+        caller: &ActionCaller,
+        correlation: u64,
+        read: tilo_actions::remote::ResourceReadRequest,
+    ) -> tilo_actions::remote::ReadingAnswer {
+        Box::pin(tilo_action_calls::answer_read(
+            self,
+            caller.clone(),
+            correlation,
+            read,
+        ))
+    }
+
+    /// A reading is read again whenever it is asked for: a read that waits for the next change
+    /// waits out its own bound.
+    fn watch<'a>(
+        &'a self,
+        _caller: &'a ActionCaller,
+        _address: &'a tilo_actions::remote::ResourceAddress,
+        _wake: &'a tilo_actions::remote::ResourceWake,
+    ) -> tilo_actions::remote::ReadsAnswer<'a, ()> {
+        Box::pin(std::future::ready(Ok(())))
+    }
+
+    /// A resource none of the session's services serves reads empty, as the shell's views are
+    /// handed it.
+    fn read<'a>(
+        &'a self,
+        caller: &'a ActionCaller,
+        address: &'a tilo_actions::remote::ResourceAddress,
+    ) -> tilo_actions::remote::ReadsAnswer<'a, tilo_actions::remote::ResourceCopy> {
+        if caller
+            .handing_seat()
+            .is_some_and(|seat| Some(seat) != self.serving)
+        {
+            return Box::pin(std::future::ready(Err(
+                tilo_actions::remote::ActionCallError::NotPermitted,
+            )));
+        }
+        let caller = json!({"app_id": address.app, "workspace": address.workspace});
+        let asked = self.seat.call(
+            calls::PUBLISHED,
+            calls::SNAPSHOT,
+            json!({"caller": caller, "resource": address.record}),
+        );
+        Box::pin(async move {
+            let read = asked
+                .await
+                .and_then(read::<SeatReading>)
+                .map_err(|reason| tilo_actions::remote::ActionCallError::Refused { reason })?;
+            Ok(tilo_actions::remote::ResourceCopy::reading(
+                read.reading.unwrap_or_else(|| json!({})),
+                None,
+            ))
+        })
+    }
+}
+
 /// The resources the seat's services publish (the sound, the network, the displays Quick
 /// Settings changes), as the apps here read, follow and change them.
 pub struct SeatPublished {

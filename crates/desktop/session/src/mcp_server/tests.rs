@@ -1,4 +1,5 @@
 use super::*;
+use tilo_actions::remote::ResourceCopy;
 
 /// An agent's `open` and `place` naming nothing to stand beside stand beside the conversation
 /// of its turn; one that names its own anchor, and every other action, keep their arguments.
@@ -122,6 +123,48 @@ impl tilo_service::Service for Styles {
     }
 }
 
+/// `read`, run on a thread of its own while `pass`, the loop's pass where the services are,
+/// answers what it asks of them: the one reader of what the session's services publish.
+fn answered<T: Send>(
+    mut pass: impl FnMut(),
+    read: impl std::future::Future<Output = T> + Send,
+) -> T {
+    std::thread::scope(|scope| {
+        let reader = scope.spawn(|| tilo_rt::block_on(read).expect("a runtime to read on"));
+        let deadline = std::time::Instant::now()
+            .checked_add(WAIT)
+            .expect("a deadline");
+        while !reader.is_finished() {
+            pass();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the read was not answered"
+            );
+            std::thread::yield_now();
+        }
+        reader.join().expect("the reader")
+    })
+}
+
+/// `record` of the app `app` as the person reads it from what `services` publish.
+fn published_reading(
+    services: &mut tilo_service::Services,
+    app: &str,
+    record: &str,
+) -> Option<Result<ResourceCopy, ActionCallError>> {
+    let link = crate::app_wire::Link::new(Arc::new(|| {}));
+    let address = tilo_actions::remote::ResourceAddress {
+        workspace: "studio".to_owned(),
+        app: app.to_owned(),
+        record: record.to_owned(),
+    };
+    let person = Caller::local_person("person");
+    answered(
+        || link.serve(services),
+        super::records::published_read(&*link, &person, &address),
+    )
+}
+
 /// A program's read of a resource the session publishes (the device's styles, as this session
 /// shows them) is answered from the session's own services on the loop's pass, where they are:
 /// one `tilo` call reads `styles.installed.offered` with no record and no app, as the shell's own
@@ -138,29 +181,39 @@ fn a_program_reads_the_reading_a_session_service_publishes() {
     }));
     assert_eq!(
         published_reading(
-            &services,
+            &mut services,
             tilolang_tilo::platform::STYLES_APP,
             crate::device_lists::STYLES_RESOURCE
         ),
-        Some(offered),
+        Some(Ok(ResourceCopy::reading(offered, None))),
         "the reading its service publishes"
     );
     // A device resource no service of this device serves is published empty, as the shell's
     // parts are handed it: a program reads its fields as absent and goes on.
     assert_eq!(
-        published_reading(&services, tilolang_tilo::platform::DEVICE_APP, "power"),
-        Some(serde_json::json!({})),
+        published_reading(&mut services, tilolang_tilo::platform::DEVICE_APP, "power"),
+        Some(Ok(ResourceCopy::reading(serde_json::json!({}), None))),
         "a resource no service serves is published empty"
     );
     // The session's own roots (`device.windows`) are published as its own app's.
     assert_eq!(
         published_reading(
-            &services,
+            &mut services,
             tilolang_tilo::platform::DEVICE_APP,
             "session:windows",
         ),
-        Some(serde_json::json!({})),
+        Some(Ok(ResourceCopy::reading(serde_json::json!({}), None))),
         "a resource of the session's own, read as it stands here"
+    );
+    // A view names the device's own settings by the device's key, read at this device's.
+    let section = "devices/{device}/settings/appearance";
+    assert_eq!(
+        super::records::published_here(tilo_actions::remote::settings_resources::APP, section),
+        Some(tilolang_tilo::platform::on_device(
+            section,
+            &tilo_app::framework::settings_device()
+        )),
+        "the device's key is this device's"
     );
 }
 
@@ -175,15 +228,15 @@ fn what_the_session_does_not_publish_is_no_reading_of_its() {
     // An app whose records are read, by the id its own record's resource has, is no reading the
     // session publishes: none of `platform_roots` names it.
     assert_eq!(
-        published_reading(&services, "so.tilo.notes", "notes.notebook"),
+        published_reading(&mut services, "so.tilo.notes", "notes.notebook"),
         None,
         "no reading of an app's record"
     );
     // Nor is a session resource asked of an app that does not publish it.
     assert_eq!(
         published_reading(
-            &services,
-            tilolang_tilo::platform::SECTIONS_APP,
+            &mut services,
+            tilo_actions::remote::settings_resources::APP,
             crate::device_lists::STYLES_RESOURCE,
         ),
         None,
@@ -228,7 +281,7 @@ fn a_pass_that_moves_the_readings_wakes_the_follows() {
 fn a_live_reading_that_changes_reaches_its_follower() {
     use std::sync::atomic::{AtomicBool, Ordering};
     use tilo_action_calls::read_resources;
-    use tilo_actions::remote::{ResourceAddress, ResourceAsk, ResourceCopy};
+    use tilo_actions::remote::{ResourceAddress, ResourceAsk, ResourceWake};
 
     /// A device list whose reading the test moves, as its device would on its own pass.
     struct LiveStyles {
@@ -268,40 +321,31 @@ fn a_live_reading_that_changes_reaches_its_follower() {
 
     /// One of the loop's passes, where the services are: what moved wakes the follows waiting on
     /// it, and every reading a connection asks for is answered from the services as it stands.
-    fn pass(services: &mut tilo_service::Services, session: &SessionServices) {
+    fn pass(
+        services: &mut tilo_service::Services,
+        session: &SessionServices,
+        link: &crate::app_wire::Link,
+    ) {
         if services.poll() {
             session.readings_moved(services.revision());
         }
-        let asked = std::mem::take(&mut *session.asks.lock_recover());
-        for ask in asked {
-            if let ApiAsk::Reading {
-                app,
-                resource,
-                done,
-            } = ask
-            {
-                done.complete(published_reading(services, &app, &resource).map(|reading| {
-                    Published {
-                        kind: published_kind(services, &resource),
-                        reading,
-                    }
-                }));
-            }
-        }
+        link.serve(services);
     }
 
     let offered = Arc::new(std::sync::Mutex::new(serde_json::json!({"offered": []})));
     let moved = Arc::new(AtomicBool::new(false));
     let session = Arc::new(SessionServices::new(Arc::new(|| {}), "person"));
+    let link = crate::app_wire::Link::new(Arc::new(|| {}));
+    session.keep_published(Arc::clone(&link) as _);
     let mut services = tilo_service::Services::default();
     services.add(Box::new(LiveStyles {
         offered: Arc::clone(&offered),
         moved: Arc::clone(&moved),
     }));
-    let records = Arc::new(super::records::ServiceRecords {
+    let records = super::records::ServiceRecords {
         state: None,
         session: Arc::clone(&session),
-    });
+    };
     let caller = Caller::local_person("person");
     let asks = [ResourceAsk {
         address: ResourceAddress {
@@ -311,34 +355,11 @@ fn a_live_reading_that_changes_reaches_its_follower() {
         },
         joined: false,
     }];
-    let first = {
-        let records = Arc::clone(&records);
-        let caller = caller.clone();
-        let asks = asks.clone();
-        let reading = std::thread::spawn(move || {
-            tilo_rt::block_on(read_resources(
-                &*records,
-                &caller,
-                &asks,
-                None,
-                tilo_clock::now(),
-            ))
-            .expect("a runtime to read on")
-        });
-        let deadline = std::time::Instant::now() + WAIT;
-        while !reading.is_finished() {
-            pass(&mut services, &session);
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the first read did not answer"
-            );
-            std::thread::yield_now();
-        }
-        reading
-            .join()
-            .expect("the reader")
-            .expect("the reading the device publishes")
-    };
+    let first = answered(
+        || pass(&mut services, &session, &link),
+        read_resources(&records, &caller, &asks, None, tilo_clock::now()),
+    )
+    .expect("the reading the device publishes");
     assert_eq!(
         first.records.first().and_then(|(_, copy)| copy.clone()),
         Some(ResourceCopy::reading(
@@ -349,50 +370,35 @@ fn a_live_reading_that_changes_reaches_its_follower() {
     );
     // Only the follow's watch is woken from here on, never the first read's.
     session.readings_woken.lock_recover().clear();
-    let follower = {
-        let records = Arc::clone(&records);
-        let after = first.revision.clone();
-        std::thread::spawn(move || {
-            tilo_rt::block_on(read_resources(
-                &*records,
-                &caller,
-                &asks,
-                Some(&after),
-                tilo_clock::now().checked_add(WAIT).expect("a deadline"),
-            ))
-            .expect("a runtime to read on")
-        })
-    };
     // The loop's pass, where the services are: what moved wakes the follows waiting on it, and
     // every reading a connection asks for is answered from the services as this pass reads them.
     // The device moves its list once the follow watches, and the pass that takes the move in
     // wakes it.
-    let deadline = std::time::Instant::now() + WAIT;
     let mut moved_device = false;
-    while !follower.is_finished() {
-        pass(&mut services, &session);
-        if !moved_device
-            && session
+    let changed = answered(
+        || {
+            pass(&mut services, &session, &link);
+            let woken = session
                 .readings_woken
                 .lock_recover()
                 .iter()
-                .any(tilo_actions::remote::ResourceWake::waiting)
-        {
-            *offered.lock().unwrap() = serde_json::json!({"offered": ["warm"]});
-            moved.store(true, Ordering::SeqCst);
-            moved_device = true;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the follow did not read the changed device"
-        );
-        std::thread::yield_now();
-    }
+                .any(ResourceWake::waiting);
+            if !moved_device && woken {
+                *offered.lock().unwrap() = serde_json::json!({"offered": ["warm"]});
+                moved.store(true, Ordering::SeqCst);
+                moved_device = true;
+            }
+        },
+        read_resources(
+            &records,
+            &caller,
+            &asks,
+            Some(&first.revision),
+            tilo_clock::now().checked_add(WAIT).expect("a deadline"),
+        ),
+    )
+    .expect("the changed reading");
     assert!(moved_device, "the follow watched its reading");
-    let changed = follower
-        .join()
-        .expect("the follower")
-        .expect("the changed reading");
     assert_eq!(
         changed.records.first().and_then(|(_, copy)| copy.clone()),
         Some(ResourceCopy::reading(
@@ -410,62 +416,53 @@ fn a_live_reading_that_changes_reaches_its_follower() {
 /// reads none of it, and the session is never asked.
 #[test]
 fn a_reading_is_the_callers_only_where_the_read_is_theirs() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tilo_actions::remote::ResourceReads as _;
+    let asked = Arc::new(AtomicUsize::new(0));
+    let link = crate::app_wire::Link::new({
+        let asked = Arc::clone(&asked);
+        Arc::new(move || {
+            asked.fetch_add(1, Ordering::SeqCst);
+        })
+    });
     let session = Arc::new(SessionServices::new(Arc::new(|| {}), "person"));
+    session.keep_published(Arc::clone(&link) as _);
     let records = super::records::ServiceRecords {
         state: None,
         session: Arc::clone(&session),
     };
     let offered = serde_json::json!({"offered": []});
-    // The loop's pass, answering the reading asked of it with the styles, published under the
-    // kind `kind` (`None`: under none).
-    let answer_once = |session: &SessionServices, kind: Option<&str>| {
-        let deadline = std::time::Instant::now() + WAIT;
-        loop {
-            let asked = std::mem::take(&mut *session.asks.lock_recover());
-            if let Some(ApiAsk::Reading { done, .. }) = asked.into_iter().next() {
-                done.complete(Some(Published {
-                    kind: kind.map(str::to_owned),
-                    reading: offered.clone(),
-                }));
-                return;
-            }
-            assert!(std::time::Instant::now() < deadline, "no reading was asked");
-            std::thread::yield_now();
-        }
-    };
-    let address = tilo_actions::remote::ResourceAddress {
+    let mut services = tilo_service::Services::default();
+    services.add(Box::new(Styles {
+        offered: offered.clone(),
+    }));
+    let address = |app: &str, record: &str| tilo_actions::remote::ResourceAddress {
         workspace: "studio".to_owned(),
-        app: tilolang_tilo::platform::STYLES_APP.to_owned(),
-        record: crate::device_lists::STYLES_RESOURCE.to_owned(),
+        app: app.to_owned(),
+        record: record.to_owned(),
     };
-    let read_as = |caller: &Caller, kind: Option<&str>| {
-        std::thread::scope(|scope| {
-            let reader = scope.spawn(|| {
-                tilo_rt::block_on(records.read(caller, &address)).expect("a runtime to read on")
-            });
-            answer_once(&session, kind);
-            reader.join().expect("the reader")
-        })
-    };
-    // A reading published under no kind has no node to decide it at: nobody reads it, the
-    // person included, rather than anyone reading it unchecked.
-    assert_eq!(
-        read_as(&Caller::local_person("person"), None),
-        Ok(tilo_actions::remote::ResourceCopy::Absent),
-        "no kind, no reading"
+    let styles = address(
+        tilolang_tilo::platform::STYLES_APP,
+        crate::device_lists::STYLES_RESOURCE,
     );
+    let person = Caller::local_person("person");
     assert_eq!(
-        read_as(&Caller::local_person("person"), Some("session.styles")),
-        Ok(tilo_actions::remote::ResourceCopy::reading(
-            offered.clone(),
-            None
-        )),
+        answered(|| link.serve(&mut services), records.read(&person, &styles)),
+        Ok(ResourceCopy::reading(offered, None)),
         "the person's own device"
     );
+    // A root no service of this device serves reads empty for the person, as the shell's views
+    // are handed it, rather than absent.
+    let power = address(tilolang_tilo::platform::DEVICE_APP, "power");
+    assert_eq!(
+        answered(|| link.serve(&mut services), records.read(&person, &power)),
+        Ok(ResourceCopy::reading(serde_json::json!({}), None)),
+        "no service, an empty reading"
+    );
+    let before = asked.load(Ordering::SeqCst);
     let read = tilo_rt::block_on(records.read(
         &Caller::local_agent("helper", "person").in_workspace("studio"),
-        &address,
+        &styles,
     ))
     .expect("a runtime to read on");
     assert!(
@@ -473,8 +470,9 @@ fn a_reading_is_the_callers_only_where_the_read_is_theirs() {
             if reason == tilo_actions::remote::RESOURCE_READS_UNAVAILABLE),
         "an agent's read goes to the device's daemon, which this session reaches none of: {read:?}"
     );
-    assert!(
-        session.asks.lock_recover().is_empty(),
+    assert_eq!(
+        asked.load(Ordering::SeqCst),
+        before,
         "the session's copy is never asked for an agent"
     );
 }

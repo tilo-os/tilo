@@ -513,10 +513,7 @@ impl ShellPage {
 /// Hand `instance`'s views the reading of `published`, a resource a session publishes for its
 /// shell.
 fn fill(instance: &Instance, published: &str, reading: &Value) -> Result<(), String> {
-    let ty = tilolang_tilo::platform::platform_roots()
-        .into_iter()
-        .find(|(id, _)| *id == published)
-        .map(|(_, ty)| ty)
+    let ty = tilolang_tilo::platform::root_type(published)
         .ok_or_else(|| format!("`{published}` is no resource the platform publishes"))?;
     let target = tilolang_tilo::runtime::ResourceRef::parse_id(published, &ty)
         .ok_or_else(|| format!("`{published}` names no resource"))?;

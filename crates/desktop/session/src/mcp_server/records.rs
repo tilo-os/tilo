@@ -65,16 +65,18 @@ impl tilo_actions::remote::ResourceReads for ServiceRecords {
     }
 
     /// The resources the session's services publish themselves (the device's sound, its windows,
-    /// its styles, Settings' sections) are answered as a reading on the loop's pass, where the
-    /// services are; every other address is an app's record, answered by the workspace.
+    /// its styles, Settings' sections) are read here ([`published_read`]); every other address is
+    /// an app's record, answered by the workspace.
     fn read<'a>(
         &'a self,
         caller: &'a Caller,
         address: &'a tilo_actions::remote::ResourceAddress,
     ) -> tilo_actions::remote::ReadsAnswer<'a, tilo_actions::remote::ResourceCopy> {
         tilo_actions::remote::reads_answer(async move {
-            if let Some(copy) = self.published(caller, address).await? {
-                return Ok(copy);
+            if let Some(published) = self.session.published()
+                && let Some(copy) = published_read(&**published, caller, address).await
+            {
+                return copy;
             }
             self.workspace_reads()?.read(caller, address).await
         })
@@ -89,7 +91,7 @@ impl tilo_actions::remote::ResourceReads for ServiceRecords {
         wake: &'a tilo_actions::remote::ResourceWake,
     ) -> tilo_actions::remote::ReadsAnswer<'a, ()> {
         tilo_actions::remote::reads_answer(async move {
-            if super::published_root(&address.app, &address.record) {
+            if published_here(&address.app, &address.record).is_some() {
                 self.session.watch_reading(wake);
                 return Ok(());
             }
@@ -98,33 +100,50 @@ impl tilo_actions::remote::ResourceReads for ServiceRecords {
     }
 }
 
-impl ServiceRecords {
-    /// The reading of `address` when it names a resource the session publishes itself, read by the
-    /// person at this device as their own; `None` when it names an app's record, or when the
-    /// caller is not the person: the device's daemon answers both, deciding the read as the caller.
-    async fn published(
-        &self,
-        caller: &Caller,
-        address: &tilo_actions::remote::ResourceAddress,
-    ) -> Result<Option<tilo_actions::remote::ResourceCopy>, ActionCallError> {
-        if !super::published_root(&address.app, &address.record) || !caller.acting().is_person() {
-            return Ok(None);
-        }
-        let Some(published) = self
-            .session
-            .reading_awaited(&address.app, &address.record)
-            .await?
-        else {
-            return Ok(Some(tilo_actions::remote::ResourceCopy::Absent));
-        };
-        // A resource no service publishes a kind for has no node to decide a read at, so it is
-        // read by nobody.
-        if published.kind.is_none() {
-            return Ok(Some(tilo_actions::remote::ResourceCopy::Absent));
-        }
-        Ok(Some(tilo_actions::remote::ResourceCopy::reading(
-            published.reading,
-            None,
-        )))
+/// Where this device's session publishes the resource `resource` of the app `app`, when the
+/// platform publishes it ([`tilolang_tilo::platform::platform_roots`]): a root a view names with
+/// the device's key in it (`devices/{device}/settings/power`) stands at this device's.
+pub(crate) fn published_here(app: &str, resource: &str) -> Option<String> {
+    let device = tilo_app::framework::settings_device();
+    tilolang_tilo::platform::platform_roots()
+        .into_iter()
+        .find_map(|(root, ty)| {
+            let here = tilolang_tilo::platform::on_device(&root, &device);
+            (tilolang_tilo::platform::published_as(&ty) == app
+                && (root == resource || here == resource))
+                .then_some(here)
+        })
+}
+
+/// The reading of `address` the session's services publish, as the person here reads it: read
+/// through the app wire's link, as the seat's snapshot reads it for the device's daemon. A root
+/// no service of this device serves (no battery) reads empty, as the shell's views are handed it. `None` for a resource the session does not
+/// publish, and for a caller that is not the person: the workspace decides those.
+pub(crate) async fn published_read(
+    published: &dyn tilo_app_host::services::PublishedResources,
+    caller: &Caller,
+    address: &tilo_actions::remote::ResourceAddress,
+) -> Option<Result<tilo_actions::remote::ResourceCopy, ActionCallError>> {
+    let resource = published_here(&address.app, &address.record)?;
+    if !caller.acting().is_person() {
+        return None;
     }
+    let app = tilo_app_host::services::Caller {
+        app_id: address.app.clone(),
+        workspace: address.workspace.clone(),
+        opened_for: None,
+    };
+    let unavailable = |reason: String| Some(Err(ActionCallError::Unavailable { reason }));
+    let reading = match published.snapshot(&app, &resource).await {
+        Err(_) => return unavailable("the session dropped the reading".to_owned()),
+        Ok(Err(reason)) => return Some(Err(ActionCallError::Refused { reason })),
+        Ok(Ok((_, None))) => serde_json::json!({}),
+        Ok(Ok((_, Some(reading)))) => match serde_json::from_slice(&reading) {
+            Ok(reading) => reading,
+            Err(error) => return unavailable(format!("the reading does not read: {error}")),
+        },
+    };
+    Some(Ok(tilo_actions::remote::ResourceCopy::reading(
+        reading, None,
+    )))
 }

@@ -598,6 +598,13 @@ pub mod settings_resources {
     pub const PROVIDER: &str = "tilo.settings";
     /// The surface every section is typed by, whichever app shows it.
     pub const SURFACE_APP: &str = "so.tilo.settings.sections";
+    /// What stands for the device's key in the address of one of the device's settings
+    /// (`devices/{device}/settings/power`): a view names the device's settings wherever it runs,
+    /// and they are read and set on the device it runs on.
+    pub const DEVICE_KEY: &str = "{device}";
+    /// The app the sections are published as: Settings, which a program reads and changes them
+    /// under, whatever surface types them.
+    pub const APP: &str = "so.tilo.settings";
 
     /// Whether `path` (a resource, or an action of one) is a section of the person's settings
     /// (`settings/<section>`) or a device's (`devices/<id>/settings/<section>`).

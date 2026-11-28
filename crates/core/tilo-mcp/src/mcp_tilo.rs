@@ -1533,8 +1533,27 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         else {
             return json!({"err": "a reading names its app and resource"});
         };
+        match self.reading(app, resource).await {
+            // An app's record is read through the record API, never as one of the session's
+            // readings, as a resource no service publishes is none of its.
+            Ok(Some(value)) => json!({"ok": {"reading": value}}),
+            Ok(None) => json!({"none": true}),
+            Err(error) => {
+                let name = app_names(&[app.to_owned()]).join("");
+                json!({"err": format!("{name}: {error}")})
+            }
+        }
+    }
+
+    /// The reading of `app`'s resource `resource`, read where every record is: `None` where this
+    /// host reads no records, or nothing publishes one.
+    pub(crate) async fn reading(
+        &self,
+        app: &str,
+        resource: &str,
+    ) -> Result<Option<Value>, tilo_actions::remote::ActionCallError> {
         let Some(reads) = self.host().resource_reads() else {
-            return json!({"none": true});
+            return Ok(None);
         };
         let caller = self.execution_caller();
         let read = tilo_actions::remote::ResourceReadRequest {
@@ -1547,18 +1566,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             // A document is answered as one, so a reading tells itself apart.
             answer: tilo_actions::remote::ReadAnswer::Document,
         };
-        match tilo_actions::remote::answered(reads, &caller, read).await {
-            // An app's record is read through the record API, never as one of the session's
-            // readings, as a resource no service publishes is none of its.
-            Ok(answer) => match answer.pointer("/records/0/value") {
-                Some(value) => json!({"ok": {"reading": value}}),
-                None => json!({"none": true}),
-            },
-            Err(error) => {
-                let name = app_names(&[app.to_owned()]).join("");
-                json!({"err": format!("{name}: {error}")})
-            }
-        }
+        let answer = tilo_actions::remote::answered(reads, &caller, read).await?;
+        Ok(answer.pointer("/records/0/value").cloned())
     }
 
     /// The task's invocation `call` (`{app, resource, action, arguments}`): invoked at the

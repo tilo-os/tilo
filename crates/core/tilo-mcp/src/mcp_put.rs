@@ -16,6 +16,7 @@ use tilo_actions::remote::{
 };
 use tilo_lock::MutexRecover as _;
 
+use super::get::refusal;
 use super::{ActionProvider, Deserialize, McpServer, Value, json, parse};
 
 /// The longest base64 text of a chunk within [`MAX_CONTENT_PUT_CHUNK`].
@@ -199,16 +200,6 @@ struct ManyArgs {
 #[serde(deny_unknown_fields)]
 struct HaveArgs {
     hashes: Vec<String>,
-}
-
-/// A host's refusal in its own words.
-fn refusal(error: ActionCallError) -> String {
-    match error {
-        ActionCallError::Refused { reason }
-        | ActionCallError::InvalidRequest { reason }
-        | ActionCallError::Unavailable { reason } => reason,
-        other => other.to_string(),
-    }
 }
 
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {

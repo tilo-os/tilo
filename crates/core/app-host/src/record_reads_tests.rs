@@ -10,7 +10,8 @@ use ed25519_dalek::SigningKey;
 use tilo_action_policy::{Answer, Grant, Grantee, TreePath, roles};
 use tilo_action_types::KindSet;
 use tilo_actions::remote::{
-    ActionCallError, Caller, DEVICE_SETTINGS, ResourceAddress, ResourceCopy, ResourceReads,
+    ActionCallError, Caller, CataloguePage, DEVICE_SETTINGS, RemoteActionMessage, ResourceAddress,
+    ResourceCopy, ResourceReads, settings_resources,
 };
 use tilo_user_identity::DeviceCapabilities;
 
@@ -18,6 +19,7 @@ use tilo_workspace_service::workspaces::OwnWorkspaceOffer;
 use tilo_workspace_service::workspaces::fixtures::{
     device_cert, entry_join_as, hosting_device, record_grants, test_host,
 };
+use tilo_workspace_service::workspaces::providers::Reach;
 
 const NOTES: &str = "tilo.notes";
 /// The kind Notes' records here are of: the one the app manifests in these tests declare.
@@ -996,7 +998,87 @@ async fn a_devices_own_settings_are_read_by_its_person_and_whoever_they_grant() 
         &carol_key,
     )
     .await;
+    what_the_session_publishes_is_read_by_the_person_here_alone(&h, &reads).await;
     h.server.shutdown().await;
+}
+
+/// What the person's desktop session lists under Settings is read through its seat, by the person
+/// here alone, at the address a view names by the device's key.
+async fn what_the_session_publishes_is_read_by_the_person_here_alone(
+    h: &Host,
+    reads: &std::sync::Arc<tilo_workspace_service::workspaces::RecordReads>,
+) {
+    let here = hex::encode(h.workspaces().signing_device().device());
+    let power = format!("devices/{here}/settings/power");
+    let mut row = tilo_actions::remote::CatalogueRow::default();
+    row.resource.id.clone_from(&power);
+    let session = std::sync::Arc::new(
+        tilo_actions::remote::TestProvider::new()
+            .with_catalogue(move |_, query| {
+                Ok(CataloguePage::from_rows(
+                    String::new(),
+                    vec![row.clone()],
+                    &query,
+                ))
+            })
+            .completing(|_| tilo_actions::ActionOutput {
+                value: Some(serde_json::json!({"revision": 1, "reading": {"lock_minutes": 5}})),
+                resources: Vec::new(),
+            }),
+    );
+    let providers = h.workspaces().providers();
+    session.reading(std::sync::Arc::new(crate::seat::SeatReads {
+        seat: crate::seat::Seat::new(providers.clone(), tokio::runtime::Handle::current()),
+        serving: Some(7),
+    }));
+    providers.serve_seat(session.clone(), None);
+    let (provider, app) = (settings_resources::PROVIDER, settings_resources::APP);
+    providers
+        .serve(provider, app, Reach::ThisDevice, session.clone())
+        .unwrap();
+    let published = |caller: Caller| {
+        let reads = std::sync::Arc::clone(reads);
+        let read = tilo_actions::remote::ResourceReadRequest {
+            workspace: h.kitchen.clone(),
+            app: app.to_owned(),
+            record: "devices/{device}/settings/power".to_owned(),
+            joined: false,
+            wait_ms: None,
+            after: None,
+            answer: tilo_actions::remote::ReadAnswer::Reading,
+        };
+        async move {
+            let RemoteActionMessage::ResourceReading { result, .. } =
+                reads.answer_read(&caller, 0, read).await
+            else {
+                unreachable!("the read is answered as a reading");
+            };
+            let read = serde_json::from_str::<serde_json::Value>(&result.ok()?).ok()?;
+            read.pointer("/records/0/value").cloned()
+        }
+    };
+    let person = Caller::authenticated(h.cert.user_public_key, h.cert.device_public_key)
+        .in_workspace(h.kitchen.clone());
+    assert_eq!(
+        published(person).await,
+        Some(serde_json::json!({"lock_minutes": 5})),
+        "the person here reads the section"
+    );
+    // An agent, and a program another seat handed over, never reach the seat for it.
+    let agent = h.agent("helper", &h.kitchen).handed_by_seat(7, "helper");
+    for caller in [agent, h.person().handed_by_seat(8, "program")] {
+        assert_eq!(
+            published(caller).await,
+            None,
+            "only the person here reads it"
+        );
+    }
+    let asked = session.asked();
+    assert!(
+        matches!(&asked[..], [once] if matches!(&once.argument,
+            tilo_actions::remote::InvokeArgument::Json(asked) if asked["resource"] == power)),
+        "the seat is asked once, at this device's address: {asked:?}"
+    );
 }
 
 /// An administrator of a workspace this device serves, named by no grant, reads no setting of
@@ -1085,7 +1167,7 @@ async fn a_granted_setting_reads_alone_until_it_is_taken_back(
 #[tokio::test(flavor = "multi_thread")]
 async fn a_persons_shell_lists_their_invocations_without_a_refusal() {
     use tilo_action_services::workspace_invocations;
-    use tilo_actions::remote::{ReadAnswer, RemoteActionMessage, ResourceReadRequest};
+    use tilo_actions::remote::{ReadAnswer, ResourceReadRequest};
     let h = host().await;
     let reads = h.workspaces().resource_reads();
     let person = Caller::authenticated(h.cert.user_public_key, h.cert.device_public_key)

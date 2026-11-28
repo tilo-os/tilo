@@ -43,6 +43,19 @@ fn session_serving(
     api: &std::path::Path,
     services: impl FnOnce(&crate::common::Device) -> Vec<Box<dyn tilo_service::Service>>,
 ) -> tilo_session::Session {
+    session_of(root, api, |device| Options {
+        services: services(device),
+        ..Options::default()
+    })
+}
+
+/// [`session_with_api`] with what `options` makes for the device once its daemon serves its
+/// person: its services, and a login's desktop around them.
+fn session_of(
+    root: &std::path::Path,
+    api: &std::path::Path,
+    options: impl FnOnce(&crate::common::Device) -> Options,
+) -> tilo_session::Session {
     crate::common::on_its_daemon_with(
         &[tilo_compositor::OutputConfig::new(
             "HEADLESS-1",
@@ -52,11 +65,10 @@ fn session_serving(
         |device| Options {
             collab: false,
             state: Some(root.join("state")),
-            services: services(device),
             asks: Some(crate::common::person_asked()),
             app_socket: tilo_session::AppSocket::At(root.join("app_wire.sock")),
             api_socket: Some(api.to_owned()),
-            ..Options::default()
+            ..options(device)
         },
     )
 }
@@ -86,23 +98,26 @@ fn held_workspace(session: &mut tilo_session::Session, api: &std::path::Path) ->
         .to_owned()
 }
 
-/// Once the API finds the section at `address`: the session publishes its sections to its
-/// daemon, and a program reaches one once the daemon offers it. A section has no read action, so
-/// the read answers that; only a section not offered yet is not found.
-fn found_at_the_api(session: &mut tilo_session::Session, api: &crate::common::Api, address: &str) {
-    crate::common::wait_for(session, "the section at the API", |session| {
-        session.settle_services();
-        let found = api
-            .send(&format!("resources/{address}"), None)
-            .answer(session);
-        (!found.is_err_and(|why| why.ends_with("(not_found)"))).then_some(())
-    });
+/// The field `field` of the section at `address` as a program reads it through the API, once it
+/// reads: the session publishes its sections to its daemon, which reads one back from the session.
+fn read_at_the_api(
+    session: &mut tilo_session::Session,
+    api: &crate::common::Api,
+    address: &str,
+    field: &str,
+) -> Option<serde_json::Value> {
+    session.settle_services();
+    let read = api
+        .send(&format!("resources/{address}"), None)
+        .answer(session);
+    read.ok()?["fields"].get(field).cloned()
 }
 
-/// A setter of a settings section, called through the API as a generated SDK calls it, is typed
+/// A program lists the settings and finds their sections, and reads each section's values. A
+/// setter of a settings section, called through the API as a generated SDK calls it, is typed
 /// by the sections' own surface whichever app shows the section: the person's and the device's
-/// sections are both set, as the session reads them. A value of the wrong type is refused, and so are types
-/// written for another surface of the sections.
+/// sections are both set, as the program reads them back. A value of the wrong type is refused,
+/// and so are types written for another surface of the sections.
 #[test]
 fn a_sections_setter_is_typed_by_the_sections_surface_at_the_sessions_api() {
     let _settled = tilo_ui_base::motion::testing::settled();
@@ -140,8 +155,20 @@ fn a_sections_setter_is_typed_by_the_sections_surface_at_the_sessions_api() {
         )
         .answer(session)
     };
-    for address in [&appearance, &power] {
-        found_at_the_api(&mut session, &api, address);
+    let mode = crate::common::wait_for(&mut session, "the appearance at the API", |session| {
+        read_at_the_api(session, &api, &appearance, "mode")
+    });
+    assert!(mode.is_string(), "the appearance reads its mode: {mode}");
+    crate::common::wait_for(&mut session, "the power section at the API", |session| {
+        read_at_the_api(session, &api, &power, "blank_minutes")
+    });
+    // The settings list every section, a page at a time.
+    let listed = api.every_row(&mut session, "settings");
+    for section in [&appearance, &power] {
+        assert!(
+            listed.iter().any(|row| row["id"] == section.as_str()),
+            "the settings list {section}: {listed:?}"
+        );
     }
     for (address, setter, value) in [
         (&appearance, "set-mode", json!("light")),
@@ -158,11 +185,10 @@ fn a_sections_setter_is_typed_by_the_sections_surface_at_the_sessions_api() {
         (&power, "blank_minutes", json!(10)),
     ] {
         let read = crate::common::wait_for(&mut session, "the setting to change", |session| {
-            session.settle_services();
-            let read = session.read(address)?.get(field).cloned()?;
+            let read = read_at_the_api(session, &api, address, field)?;
             (read == wanted).then_some(read)
         });
-        assert_eq!(read, wanted, "{address}.{field} is what the API set");
+        assert_eq!(read, wanted, "{address}.{field} reads as the API set it");
     }
 
     let refused = set(&mut session, &appearance, "set-mode", json!(5), surface);
@@ -201,11 +227,9 @@ fn a_change_a_confirmed_program_makes_to_the_device_still_asks_the_person() {
     let api = crate::common::Api::open(&mut session, root.path());
     let power = tilo_app::framework::section_address("power", None);
     let before = crate::common::wait_for(&mut session, "the device's power section", |session| {
-        session.settle_services();
-        session.read(&power)?.get("lock_minutes").cloned()
+        read_at_the_api(session, &api, &power, "lock_minutes")
     });
     assert_ne!(before, json!(0), "the device locks to begin with");
-    found_at_the_api(&mut session, &api, &power);
 
     // Never locking weakens the lock: the call waits for the person, on the system's question.
     let never = api.send(
@@ -566,33 +590,6 @@ fn program_at(root: &std::path::Path, name: &str) -> std::path::PathBuf {
     std::fs::canonicalize(&program).expect("the copy's path")
 }
 
-/// `program` asking the API socket at `api`, running.
-fn asking(program: &std::path::Path, api: &std::path::Path) -> std::process::Child {
-    program_command(program, api)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn_locked()
-        .expect("the program starts")
-}
-
-/// What `program` was answered, once it ends: `answered …` or `refused …`.
-fn told(session: &mut tilo_session::Session, mut program: std::process::Child) -> String {
-    until(session, "the program to be answered", |_| {
-        program.try_wait().expect("the program runs").is_some()
-    });
-    let ran = program.wait_with_output().expect("the program's output");
-    String::from_utf8_lossy(&ran.stdout)
-        .lines()
-        .find(|line| line.starts_with("answered ") || line.starts_with("refused "))
-        .unwrap_or_else(|| {
-            panic!(
-                "the program says what it was answered: {}",
-                String::from_utf8_lossy(&ran.stderr)
-            )
-        })
-        .to_owned()
-}
-
 /// A program of the person's login that nobody confirmed acts as no one: being local grants
 /// nothing. It reaches the API socket, is put to the person by the program it is, and when no yes
 /// comes it is refused in words, before any of its calls reaches the daemon as anyone.
@@ -605,46 +602,35 @@ fn a_program_nobody_confirmed_is_refused_and_acts_as_no_one() {
     let mut session = session_with_api(root.path(), &api);
     served(&mut session, &api);
 
-    let mut connecting = asking(&program, &api);
+    let mut connecting = Running::start(program_command(&program, &api));
     // The person is asked about the program that connected, at the path it runs from, and does
     // not say yes. Questions about other programs (this test's own) are not this one.
-    let asked =
-        crate::common::wait_for(&mut session, "the program's question", |_| {
-            // A program that ended was answered without its question, or never asked: what it said
-            // is why.
-            if connecting.try_wait().expect("the program runs").is_some() {
-                let ran = connecting.stdout.take().zip(connecting.stderr.take()).map(
-                    |(mut out, mut err)| {
-                        use std::io::Read as _;
-                        let mut said = String::new();
-                        let _ = out.read_to_string(&mut said);
-                        let _ = err.read_to_string(&mut said);
-                        said
-                    },
-                );
-                panic!(
-                    "the program ended before the person was asked about it: {}; asked: {:?}",
-                    ran.unwrap_or_default(),
-                    crate::common::person_asked_now()
-                        .iter()
-                        .map(|question| (&question.kind, &question.details))
-                        .collect::<Vec<_>>()
-                );
-            }
+    let asked = crate::common::wait_for(&mut session, "the program's question", |_| {
+        // A program that ended was answered without its question, or never asked: what it said
+        // is why.
+        assert!(
+            !connecting.ended(),
+            "the program ended before the person was asked about it: {:?}; asked: {:?}",
+            connecting.said.try_iter().collect::<Vec<_>>(),
             crate::common::person_asked_now()
-                .into_iter()
-                .find(|question| {
-                    question.kind == "session.api-program"
-                        && question.details["program"] == json!(program.display().to_string())
-                })
-        });
+                .iter()
+                .map(|question| (&question.kind, &question.details))
+                .collect::<Vec<_>>()
+        );
+        crate::common::person_asked_now()
+            .into_iter()
+            .find(|question| {
+                question.kind == "session.api-program"
+                    && question.details["program"] == json!(program.display().to_string())
+            })
+    });
     assert!(
         crate::common::person_declines(&asked.handle),
         "the question waits for its answer"
     );
-    let said = told(&mut session, connecting);
+    let said = connecting.answered(&mut session);
     assert_eq!(
-        said, "refused You didn’t let this program act as you. (not_allowed)",
+        said, DECLINED,
         "the program is refused, in words, and answered nothing as the person"
     );
 }
@@ -656,49 +642,35 @@ fn login_with_api(
     api: &std::path::Path,
     bus: &tilo_test_env::PrivateBus,
 ) -> tilo_session::Session {
-    crate::common::on_its_daemon_with(
-        &[tilo_compositor::OutputConfig::new(
-            "HEADLESS-1",
-            crate::common::WIDTH,
-            crate::common::HEIGHT,
-        )],
-        |device| {
-            let wake = tilo_service::LoopWake::default();
-            let (side, link) = tilo_session::portal_link::channel(wake.handle());
-            let desktop = std::rc::Rc::new(
-                tilo_session::desktop_services::DesktopServices::start(
-                    &tilo_session::desktop_services::Buses {
-                        session: tilo_session::desktop_services::Bus::Address(
-                            bus.address().to_owned(),
-                        ),
-                        system: tilo_session::desktop_services::Bus::None,
-                    },
-                    &wake.handle(),
-                    std::sync::Arc::new(tilo_portal::NoCapture),
-                    &side,
-                    None,
-                )
-                .expect("the login's desktop services start"),
-            );
-            let mut services = crate::common::seeded_apps_of(device);
-            services.extend(desktop.services());
-            let portal = desktop
-                .portal()
-                .map(|serving| link.with_captures(serving.input_captures().clone()));
-            Options {
-                collab: false,
-                state: Some(root.join("state")),
-                services,
-                wake,
-                desktop: Some(desktop),
-                portal,
-                asks: Some(crate::common::person_asked()),
-                app_socket: tilo_session::AppSocket::At(root.join("app_wire.sock")),
-                api_socket: Some(api.to_owned()),
-                ..Options::default()
-            }
-        },
-    )
+    session_of(root, api, |device| {
+        let wake = tilo_service::LoopWake::default();
+        let (side, link) = tilo_session::portal_link::channel(wake.handle());
+        let desktop = std::rc::Rc::new(
+            tilo_session::desktop_services::DesktopServices::start(
+                &tilo_session::desktop_services::Buses {
+                    session: tilo_session::desktop_services::Bus::Address(bus.address().to_owned()),
+                    system: tilo_session::desktop_services::Bus::None,
+                },
+                &wake.handle(),
+                std::sync::Arc::new(tilo_portal::NoCapture),
+                &side,
+                None,
+            )
+            .expect("the login's desktop services start"),
+        );
+        let mut services = crate::common::seeded_apps_of(device);
+        services.extend(desktop.services());
+        let portal = desktop
+            .portal()
+            .map(|serving| link.with_captures(serving.input_captures().clone()));
+        Options {
+            services,
+            wake,
+            desktop: Some(desktop),
+            portal,
+            ..Options::default()
+        }
+    })
 }
 
 /// A program running, and the lines it says as it says them.
@@ -735,6 +707,11 @@ impl Running {
                 .try_iter()
                 .find(|line| line.starts_with("answered ") || line.starts_with("refused "))
         })
+    }
+
+    /// Whether the program ended.
+    fn ended(&mut self) -> bool {
+        self.program.try_wait().expect("the program runs").is_some()
     }
 
     /// Tell the program to go on, with `line`.

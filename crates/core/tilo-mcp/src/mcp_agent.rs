@@ -1207,14 +1207,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         }
         let provider = resolved.provider.clone();
         let mut levels = std::mem::take(&mut resolved.levels);
-        let Some((owner, reader)) = self.reader(&resolved, &mut levels).await? else {
-            // A read its caller's rules keep off their directory is theirs to be refused: the
-            // app still publishes one, and the host answers whether this turn may read it.
-            if let Some(refused) = self.refused_read_answer(&resolved).await? {
-                return Ok(refused);
-            }
-            return Ok(no_read_action(&resolved));
-        };
         // A cursor this tool issued for the rest of a cut answer reads the
         // same page again and answers from where the cut was; any other is
         // the app's own.
@@ -1222,31 +1214,38 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             None => (0, None),
             Some(cursor) => parse_read_cursor(&cursor).unwrap_or((0, Some(cursor))),
         };
-        let arguments = read_arguments(&resolved, &owner, &reader, app_cursor.as_deref())?;
-        let value = Box::pin(self.run(
-            RemoteActionTarget {
-                provider,
-                address: reader.address.clone(),
-            },
-            arguments,
-            tilo_actions::InvocationId::new(),
-            None,
-            self.held_for(None),
-            &mut None,
-        ))
-        .await?;
-        let answered = outcome(&value);
-        if answered.failed {
-            return Ok(answered);
-        }
-        // What a document says is whoever wrote it's, and what its provider says carries
-        // content from outside is that when it is read by a path too: either reaches a
-        // model behind the label, every page of it.
-        let outside = value.get(crate::UNTRUSTED).is_some() || reader.contract.reads_document();
-        let output = value
-            .pointer("/update/output/value")
-            .cloned()
-            .unwrap_or_default();
+        let (output, outside) = if let Some((owner, reader)) =
+            self.reader(&resolved, &mut levels).await?
+        {
+            let arguments = read_arguments(&resolved, &owner, &reader, app_cursor.as_deref())?;
+            let value = Box::pin(self.run(
+                RemoteActionTarget {
+                    provider,
+                    address: reader.address.clone(),
+                },
+                arguments,
+                tilo_actions::InvocationId::new(),
+                None,
+                self.held_for(None),
+                &mut None,
+            ))
+            .await?;
+            let answered = outcome(&value);
+            if answered.failed {
+                return Ok(answered);
+            }
+            // What a document says is whoever wrote it's, and what its provider says carries
+            // content from outside is that when it is read by a path too: either reaches a
+            // model behind the label, every page of it.
+            let outside = value.get(crate::UNTRUSTED).is_some() || reader.contract.reads_document();
+            let output = value.pointer("/update/output/value").cloned();
+            (output.unwrap_or_default(), outside)
+        } else {
+            match self.unread(&resolved).await? {
+                Ok(reading) => (reading, false),
+                Err(reply) => return Ok(reply),
+            }
+        };
         let mut read = ResourceRead::of(&output).at(
             &resolved.path,
             resolved
@@ -1276,6 +1275,22 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             args.max_chars,
         ));
         Ok(if outside { reply.labelled() } else { reply })
+    }
+
+    /// What `resolved`, which no action reads, reads as: refused where its caller's rules keep
+    /// it off their directory (the host answers whether this turn may read it), a resource a
+    /// service publishes itself (a section of the settings) as its reading, read where every
+    /// record is, and otherwise why it is not read: the actions it has instead.
+    async fn unread(&self, resolved: &Resolved) -> Result<Result<Value, Reply>, Failure> {
+        if let Some(refused) = self.refused_read_answer(resolved).await? {
+            return Ok(Err(refused));
+        }
+        if let Some(node) = &resolved.node
+            && let Ok(Some(reading)) = self.reading(&resolved.app_id, &node.id).await
+        {
+            return Ok(Ok(reading));
+        }
+        Ok(Err(no_read_action(resolved)))
     }
 
     /// The action that reads `resolved`, and the id of the resource that

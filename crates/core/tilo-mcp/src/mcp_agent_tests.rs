@@ -881,13 +881,7 @@ fn todo_page() -> Value {
     })
 }
 
-pub(super) fn run<F: std::future::Future>(future: F) -> F::Output {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(future)
-}
+use crate::test_hosts::run;
 
 /// What a tool call answered, as the agent reads it: the text, and whether
 /// the call is an error.

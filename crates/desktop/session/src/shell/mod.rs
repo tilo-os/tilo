@@ -811,18 +811,12 @@ impl Shell {
     /// Hand the shell the rows of the workspace's `workspace/members` resource, the one its views
     /// name people and draw their faces by.
     fn publish_member_reading(&self, people: &[Value]) {
-        let roots = tilolang_tilo::platform::platform_roots();
-        let Some((_, ty)) = roots
-            .iter()
-            .find(|(published, _)| *published == tilolang_tilo::platform::WORKSPACE_MEMBERS)
-        else {
+        let members = tilolang_tilo::platform::WORKSPACE_MEMBERS;
+        let Some(ty) = tilolang_tilo::platform::root_type(members) else {
             return;
         };
-        self.link.publish_reading(
-            tilolang_tilo::platform::WORKSPACE_MEMBERS,
-            ty,
-            serde_json::json!({ "people": people }),
-        );
+        self.link
+            .publish_reading(members, &ty, serde_json::json!({ "people": people }));
     }
 
     /// Hand the shell the readings of the platform's resources its views read (the sound, the

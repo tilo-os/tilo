@@ -30,7 +30,6 @@ pub mod window;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 use tilo_session_core::layout;
@@ -1024,23 +1023,6 @@ impl Device {
         )
         .expect("a session")
     }
-
-    /// [`Self::session_with`] whose apps open as processes of their own, the way a development
-    /// session opens them: through the launcher the run built, on the runtimes it built, with the
-    /// session program it built drawing their frames. The session serves its display to those
-    /// processes, so a window a test opens on this session is the app's own, mapped on it.
-    ///
-    /// # Panics
-    /// This run built no launcher, runtimes or session program, or the session binds no display:
-    /// the message names what to run.
-    #[track_caller]
-    pub fn session_with_real_apps(&self, options: Options) -> Session {
-        let mut session = self.session_with(real_apps(options));
-        session
-            .bind_display(session_bus())
-            .expect("the session serves the display its apps' windows map on");
-        session
-    }
 }
 
 /// The launcher, and the runtimes and publishers the apps it starts run on, named to this test
@@ -1052,8 +1034,7 @@ impl Device {
 /// the apps the run built.
 ///
 /// `None` when the run built no launcher or host: a device then starts no tilolang process, and
-/// its home says so ([`launcher_for`] panics), as a test that needs an app's window does
-/// ([`Device::session_with_real_apps`]).
+/// its home says so ([`launcher_for`] panics), as a test that needs an app's window does.
 fn furnished() -> Option<&'static Path> {
     static FURNISHED: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
     FURNISHED
@@ -1070,53 +1051,6 @@ fn furnished() -> Option<&'static Path> {
             Some(launcher)
         })
         .as_deref()
-}
-
-/// The session bus the person's apps reach, as a session started in a window reads it: what this
-/// process was given, unless it names none.
-fn session_bus() -> Option<String> {
-    std::env::var("DBUS_SESSION_BUS_ADDRESS")
-        .ok()
-        .filter(|address| !address.is_empty())
-}
-
-/// Give `options` the apps a session starts as processes of their own, as a development session
-/// has them: the launcher and the runtimes this run built ([`furnished`]), and the session program
-/// whose own mode draws the apps' frames.
-///
-/// The session a test runs is its test binary, which is no session program: it names the run's
-/// own, as [`Options::render_service`] is for.
-///
-/// # Panics
-/// This run built no launcher, runtimes or session program: the message names what to run.
-#[track_caller]
-fn real_apps(mut options: Options) -> Options {
-    // A run that built no launcher or host fails here, naming what to run, rather than waiting for
-    // a window that cannot come.
-    let launcher = tilo_test_env::sibling_binary("launcher", "tilo-launcher");
-    let _host = tilo_test_env::sibling_binary("tilolang-process", "tilolang-process");
-    // The runtimes and publishers the apps it starts run on, named to this process.
-    let _ = furnished();
-    let program = tilo_test_env::package_binary!("tilo-session");
-    assert!(
-        program.is_file(),
-        "the run built no session program at {}: a session in a test's own process names the \
-         run's own for the render service its apps draw through. The test build makes it with the \
-         package, and t hands it over as NEXTEST_BIN_EXE_tilo-session",
-        program.display()
-    );
-    options.render_service = Some(program);
-    // A test that serves its apps on a socket of its own keeps it: the launcher's own socket is
-    // where a session with no test around it serves them.
-    if options.app_socket == AppSocket::Off {
-        options.app_socket = AppSocket::Launcher;
-    }
-    options.launch = Some(Rc::new(tilo_session::apps::Apps::with_launcher(
-        tilo_app_launch::SessionEnvironment::from_process(),
-        Some(options.wake.handle()),
-        Some(launcher),
-    )));
-    options
 }
 
 /// Who made the last step of the workspace's layout, once the workspace has the change that made
@@ -1721,6 +1655,24 @@ impl Api {
     pub fn ls(&self, session: &mut Session, path: &str) -> Value {
         self.listing(session, path, None)
             .unwrap_or_else(|why| panic!("{path} lists: {why}"))
+    }
+
+    /// Every row of the listing under `path`, page by page as its cursors read on.
+    ///
+    /// # Panics
+    /// The API refused a page.
+    pub fn every_row(&self, session: &mut Session, path: &str) -> Vec<Value> {
+        let (mut listed, mut cursor) = (Vec::new(), None);
+        for _ in 0..20 {
+            let page = (self.listing(session, path, cursor.as_deref()))
+                .unwrap_or_else(|why| panic!("{path} lists: {why}"));
+            listed.extend(Self::rows(&page).cloned());
+            let Some(next) = page["next_cursor"].as_str() else {
+                break;
+            };
+            cursor = Some(next.to_owned());
+        }
+        listed
     }
 
     /// The rows of `listing`.

@@ -32,13 +32,12 @@ use crate::common::{HEIGHT, WIDTH, wait_for};
 /// built and installed as a device has it, whose window publishes its actions.
 pub const DEFAULT_APP: &str = "so.tilo.chat";
 
-/// How the fixture is made: which app it installs, who the person is, how many of the
-/// person's devices it holds, and the services its session hosts.
+/// How the fixture is made: which app it installs, who the person is, and the services its
+/// session hosts.
 pub struct Builder {
     app: Option<String>,
     start_it: bool,
     person: String,
-    devices: usize,
     services: Vec<Box<dyn tilo_service::Service>>,
 }
 
@@ -50,7 +49,6 @@ impl Builder {
             app: Some(app.into()),
             start_it: true,
             person: "Ada".to_owned(),
-            devices: 1,
             services: Vec::new(),
         }
     }
@@ -63,7 +61,6 @@ impl Builder {
             app: Some(app.into()),
             start_it: false,
             person: "Ada".to_owned(),
-            devices: 1,
             services: Vec::new(),
         }
     }
@@ -75,7 +72,6 @@ impl Builder {
             app: None,
             start_it: false,
             person: "Ada".to_owned(),
-            devices: 1,
             services: Vec::new(),
         }
     }
@@ -95,18 +91,6 @@ impl Builder {
         self
     }
 
-    /// The devices of the person's the fixture starts: one per computer, each with its own daemon
-    /// and session.
-    ///
-    /// # Panics
-    /// More than one: this fixture starts one computer's device in this process, and another
-    /// computer is another process's.
-    #[must_use]
-    pub fn devices(mut self, devices: usize) -> Self {
-        self.devices = devices;
-        self
-    }
-
     /// The fixture, started: the device's daemon, the session on its link, and the app installed.
     ///
     /// # Panics
@@ -116,11 +100,6 @@ impl Builder {
         // What the daemon says of the calls it serves, at `RUST_LOG`'s word (warnings by default):
         // a link it closes and a call it refuses are explained there.
         crate::common::people::install_log();
-        assert_eq!(
-            self.devices, 1,
-            "this fixture starts one computer's device in this process; a second device is \
-             another process's"
-        );
         let within = tilo_test_env::hang_bound();
         let (home, launcher) = home_with_apps(self.app.is_some());
         // The store the fixture's apps are installed in: a test that installs a package of its own
@@ -613,16 +592,6 @@ impl Fixture {
     ) -> Result<(), tilo_actions::ApiError> {
         let target = self.action_target(app, resource, action);
         self.apps.invoke(target, arguments)
-    }
-
-    /// The resource `app` publishes under the kind ending in `kind` (`Conversations`, `Direct`),
-    /// once it does; `None` while it publishes none.
-    #[must_use]
-    pub fn resource_of_kind(&self, app: &str, kind: &str) -> Option<String> {
-        self.published(app)
-            .into_iter()
-            .find(|descriptor| descriptor.resource_kind.ends_with(kind))
-            .map(|descriptor| descriptor.address.resource)
     }
 
     /// Step the session until `app` publishes the action `action` on the resource the kind

@@ -1050,15 +1050,6 @@ enum ApiAsk {
     /// each one's compiled module, its description embedded, the packages it uses first
     /// ([`task_hosts`] adds every installed app).
     Apps(tilo_actions::remote::Completer<Vec<runtime_portal::process_link::App>>),
-    /// The newest reading of the resource `resource` of the app `app`, one the session's own
-    /// services publish (the device's sound, the session's windows, Settings' sections): what a
-    /// task's program reads within the program it runs, answered on the loop's pass, where the
-    /// services are. `None` for a resource no service publishes.
-    Reading {
-        app: String,
-        resource: String,
-        done: tilo_actions::remote::Completer<Option<Published>>,
-    },
 }
 
 /// A step an agent's turn runs as the person, asked of the session's loop: `slot` is its
@@ -1115,6 +1106,8 @@ pub(crate) struct SessionServices {
     /// their records are read and changed on the loop's pass. Every other app's are the
     /// workspace's, which a connection reads without waiting for a pass.
     kept: std::sync::Mutex<std::collections::BTreeSet<String>>,
+    /// The app wire's link, which reads what the session's services publish ([`Self::keep_published`]).
+    published: std::sync::OnceLock<Arc<dyn tilo_app_host::services::PublishedResources>>,
     /// Why the apps of each shell workspace this device holds but is not admitted to yet run
     /// nothing, by the workspace's id, as of the loop's last pass ([`Self::keep_awaiting`]).
     awaiting: std::sync::Mutex<HashMap<String, String>>,
@@ -1165,29 +1158,6 @@ const AWAITED_EVERY: Duration = Duration::from_secs(1);
 /// the modules): the loop answers each pass, so this is only a bound on a frozen session rather
 /// than a wait that should ever reach it.
 const WAIT: Duration = Duration::from_secs(30);
-
-/// A session that did not answer within [`WAIT`]: it is frozen, and nothing is done elsewhere in
-/// its place.
-fn unanswered() -> ActionCallError {
-    ActionCallError::Unavailable {
-        reason: "the session did not answer".to_owned(),
-    }
-}
-
-/// What the session's pass answers `answer` within `wait`, `None` when whoever asked dropped it,
-/// or [`unanswered`] once the wait passed: an ask made from a task parks for the pass rather than
-/// holding the thread the task runs on.
-async fn answered_within<T>(
-    answer: Pending<T>,
-    wait: Duration,
-) -> Result<Option<T>, ActionCallError> {
-    let answered = std::pin::pin!(answer);
-    let passed = std::pin::pin!(tilo_rt::sleep(wait));
-    match futures_util::future::select(answered, passed).await {
-        futures_util::future::Either::Left((answer, _)) => Ok(answer),
-        futures_util::future::Either::Right(..) => Err(unanswered()),
-    }
-}
 
 /// How long a service's `find` waits for its sources before answering with the rows that came: a
 /// source reading a disk, a mailbox or a service off the loop has its own time, and the find is
@@ -1256,6 +1226,7 @@ impl SessionServices {
             tabs: std::sync::Mutex::new(HashMap::new()),
             workspaces: std::sync::Mutex::new(Vec::new()),
             kept: std::sync::Mutex::default(),
+            published: std::sync::OnceLock::new(),
             awaiting: std::sync::Mutex::default(),
             awaited_at: std::sync::Mutex::default(),
             changes: Arc::default(),
@@ -1625,24 +1596,20 @@ impl SessionServices {
         })
     }
 
-    /// A read asked of the loop's pass from a task parks for it rather than
-    /// holding the thread the task runs on for its wait.
-    ///
-    /// # Errors
-    ///
-    /// Why the session did not answer: it is frozen ([`unanswered`]).
-    pub(crate) async fn reading_awaited(
+    /// Read what the session's services publish through `published`, the app wire's link, from
+    /// now on: the one reader of them, which the device's daemon reaches over the link too.
+    pub(crate) fn keep_published(
         &self,
-        app: &str,
-        resource: &str,
-    ) -> Result<Option<Published>, ActionCallError> {
-        let (done, answered) = tilo_actions::remote::pending();
-        self.ask(ApiAsk::Reading {
-            app: app.to_owned(),
-            resource: resource.to_owned(),
-            done,
-        });
-        answered_within(answered, WAIT).await.map(Option::flatten)
+        published: Arc<dyn tilo_app_host::services::PublishedResources>,
+    ) {
+        let _ = self.published.set(published);
+    }
+
+    /// The app wire's link, once the session serves one.
+    pub(crate) fn published(
+        &self,
+    ) -> Option<&Arc<dyn tilo_app_host::services::PublishedResources>> {
+        self.published.get()
     }
 
     /// The session's own actions these services hand a connection, once the session has them.
@@ -1763,19 +1730,6 @@ impl SessionServices {
                 }
                 ApiAsk::Apps(done) => {
                     done.complete(session_packages(services));
-                }
-                ApiAsk::Reading {
-                    app,
-                    resource,
-                    done,
-                } => {
-                    let services = services.borrow();
-                    done.complete(
-                        published_reading(&services, &app, &resource).map(|reading| Published {
-                            kind: published_kind(&services, &resource),
-                            reading,
-                        }),
-                    );
                 }
             }
         }
@@ -2328,23 +2282,6 @@ impl Host {
     }
 }
 
-/// A reading of a resource the session publishes, and the kind it is published as (`None` for a
-/// resource no service of this device serves, which no program reads: with no kind there is no
-/// node to decide its read at).
-pub(crate) struct Published {
-    kind: Option<String>,
-    reading: serde_json::Value,
-}
-
-/// The kind the session's services publish the resource `resource` as, when one serves it.
-fn published_kind(services: &tilo_service::Services, resource: &str) -> Option<String> {
-    services
-        .resources()
-        .into_iter()
-        .find(|spec| spec.id.as_str() == resource)
-        .map(|spec| spec.kind)
-}
-
 /// The packages the session runs itself (the shell), each its compiled module: what a task's
 /// programs read those records by, answered on the loop's pass, where the services are.
 fn session_packages(
@@ -2365,37 +2302,6 @@ fn session_packages(
             })
         })
         .collect()
-}
-
-/// The reading of the resource `resource` the app `app` publishes, asked by a program on the
-/// loop's pass: what the session's services read it as. Only the resources the session itself
-/// publishes are read here — an app's record an agent asks for is read through the record API,
-/// never from a service. A resource no service of this device serves (no Bluetooth, no battery)
-/// is published empty, as the shell's own parts are handed it: a program reads its fields as
-/// absent (off, empty) and goes on; `None` for a resource the session does not publish at all.
-fn published_reading(
-    services: &tilo_service::Services,
-    app: &str,
-    resource: &str,
-) -> Option<serde_json::Value> {
-    published_root(app, resource).then(|| {
-        services
-            .read(&tilolang_tilo::platform::on_device(
-                resource,
-                &tilo_app::framework::settings_device(),
-            ))
-            .unwrap_or_else(|| serde_json::json!({}))
-    })
-}
-
-/// Whether the session publishes the resource `resource` as the app `app`'s: the device's,
-/// Settings' and the session's own roots, each a resource the session's services read
-/// ([`tilolang_tilo::platform::platform_roots`]). A resource of any other app is its
-/// record's, read through the record API.
-fn published_root(app: &str, resource: &str) -> bool {
-    tilolang_tilo::platform::platform_roots()
-        .iter()
-        .any(|(published, ty)| *published == resource && ty.starts_with(&format!("{app}#")))
 }
 
 /// A client the server accepted: its socket, and where it came from.

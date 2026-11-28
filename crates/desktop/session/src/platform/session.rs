@@ -1312,6 +1312,11 @@ impl Session {
         {
             task_program_host.keep_state(dispatch);
         }
+        // What the session's services publish is read through the app wire's link, by the
+        // session's own connections as by the daemon.
+        if let Some(app_wire) = &app_wire {
+            session_services.keep_published(std::sync::Arc::clone(&app_wire.link) as _);
+        }
         // An action an app publishes, named by a search row, a link or a
         // person's card, is delivered through the device's dispatch: the app
         // starts for it when it is closed, and the action reaches it wherever

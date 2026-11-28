@@ -242,15 +242,7 @@ impl Client {
         });
     }
 
-    /// Open toplevel number `self.windows.len()` of `app`. Returns its index.
-    ///
-    /// # Panics
-    /// The client heard no compositor or xdg shell yet.
-    pub fn open_toplevel(&mut self, app: &str) -> usize {
-        self.open_toplevel_with(app, |_| {})
-    }
-
-    /// [`Self::open_toplevel`], set up by `before` before the first commit: what a
+    /// Open toplevel number `self.windows.len()` of `app`, set up by `before` before the first commit: what a
     /// dialog names its parent, and what a window calls itself.
     ///
     /// # Panics

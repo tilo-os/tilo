@@ -485,9 +485,13 @@ impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
                 }
             }
         }
+        // Two resources each beside the other (a person's section and the same section of their
+        // device) are siblings: neither is the other's own.
         let all = root.children.clone();
-        root.children
-            .retain(|node| !all.iter().any(|owner| owner.beside(node)));
+        root.children.retain(|node| {
+            !all.iter()
+                .any(|owner| owner.beside(node) && !node.beside(owner))
+        });
         Ok(root)
     }
 }

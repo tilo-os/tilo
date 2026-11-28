@@ -387,10 +387,7 @@ impl SessionOrigin {
             // A root the platform publishes is named by its whole address, as the runtime names
             // the root (`devices/{device}/settings/display`): read as a document and an item, one
             // of the device's settings would be `devices/display`, which no root reads.
-            let root = tilolang_tilo::platform::platform_roots()
-                .iter()
-                .any(|(published, _)| *published == id);
-            let target = if root {
+            let target = if tilolang_tilo::platform::root_type(&id).is_some() {
                 ResourceRef {
                     doc: id.clone(),
                     item: None,

@@ -49,7 +49,7 @@ struct GetArgs {
 }
 
 /// A host's refusal in its own words.
-fn refusal(error: ActionCallError) -> String {
+pub(super) fn refusal(error: ActionCallError) -> String {
     match error {
         ActionCallError::Refused { reason }
         | ActionCallError::InvalidRequest { reason }

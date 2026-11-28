@@ -186,14 +186,6 @@ impl ActionProvider for Tracker {
     }
 }
 
-fn run<F: std::future::Future>(future: F) -> F::Output {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(future)
-}
-
 fn agent(host: &Tracker) -> McpServer<Tracker> {
     McpServer::for_agent(host.clone(), "workspace".into(), "claude-code", "ada")
         .with_agent_session("mcp:test")
