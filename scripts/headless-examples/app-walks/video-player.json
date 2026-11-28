@@ -207,6 +207,320 @@
       "dark": true
     },
     {
+      "id": "queue",
+      "said": "The queue lists the videos opened here, plays one of them and takes one out",
+      "ops": [
+        {
+          "point": [
+            640,
+            340
+          ]
+        },
+        {
+          "press_any": [
+            "Library"
+          ]
+        },
+        {
+          "must": [
+            "Queue",
+            "Recent",
+            "Shared"
+          ]
+        },
+        {
+          "click_any": [
+            {
+              "prefix": "Queue"
+            }
+          ]
+        },
+        {
+          "must": [
+            "Sunset Timelapse.mp4",
+            "Cutaway Market.mp4",
+            "Remove from queue"
+          ]
+        },
+        {
+          "click_any": [
+            {
+              "prefix": "Sunset Timelapse"
+            }
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "Pause"
+          }
+        },
+        {
+          "click_any": [
+            {
+              "prefix": "Remove from queue"
+            }
+          ]
+        },
+        {
+          "must": [
+            "Sunset Timelapse.mp4"
+          ]
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "recent",
+      "said": "Recent lists what this device played, and clearing it empties the list",
+      "ops": [
+        {
+          "click_any": [
+            {
+              "prefix": "Recent"
+            }
+          ]
+        },
+        {
+          "must": [
+            "Cutaway Market.mp4",
+            "Clear recent videos"
+          ]
+        },
+        {
+          "click_any": [
+            {
+              "prefix": "Clear recent videos"
+            }
+          ]
+        },
+        {
+          "must": [
+            "No recent videos"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "bookmark",
+      "said": "A bookmark is kept for the video and opens it at that moment",
+      "ops": [
+        {
+          "click_any": [
+            {
+              "prefix": "Bookmark this moment"
+            }
+          ]
+        },
+        {
+          "click_any": [
+            {
+              "prefix": "Shared"
+            }
+          ]
+        },
+        {
+          "must": [
+            "Delete timestamp annotation",
+            "Delete shared playlist"
+          ]
+        },
+        {
+          "click_any": [
+            {
+              "prefix": "Cutaway Market"
+            }
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "Pause"
+          }
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "setup",
+      "said": "The player's own switches for starting on open and repeating are on its page",
+      "ops": [
+        {
+          "click_any": [
+            {
+              "prefix": "Library"
+            }
+          ]
+        },
+        {
+          "scroll": {
+            "dy": -400
+          }
+        },
+        {
+          "must": [
+            "Play a video when it opens",
+            "Repeat the video"
+          ]
+        },
+        {
+          "press_any": [
+            "Repeat the video"
+          ]
+        },
+        {
+          "press_any": [
+            "Play a video when it opens"
+          ]
+        },
+        {
+          "press_any": [
+            "Play a video when it opens"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "subtitles",
+      "said": "A video's subtitle track is offered on its page, and Off turns the words off",
+      "ops": [
+        {
+          "clip": {
+            "name": "Subtitled.mkv",
+            "subtitles": "Hello from the walk"
+          }
+        },
+        {
+          "press_any": [
+            "Open video"
+          ]
+        },
+        {
+          "choose": {
+            "name": "Subtitled.mkv"
+          }
+        },
+        {
+          "point": [
+            640,
+            340
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "Pause"
+          }
+        },
+        {
+          "scroll": {
+            "dy": -400
+          }
+        },
+        {
+          "wait_for": {
+            "shown": "Subtitles"
+          }
+        },
+        {
+          "click_any": [
+            {
+              "prefix": "Subtitles"
+            }
+          ]
+        },
+        {
+          "must": [
+            "Off"
+          ]
+        },
+        {
+          "press_any": [
+            "Off"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "speed",
+      "said": "A playback speed is chosen from the player's own menu, and the menu shows it again",
+      "ops": [
+        {
+          "point": [
+            640,
+            340
+          ]
+        },
+        {
+          "press_any": [
+            "Playback settings"
+          ]
+        },
+        {
+          "must": [
+            "Playback speed"
+          ]
+        },
+        {
+          "press_any": [
+            "Playback speed"
+          ]
+        },
+        {
+          "must": [
+            "1.5×"
+          ]
+        },
+        {
+          "press_any": [
+            "1.5×"
+          ]
+        },
+        {
+          "press_any": [
+            "Playback settings"
+          ]
+        },
+        {
+          "press_any": [
+            "Playback speed"
+          ]
+        },
+        {
+          "must": [
+            "1.5×"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "picture-in-picture",
+      "said": "The player's picture floats over the desktop while the video plays",
+      "ops": [
+        {
+          "point": [
+            640,
+            340
+          ]
+        },
+        {
+          "press_any": [
+            "Playback settings"
+          ]
+        },
+        {
+          "must": [
+            "Picture in picture"
+          ]
+        },
+        {
+          "press_any": [
+            "Picture in picture"
+          ]
+        },
+        {
+          "windows": 1
+        }
+      ]
+    },
+    {
       "id": "dark",
       "said": "The same video in the dark theme",
       "ops": [

@@ -3451,9 +3451,16 @@ class Walk:
     def op_clip(self, value) -> dict:
         """Make a short VP9/AAC video where a person's file chooser reaches it, so a walk
         needs no committed media. The clip is generated once per walk (GStreamer, else
-        ffmpeg), a few hundred kilobytes, and contains no third-party media."""
+        ffmpeg), a few hundred kilobytes, and contains no third-party media. `subtitles`
+        adds one subtitle track carrying that line, so a walk can choose it and turn it off."""
         name = value["name"]
         made_path = self.fixture(name)
+        subtitles = value.get("subtitles")
+        cues = None
+        if subtitles:
+            cues = self.fixture(f"{name}.srt")
+            cues.write_text(
+                "1\n00:00:00,000 --> 00:00:01,500\n%s\n" % subtitles)
         gst = [
             "gst-launch-1.0", "-e", "-q",
             "mp4mux", "name=mux", "!", "filesink", f"location={made_path}",
@@ -3468,10 +3475,15 @@ class Walk:
             "ffmpeg", "-y", "-loglevel", "error",
             "-f", "lavfi", "-i", "testsrc=size=160x120:rate=25:duration=2",
             "-f", "lavfi", "-i", "anullsrc=channel_layout=mono:sample_rate=48000",
+        ]
+        if cues is not None:
+            ffmpeg += ["-i", str(cues), "-c:s", "srt"]
+        ffmpeg += [
             "-shortest", "-c:v", "libvpx-vp9", "-b:v", "64k", "-c:a", "aac", str(made_path),
         ]
         made = None
-        for program in (gst, ffmpeg):
+        # A clip with subtitles is muxed by ffmpeg alone: the text stream is the point.
+        for program in ((ffmpeg,) if cues is not None else (gst, ffmpeg)):
             if shutil.which(program[0]) is None:
                 continue
             try:
