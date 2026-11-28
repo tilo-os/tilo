@@ -1270,20 +1270,14 @@ view backup_footer(s: session.Setup) {
             }
         }
     } else {
+        // The backup is offered, never forced: Devices keeps offering it once setup is done.
         stack(gap: .sibling) {
-            ui.Checkbox(
-                "I understand that without a recovery key or backup, losing this device means losing this identity.",
-                bind: s.skip_acknowledged,
-            ) {
-                on check: session.acknowledge(s, checked: not s.skip_acknowledged)
-            }
+            paragraph(
+                "Until you back it up, this identity lives only on this computer. Devices offers the backup whenever you are ready.",
+            )
             actions {
-                ui.Button(
-                    "Continue without backup",
-                    enabled: s.skip_acknowledged,
-                    description: "Tick the acknowledgement first",
-                ) {
-                    on press: session.continue(s)
+                ui.Button("Later", description: "Back up from Devices whenever you like") {
+                    on press: session.skip(s)
                 }
             }
         }

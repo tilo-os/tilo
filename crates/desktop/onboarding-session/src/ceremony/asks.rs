@@ -182,6 +182,12 @@ impl Ceremony {
                     self.then_open = then_opens(&option).map(str::to_owned);
                     self.pressed.press(super::KEY_FINISH);
                 }
+                // "Later": the backup is offered, never forced, and Devices keeps offering it, so
+                // leaving it for now asks for nothing more.
+                OnboardingEffect::Skip if step == Step::Backup => {
+                    self.backup_skip_acknowledged = true;
+                    self.pressed.press(KEY_BACKUP_CONTINUE);
+                }
                 OnboardingEffect::Acknowledge { checked } => match step {
                     Step::Protect if self.identity_idle() => {
                         self.flow.set_acknowledged(checked);

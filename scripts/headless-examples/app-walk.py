@@ -853,6 +853,7 @@ def start_signed_in(session: Session, state: Path, out: Path, *, apps: str, tapp
     try:
         session.start(apps=apps, fresh=True, out=out / "logs", tag=tag, tapps=tapps,
                       session_args=session_args, env=env, abort=trouble, prepare=logged_in)
+        through_setup(session)
         if then is not None:
             then()
     except BaseException:
@@ -861,6 +862,32 @@ def start_signed_in(session: Session, state: Path, out: Path, *, apps: str, tapp
         daemon.stop()
         raise
     return machine, daemon
+
+
+#: The ways through the setup a first sign-in opens, as a person takes them: the identity is
+#: made by then, its backup is left for later (Devices keeps offering it), the media formats are
+#: left for another day, and the desktop is entered.
+SETUP_WAYS = ["Later", "Not now", "Continue to desktop"]
+#: How long a started session may take to show its setup, when it opens one.
+SETUP_SHOWS_WITHIN = 20.0
+
+
+def through_setup(session: Session) -> None:
+    """Go through the setup the person's first sign-in opens, as they would, until the desktop is
+    theirs. A session that opens no setup goes straight on."""
+    deadline = time.monotonic() + SETUP_SHOWS_WITHIN
+    while True:
+        listed = targets_of(session, SETUP_WAYS)
+        way = next((way for way in SETUP_WAYS if named_in(listed, way) is not None), None)
+        if way is None:
+            if time.monotonic() >= deadline:
+                return
+            time.sleep(0.25)
+            continue
+        press(session, way)
+        if way == SETUP_WAYS[-1]:
+            return
+        deadline = time.monotonic() + SETUP_SHOWS_WITHIN
 
 
 # --- what the app holds, read back ------------------------------------------------------------

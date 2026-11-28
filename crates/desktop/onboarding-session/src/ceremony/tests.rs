@@ -103,10 +103,9 @@ fn enter(ceremony: &mut Ceremony, field: &str, value: &str) {
     );
 }
 
-/// Continue from the backup step without a backup, saying so first.
+/// Leave the backup for later, as its "Later" does.
 fn continue_without_backup(ceremony: &mut Ceremony) {
-    settled(ceremony, OnboardingEffect::Acknowledge { checked: true });
-    settled(ceremony, OnboardingEffect::Continue);
+    settled(ceremony, OnboardingEffect::Skip);
 }
 
 /// The words of a recovery key that encodes `seed`.
