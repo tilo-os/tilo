@@ -298,16 +298,7 @@
               }
             ]
           },
-          {
-            "read": {
-              "app": "so.tilo.calendar",
-              "operation": "read",
-              "is": {
-                "fields.events.count": 1
-              },
-              "contains": "Dentist"
-            }
-          }
+          {"read": {"record": {"app": "so.tilo.calendar"}, "contains": "Dentist", "is": {"fields.events.count": 1}}}
         ]
       }
     },
@@ -389,16 +380,7 @@
           {
             "type": " appointment"
           },
-          {
-            "read": {
-              "app": "so.tilo.calendar",
-              "operation": "read",
-              "is": {
-                "fields.events.count": 1
-              },
-              "contains": "Dentist appointment"
-            }
-          },
+          {"read": {"record": {"app": "so.tilo.calendar"}, "contains": "Dentist appointment", "is": {"fields.events.count": 1}}},
           {
             "wait_for": {
               "shown": {
@@ -467,15 +449,7 @@
               }
             ]
           },
-          {
-            "read": {
-              "app": "so.tilo.calendar",
-              "operation": "read",
-              "is": {
-                "fields.events.count": 0
-              }
-            }
-          }
+          {"read": {"record": {"app": "so.tilo.calendar"}, "is": {"fields.events.count": 0}}}
         ]
       },
       "dark": true
@@ -498,16 +472,7 @@
             ]
           }
         },
-        {
-          "read": {
-            "app": "so.tilo.calendar",
-            "operation": "read",
-            "is": {
-              "events#len": 1
-            },
-            "contains": "New event"
-          }
-        }
+        {"read": {"record": {"app": "so.tilo.calendar"}, "contains": "New event", "is": {"fields.events.count": 1}}}
       ]
     },
     {
@@ -602,16 +567,7 @@
         {
           "press": "Done"
         },
-        {
-          "read": {
-            "app": "so.tilo.calendar",
-            "operation": "read",
-            "is": {
-              "events#len": 1
-            },
-            "contains": "Standup"
-          }
-        }
+        {"read": {"record": {"app": "so.tilo.calendar"}, "contains": "Standup", "is": {"fields.events.count": 1}}}
       ]
     },
     {
@@ -635,16 +591,7 @@
             ]
           }
         },
-        {
-          "read": {
-            "app": "so.tilo.calendar",
-            "operation": "read",
-            "is": {
-              "events#len": 1
-            },
-            "contains": "Standup"
-          }
-        }
+        {"read": {"record": {"app": "so.tilo.calendar"}, "contains": "Standup", "is": {"fields.events.count": 1}}}
       ]
     },
     {
@@ -720,16 +667,7 @@
               "menuitem": "Every week"
             }
           },
-          {
-            "read": {
-              "app": "so.tilo.calendar",
-              "operation": "read",
-              "is": {
-                "fields.events.count": 1
-              },
-              "contains": "FREQ=WEEKLY"
-            }
-          }
+          {"read": {"record": {"app": "so.tilo.calendar"}, "contains": "FREQ=WEEKLY", "is": {"fields.events.count": 1}}}
         ]
       }
     },
@@ -801,15 +739,7 @@
               }
             }
           },
-          {
-            "read": {
-              "app": "so.tilo.calendar",
-              "operation": "read",
-              "is": {
-                "fields.events.count": 2
-              }
-            }
-          }
+          {"read": {"record": {"app": "so.tilo.calendar"}, "is": {"fields.events.count": 2}}}
         ]
       },
       "dark": true
@@ -866,16 +796,7 @@
           {
             "type": "Dentist appointment"
           },
-          {
-            "read": {
-              "app": "so.tilo.calendar",
-              "operation": "read",
-              "is": {
-                "fields.events.count": 3
-              },
-              "contains": "Dentist appointment"
-            }
-          }
+          {"read": {"record": {"app": "so.tilo.calendar"}, "contains": "Dentist appointment", "is": {"fields.events.count": 3}}}
         ]
       }
     },

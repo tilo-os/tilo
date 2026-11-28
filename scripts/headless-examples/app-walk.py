@@ -3242,6 +3242,8 @@ class Walk:
         read the value given (`#len` for how many it lists). `contains` holds
         the whole answer's words to a text instead, for a read of a document.
         `"do": [provider, resource, action, args?]` calls an exact address.
+        `"record": {"app": ..}` reads the app's own root record through the
+        session's record API, as the workspace keeps it.
         `{"within": seconds}` asks again while the app catches up with typing
         that commits a moment later. A read that is refused, or answers
         something else, is the step's finding."""
@@ -3249,6 +3251,14 @@ class Walk:
         end = time.monotonic() + within
 
         def call() -> tuple[str, object]:
+            if "record" in value:
+                app = value["record"]["app"]
+                workspace = ((self.session.state_dump() or {}).get("workspace_tree")
+                             or {}).get("active")
+                if not workspace:
+                    raise Failed("the session names no workspace in front")
+                return (f"{app}'s record",
+                        record(self.session.control, workspace, app, ""))
             if "app" in value:
                 app, operation = value["app"], value["operation"]
                 args = value.get("args")
