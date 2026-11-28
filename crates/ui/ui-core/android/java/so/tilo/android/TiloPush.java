@@ -1,5 +1,6 @@
 package so.tilo.android;
 
+import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -7,7 +8,6 @@ import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
-import android.net.Uri;
 import android.util.Log;
 
 import java.io.File;
@@ -32,21 +32,18 @@ import java.nio.charset.StandardCharsets;
  * there: a notification arrives when the app may not be running, so nothing may be held in memory.
  */
 public class TiloPush extends BroadcastReceiver {
-    /** This app's connection to its distributor, as the connector protocol names it. */
-    public static final String INSTANCE = "tilo";
+    /** This app's one registration with its distributor: the connector protocol's token. */
+    public static final String TOKEN = "tilo";
 
     /** The meta-data an app's manifest declares to take pushes; nothing else does. */
     private static final String DECLARED = "so.tilo.unified-push";
 
-    private static final String REGISTER = "org.unifiedpush.android.connector.REGISTER";
-    private static final String GET_DISTRIBUTOR =
-            "org.unifiedpush.android.connector.GET_DISTRIBUTOR";
-    private static final String REGISTRATION = "org.unifiedpush.android.connector.REGISTRATION";
+    private static final String REGISTER = "org.unifiedpush.android.distributor.REGISTER";
+    private static final String NEW_ENDPOINT = "org.unifiedpush.android.connector.NEW_ENDPOINT";
     private static final String UNREGISTERED = "org.unifiedpush.android.connector.UNREGISTERED";
     private static final String MESSAGE = "org.unifiedpush.android.connector.MESSAGE";
     private static final String REGISTRATION_FAILED =
             "org.unifiedpush.android.connector.REGISTRATION_FAILED";
-    private static final String DISTRIBUTOR = "org.unifiedpush.android.distributor.DISTRIBUTOR";
 
     private static final String PREFS = "tilo-push";
     private static final String DISTRIBUTOR_KEY = "distributor";
@@ -74,13 +71,19 @@ public class TiloPush extends BroadcastReceiver {
             }
         }
         if (distributor == null) {
-            // A distributor that answers the asking announces itself, and is kept above.
-            context.sendBroadcast(new Intent(GET_DISTRIBUTOR));
+            Log.i(TAG, "no UnifiedPush distributor is installed: a closed app hears of nothing");
             return;
         }
         Intent register = new Intent(REGISTER);
         register.setPackage(distributor);
-        register.putExtra("instance", INSTANCE);
+        register.putExtra("token", TOKEN);
+        register.putExtra("application", context.getPackageName());
+        // The distributor reads which app registers from who made this intent, not from its words.
+        register.putExtra(
+                "pi",
+                PendingIntent.getBroadcast(
+                        context, 0, new Intent("org.unifiedpush.register.dummy_app"),
+                        PendingIntent.FLAG_IMMUTABLE));
         context.sendBroadcast(register);
     }
 
@@ -159,27 +162,9 @@ public class TiloPush extends BroadcastReceiver {
             return;
         }
         switch (action) {
-            case DISTRIBUTOR:
+            case NEW_ENDPOINT:
                 {
-                    String distributor = intent.getStringExtra("distributor");
-                    if (distributor == null && intent.getData() != null) {
-                        Uri data = intent.getData();
-                        distributor =
-                                data.getSchemeSpecificPart() != null
-                                        ? data.getSchemeSpecificPart()
-                                        : data.getHost();
-                    }
-                    if (distributor == null || distributor.isEmpty()) {
-                        Log.w(TAG, "a distributor answered naming no package");
-                        return;
-                    }
-                    prefs(context).edit().putString(DISTRIBUTOR_KEY, distributor).apply();
-                    ensureRegistered(context);
-                    return;
-                }
-            case REGISTRATION:
-                {
-                    if (!INSTANCE.equals(intent.getStringExtra("instance"))) {
+                    if (!TOKEN.equals(intent.getStringExtra("token"))) {
                         return;
                     }
                     String endpoint = intent.getStringExtra("endpoint");
@@ -211,14 +196,10 @@ public class TiloPush extends BroadcastReceiver {
 
     /** Show the message `intent` carried: Rust opens it with this device's key. */
     private static void show(Context context, Intent intent) {
-        if (!INSTANCE.equals(intent.getStringExtra("instance"))) {
+        if (!TOKEN.equals(intent.getStringExtra("token"))) {
             return;
         }
-        byte[] body = intent.getByteArrayExtra("bytes");
-        if (body == null || body.length == 0) {
-            byte[] text = intent.getByteArrayExtra("bytesMessage");
-            body = text;
-        }
+        byte[] body = intent.getByteArrayExtra("bytesMessage");
         if (body == null || body.length == 0) {
             Log.w(TAG, "a push carried no bytes");
             return;

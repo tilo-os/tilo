@@ -1071,7 +1071,7 @@ fn unified_push_entries(unified_push: bool) -> (&'static str, &'static str) {
     let queries = if unified_push {
         r#"
         <intent>
-            <action android:name="org.unifiedpush.android.connector.REGISTER" />
+            <action android:name="org.unifiedpush.android.distributor.REGISTER" />
         </intent>"#
     } else {
         ""
@@ -1086,10 +1086,9 @@ fn unified_push_entries(unified_push: bool) -> (&'static str, &'static str) {
             android:exported="true">
             <intent-filter>
                 <action android:name="org.unifiedpush.android.connector.MESSAGE" />
-                <action android:name="org.unifiedpush.android.connector.REGISTRATION" />
+                <action android:name="org.unifiedpush.android.connector.NEW_ENDPOINT" />
                 <action android:name="org.unifiedpush.android.connector.UNREGISTERED" />
                 <action android:name="org.unifiedpush.android.connector.REGISTRATION_FAILED" />
-                <action android:name="org.unifiedpush.android.distributor.DISTRIBUTOR" />
             </intent-filter>
         </receiver>
 "#
@@ -3206,6 +3205,7 @@ type = "gui"
             let xml = android_manifest(&pushing, "field_notes", false, false);
             assert!(xml.contains(r#"android:name="so.tilo.android.TiloPush""#));
             assert!(xml.contains("org.unifiedpush.android.connector.MESSAGE"));
+            assert!(xml.contains("org.unifiedpush.android.connector.NEW_ENDPOINT"));
             assert!(xml.contains(r#"android:name="so.tilo.unified-push" android:value="true""#));
         }
 
