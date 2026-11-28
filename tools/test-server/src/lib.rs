@@ -134,6 +134,13 @@ struct Running {
 
 impl Drop for Running {
     fn drop(&mut self) {
+        self.halt();
+    }
+}
+
+impl Running {
+    /// Stop serving: the host's server is shut down before its directory goes away.
+    fn halt(&mut self) {
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
         }
@@ -143,9 +150,7 @@ impl Drop for Running {
             let _ = thread.join();
         }
     }
-}
 
-impl Running {
     /// A host of `owner`'s, a device of its own, on its own thread: serving a packet relay on
     /// loopback and — with `workspace` — serving it under that name.
     fn of(owner: &SigningKey, name: &str, workspace: Option<&str>) -> Self {
@@ -377,15 +382,6 @@ pub async fn endpoint(key: iroh::SecretKey) -> iroh::Endpoint {
         .expect("an endpoint on this machine's loopback")
 }
 
-/// An endpoint with no relay and no directory at all, on a key of its own: a test that dials an
-/// address this machine holds relayed and published nothing.
-pub async fn direct_endpoint() -> iroh::Endpoint {
-    iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .bind()
-        .await
-        .expect("an endpoint on this machine")
-}
-
 /// A person's host on this machine's loopback, serving one workspace: what its devices relay
 /// through, and where they are told it is.
 pub struct Host(Running);
@@ -493,6 +489,11 @@ impl Host {
                 },
             ))
             .expect("the host takes the person out");
+    }
+
+    /// Stop this host, as a machine that goes away does: nothing answers at its address.
+    pub fn stop(&mut self) {
+        self.0.halt();
     }
 
     /// Where this host is reached for its workspace, as it signed it: what a device of the person

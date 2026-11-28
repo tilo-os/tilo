@@ -49,16 +49,7 @@ pub fn notes_listed(
 
 /// Notes' window joined to `workspace`, once it shows Notes' own page.
 pub fn notes_window(phone: &tilo_runtime::in_process::Device, workspace: &str) -> HostedWindow {
-    let mut window = support::until("the phone opens Notes, which its workspace runs", || {
-        let connection = phone
-            .window_connection(NOTES, workspace)
-            .map_err(|error| format!("{error:#}"))?;
-        tilo_phone::view::open(
-            NOTES,
-            workspace,
-            tilo_phone::view::Records::Workspace(connection),
-        )
-    });
+    let mut window = notes_opened(phone, workspace);
     support::until("Notes' window shows Notes", || {
         window.update(&(), &());
         let view = window.view().ok_or("the window is not connected")?;
@@ -68,6 +59,20 @@ pub fn notes_window(phone: &tilo_runtime::in_process::Device, workspace: &str) -
         }
     });
     window
+}
+
+/// Notes' window joined to `workspace`, once it opens.
+pub fn notes_opened(phone: &tilo_runtime::in_process::Device, workspace: &str) -> HostedWindow {
+    support::until("the phone opens Notes, which its workspace runs", || {
+        let connection = phone
+            .window_connection(NOTES, workspace)
+            .map_err(|error| format!("{error:#}"))?;
+        tilo_phone::view::open(
+            NOTES,
+            workspace,
+            tilo_phone::view::Records::Workspace(connection),
+        )
+    })
 }
 
 /// The person presses the action whose id ends with `action` in the window, as its palette
@@ -110,7 +115,7 @@ pub fn note_in(window: &HostedWindow) -> Result<(), String> {
 /// they own, and the runtime the laptop that prints the phone's ticket runs on.
 pub struct Server {
     pub runtime: tokio::runtime::Runtime,
-    host: test_server::Host,
+    pub host: test_server::Host,
     /// The person's root key.
     pub person: ed25519_dalek::SigningKey,
     /// The person's workspace, by id.
@@ -343,14 +348,19 @@ impl Server {
             ignore_missing_runtime: true,
             ..package_store::installer::Request::default()
         };
-        package_store::installer::install(
+        // A home kept from an earlier start already has it, which is fine.
+        let installed = package_store::installer::install(
             &store,
             &catalog,
             &package_store::installer::Candidate::file(tapp),
             &request,
             None,
-        )
-        .unwrap_or_else(|error| panic!("the device takes the package {root}: {error}"));
+        );
+        if let Err(error) = installed
+            && !matches!(error, package_store::installer::Error::AlreadyInstalled(_))
+        {
+            panic!("the device takes the package {root}: {error}");
+        }
     }
 }
 

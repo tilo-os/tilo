@@ -2731,13 +2731,16 @@ impl Daemon {
         // that answers before its workspace is here leaves both showing none of it. A host that
         // does not answer costs this start what any wait on the device keeping a workspace costs
         // ([`crate::daemon::WAITED_WITHIN`]), never the part itself: a computer whose host is
-        // away still starts serving its person.
+        // away still starts serving its person. A device that already keeps a copy of it waits on
+        // nobody: it opens on that copy, and enters as a retry would.
         if let Some(login) = entering {
+            let kept_here = WorkspaceId::parse(&login.workspace)
+                .is_some_and(|workspace| workspaces.keeps_now(workspace));
             let (entering_with, cert) = (Arc::clone(&workspaces), identity.cert.clone());
             stage("entering the workspace the login named");
             let (with, cert_again, login_again) =
                 (Arc::clone(&entering_with), cert.clone(), login.clone());
-            let entered = super::workspaces::block_on_owned(async move {
+            let first = async move {
                 let entering = super::home::entered_while_running(&entering_with, &cert, &login);
                 match tokio::time::timeout(crate::daemon::WAITED_WITHIN, entering).await {
                     Ok(entered) => entered,
@@ -2748,32 +2751,34 @@ impl Daemon {
                         crate::daemon::WAITED_WITHIN.as_secs()
                     )),
                 }
-            });
+            };
             // The device keeping it is away (the person's other computer is closed): it is entered
             // once that device answers, asked again less often each time, so the person's list
             // and their workspaces arrive here without this part starting again.
-            if let Err(why) = entered {
-                tracing::warn!(%why, "the workspace this login named is not kept here yet");
-                tilo_rt::app().handle().spawn(async move {
-                    let mut pause = PERSONS_WORKSPACE_FIRST_PAUSE;
-                    loop {
-                        tokio::time::sleep(pause).await;
-                        if with.copies().stopped() {
-                            return;
-                        }
-                        match super::home::entered_while_running(&with, &cert_again, &login_again)
-                            .await
-                        {
-                            Ok(()) => return,
-                            Err(why) => tracing::info!(
-                                %why,
-                                retry_in_s = pause.as_secs(),
-                                "the workspace this login named is not kept here yet"
-                            ),
-                        }
-                        pause = pause.saturating_mul(2).min(PERSONS_WORKSPACE_LONGEST_PAUSE);
+            let again = async move {
+                let mut pause = PERSONS_WORKSPACE_FIRST_PAUSE;
+                loop {
+                    tokio::time::sleep(pause).await;
+                    if with.copies().stopped() {
+                        return;
                     }
-                });
+                    match super::home::entered_while_running(&with, &cert_again, &login_again).await
+                    {
+                        Ok(()) => return,
+                        Err(why) => tracing::info!(
+                            %why,
+                            retry_in_s = pause.as_secs(),
+                            "the workspace this login named is not kept here yet"
+                        ),
+                    }
+                    pause = pause.saturating_mul(2).min(PERSONS_WORKSPACE_LONGEST_PAUSE);
+                }
+            };
+            if kept_here {
+                tilo_rt::app().handle().spawn(again);
+            } else if let Err(why) = super::workspaces::block_on_owned(first) {
+                tracing::warn!(%why, "the workspace this login named is not kept here yet");
+                tilo_rt::app().handle().spawn(again);
             }
         }
         let take_work = member

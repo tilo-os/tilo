@@ -36,7 +36,10 @@ use ui::widget::Widget as _;
 
 #[test]
 fn a_fresh_phone_lists_its_workspaces_apps() {
-    let (_home, server) = Server::for_phone();
+    let (_home, mut server) = Server::for_phone();
+    // The phone starts again in this process, where the daemon that ended still holds its port.
+    let mut port = tilo_test_env::ScopedEnv::new();
+    port.set("TILO_DEVICE_PORT", "0");
     // The person's server runs the language its program links, as a computer's daemon does: what
     // reads the workspace's Notes record there, as their other devices read it.
     server.serving_tilolang();
@@ -99,6 +102,16 @@ fn a_fresh_phone_lists_its_workspaces_apps() {
     );
 
     opens_what_the_workspace_runs(&server, &phone);
+
+    // Started again while the server is away, the phone opens Notes on the copy it keeps, not
+    // after the 30 s a wait on the server costs.
+    phone.stop().expect("the phone's daemon stops");
+    server.host.stop();
+    let started = std::time::Instant::now();
+    let phone = tilo_runtime::in_process::Device::start(&support::profile()).unwrap();
+    drop(server::notes_opened(&phone, &server.workspace));
+    let took = started.elapsed();
+    assert!(took.as_secs() < 15, "Notes waited {took:?} on the server");
     phone.stop().expect("the phone's daemon stops");
     drop(laptop);
 }
