@@ -3775,11 +3775,15 @@ cp -a /target/engine-release/{arch}/compiled /target/engine-release/{arch}/dev
 export SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$T_COMMIT")
 REQUESTED_PUBLISH=false python3 -I tools/ci/python.py tools/apps/browser_runtime_release.py seal \
   --arch {arch} --source "$T_COMMIT" --sequence "$SOURCE_DATE_EPOCH" \
-  --out /target/engine-release/{arch}/dev'''
+  --out /target/engine-release/{arch}/dev
+version=$(sed -n 's/^version = "\(.*\)"$/\1/p' /target/engine-release/{arch}/dev/runtime/bundle.toml)
+[[ -n $version ]] || { echo "the sealed engine names no version" >&2; exit 1; }
+mkdir -p /target/engine-dev/{arch}/bundles
+cp -a /target/engine-release/{arch}/dev/runtime "/target/engine-dev/{arch}/bundles/$version"'''
 needs = ["engine-build-{arch}"]
 git = true
 requires = ["arch={arch}"]
-outputs = ["/target/engine-release/{arch}/dev/package/**", "/target/engine-release/{arch}/dev/bin/**"]
+outputs = ["/target/engine-dev/{arch}/bundles/**"]
 on = ["dispatch"]
 timeout_secs = 5400
 [check.matrix]

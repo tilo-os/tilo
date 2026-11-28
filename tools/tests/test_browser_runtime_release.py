@@ -68,6 +68,19 @@ class BrowserRuntimeRelease(unittest.TestCase):
         self.assertIn('TILO_ENGINE_PACKAGES', publishing.get('env', {}),
                       'the app publication is given the sealed engine packages')
 
+    def test_the_dev_engine_lands_where_the_vm_cohort_reads_it(self):
+        """The vm cohort mounts the engine through TILO_RUNTIME_BUNDLE_DIR: the dev engine
+        publishes its bundles under the path the cohort names."""
+        with (ROOT / 't.toml').open('rb') as source:
+            checks = tomllib.load(source)['check']
+        producer = next(c for c in checks if c['name'] == 'engine-dev-{arch}')
+        cohort = next(c for c in checks if c['name'] == 'vm-cohort-x86_64')
+        root = cohort['env']['TILO_RUNTIME_BUNDLE_DIR']
+        self.assertIn('/target/engine-dev/{arch}/bundles', producer['run'])
+        self.assertTrue(any(output.replace('{arch}', 'x86_64').startswith(root)
+                            for output in producer['outputs']),
+                        'the dev engine outputs cover what the vm cohort mounts')
+
     def test_native_payload_rejects_foreign_machine_missing_elf_and_escape(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / 'engine'
