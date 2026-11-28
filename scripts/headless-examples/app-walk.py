@@ -905,6 +905,18 @@ def app_action(session: Session, app: str, operation: str, resource: str | None 
     return None
 
 
+def own_resource(session: Session, app: str) -> str:
+    """The app's own root resource (`tl:<app>:root-…`, minted afresh each run): the record its
+    window shows, told apart from the records of other apps it draws beside its own — an app
+    publishes a read on every record it shows, and its own is the one its root names."""
+    prefix = f"tl:{app}:root-"
+    for row in session.actions(app=app):
+        at = address(row)
+        if at and at[0].startswith(prefix) and "/" not in at[0][len(prefix):]:
+            return at[0]
+    raise Failed(f"{app} names no root resource of its own")
+
+
 def row_for(rows: list[dict], resource: str, action: str, kind: str | None = None) -> dict | None:
     """The catalogue row offering `resource`'s `action`, whichever provider lists
     it: a workspace's actions are published under the workspace's own provider
@@ -3361,8 +3373,9 @@ class Walk:
         read the value given (`#len` for how many it lists). `contains` holds
         the whole answer's words to a text instead, for a read of a document.
         `"do": [provider, resource, action, args?]` calls an exact address.
-        `"record": {"app": ..}` reads the app's own root record through the
-        session's record API, as the workspace keeps it.
+        `"record": {"app": ..}` reads the app's own root record: the read
+        `app` publishes on the root resource its window shows, which is its own
+        and not another app's record it also draws.
         `{"within": seconds}` asks again while the app catches up with typing
         that commits a moment later. A read that is refused, or answers
         something else, is the step's finding."""
@@ -3372,12 +3385,11 @@ class Walk:
         def call() -> tuple[str, object]:
             if "record" in value:
                 app = value["record"]["app"]
-                workspace = ((self.session.state_dump() or {}).get("workspace_tree")
-                             or {}).get("active")
-                if not workspace:
-                    raise Failed("the session names no workspace in front")
-                return (f"{app}'s record",
-                        record(self.session.control, workspace, app, ""))
+                # The app's own root resource, minted afresh each run: the record its
+                # window shows, never one of another app it draws beside its own.
+                own = own_resource(self.session, app)
+                row = app_action(self.session, app, "read", own)
+                return f"{app}'s own read", value_of(self.session.invoke_row(row))
             if "app" in value:
                 app, operation = value["app"], value["operation"]
                 args = value.get("args")
