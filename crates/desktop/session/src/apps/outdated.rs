@@ -49,12 +49,18 @@ impl Apps {
         self.answer_in_tabs(|policy| {
             for (tab, name) in tabs {
                 policy.note_in_tab(*tab, "");
-                policy.failed_at(*tab, &asked, Outcome::from_before_update(name, service));
+                let answer = Outcome::from_before_update(name, service);
+                // Restart ends the app and opens it again where the window stands: the tab keeps
+                // the window's place as the card that says so, as one whose app stopped does.
+                if !policy.card_where_it_was(*tab, &asked, name, answer.clone()) {
+                    policy.failed_at(*tab, &asked, answer);
+                }
             }
             if first && tabs.is_empty() {
                 let title = &kept.launch.title;
                 let answer = Outcome::from_before_update(title, service);
-                if let Err(error) = policy.not_opened(&asked, title, answer) {
+                let opened = policy.not_opened(&asked, title, answer);
+                if let Err(error) = opened {
                     tracing::warn!(app = %kept.launch.app, %error, "an app from before the update has no tab to say so in");
                 }
             }

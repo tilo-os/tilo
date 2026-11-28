@@ -376,6 +376,9 @@ struct Save {
     /// Whether a window of an app runs only on the device that opened it, as the app says
     /// ([`Layouts::hosting`]).
     runs_here: Option<fn(&str) -> bool>,
+    /// The tabs that say their app is not here: what the card this session placed stands for. They
+    /// are written as the app that opens them again ([`stands_for_its_app`]).
+    cards: BTreeSet<u64>,
     /// What this device changed of the layout that its workspace does not hold yet, in the order it
     /// changed: each is written as its own change.
     pending: Vec<PendingStep<LayoutStep>>,
@@ -402,6 +405,7 @@ impl Save {
             notes,
             items,
             runs_here,
+            cards,
             pending,
         } = self;
         let here = windows_of(&workspace);
@@ -434,6 +438,7 @@ impl Save {
             local,
             only_here: runs_here,
             closed,
+            cards: &cards,
             person,
         };
         // A record nobody wrote yet is founded by this session: its strips stand in the record with
@@ -521,6 +526,8 @@ struct Writing<'a> {
     local: u16,
     only_here: Option<fn(&str) -> bool>,
     closed: &'a BTreeSet<u64>,
+    /// The tabs that say their app is not here: what the card this session placed stands for.
+    cards: &'a BTreeSet<u64>,
     person: &'a str,
 }
 
@@ -590,6 +597,49 @@ fn write_changes(
     Ok(wrote)
 }
 
+/// `workspace` with each tab in `cards` written as the app that opens it again: the tab is the
+/// window the person left there, and the next start opens the app in it, as one whose window went
+/// away while no desktop was there does, rather than close a place nothing fills. A card named by
+/// a launch is no app a start opens, and stays the place it is.
+fn stands_for_its_app(mut workspace: Workspace, cards: &BTreeSet<u64>) -> Workspace {
+    if cards.is_empty() {
+        return workspace;
+    }
+    for group in workspace
+        .strips
+        .iter_mut()
+        .flat_map(|strip| &mut strip.window_groups)
+    {
+        for tab in &mut group.tabs {
+            if !cards.contains(&tab.id) {
+                continue;
+            }
+            let TileContent::AppPlaceholder { kind, label } = &tab.tile else {
+                continue;
+            };
+            let app = if label.trim().is_empty() {
+                match kind {
+                    tilo_desktop_model::AppKind::Other(app) => app.clone(),
+                    _ => continue,
+                }
+            } else {
+                label.clone()
+            };
+            // A card named by a launch (`host:` a machine program, `record:` a record of an app)
+            // is no name a start opens an app by: its tab goes as any place no window came for.
+            if app.is_empty() || app.contains(':') || app.chars().any(char::is_whitespace) {
+                continue;
+            }
+            tab.tile = TileContent::LocalApp {
+                app_id: app,
+                label: label.clone(),
+                note: String::new(),
+            };
+        }
+    }
+    workspace
+}
+
 /// Write `workspace`, this device's layout, into `candidate`, and commit what it changed as one
 /// change: `acted`'s where an arranging action made it, `step`'s where the person arranged
 /// something, and housekeeping where it arranges nothing. Whether anything was written.
@@ -608,10 +658,11 @@ fn write_change(
         local,
         only_here,
         closed,
+        cards,
         person,
     } = *writing;
     let (laid, elsewhere) = written_here(
-        laid_into(candidate, workspace.clone(), closed),
+        stands_for_its_app(laid_into(candidate, workspace.clone(), closed), cards),
         certificate,
         local,
         only_here,
@@ -731,6 +782,9 @@ pub(crate) struct Layouts {
     /// hold it and its own launches named it: what a window opens on again after a restart. Kept
     /// apart from the tab's view, which is the view a place shows.
     items: RefCell<BTreeMap<u64, String>>,
+    /// The tabs that say their app is not here: what the card this session placed stands for. Their
+    /// layout's write holds the app that opens them again ([`stands_for_its_app`]).
+    cards: RefCell<BTreeSet<u64>>,
 }
 
 /// The device record what this device could not write yet of its workspaces' layouts is kept in.
@@ -1743,10 +1797,18 @@ impl Layouts {
                 notes,
                 items,
                 runs_here: self.runs_here,
+                cards: self.cards.borrow().clone(),
                 pending,
             },
         );
         true
+    }
+
+    /// Note the tabs that say their app is not here, as the handle last said
+    /// ([`DesktopHandle::ended_tabs`]): the windows the person left, which the layout's write keeps
+    /// as the app that opens them again.
+    pub(crate) fn note_cards(&self, cards: impl IntoIterator<Item = u64>) {
+        *self.cards.borrow_mut() = cards.into_iter().collect();
     }
 
     /// The item each window of `workspace` was opened on, by tab.

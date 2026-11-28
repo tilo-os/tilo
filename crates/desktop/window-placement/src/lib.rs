@@ -218,6 +218,17 @@ type Crashed = Rc<RefCell<BTreeMap<TabId, String>>>;
 /// memory.
 type Answers = Rc<RefCell<BTreeMap<String, Outcome>>>;
 
+/// What the card in `tab` says, as the desktop keeps it beside the window it stands in.
+fn ended(answer: &Outcome) -> tilo_session_core::desktop::state::EndedAnswer {
+    tilo_session_core::desktop::state::EndedAnswer {
+        what: answer.what.clone(),
+        why: answer.why.clone(),
+        said: answer.said.clone(),
+        retry: answer.retry.clone(),
+        details: answer.technical_details.clone(),
+    }
+}
+
 /// The name each app is known by, for the notice it leaves when it stops.
 /// A launch id carries the app id alone, so its tab is named from here.
 type Titles = Rc<RefCell<BTreeMap<String, String>>>;
@@ -458,6 +469,12 @@ impl TileSource for Windows {
             ask_again(&self.held, &self.launches, launch, tab.id);
             return;
         }
+        // The card a launch that never made a window left: no close holds the tab, and its button
+        // asks for the app the card names in the same place.
+        if let Some(asked) = self.crashed.borrow().get(&tab.id).cloned() {
+            ask_again(&self.held, &self.launches, &asked, tab.id);
+            return;
+        }
         let TileContent::LocalApp { app_id, note, .. } = &tab.tile else {
             return;
         };
@@ -657,7 +674,25 @@ impl DesktopPolicy {
     /// last, search, the activity the windows are served and the notifications, and the tree saved
     /// and shared. Whether anything the shell shows changed.
     pub fn step(&mut self) -> bool {
-        self.pass.step(&mut self.tiles)
+        let stepped = self.pass.step(&mut self.tiles);
+        // A notice's tab is a window while it says what became of its app: the shell draws the
+        // card where the window would have been, and the person acts on it there. Its answer
+        // reaches the desktop after the pass made the tab, where the desktop's own state is not
+        // borrowed.
+        let notices: Vec<(TabId, Outcome)> = {
+            let crashed = self.tiles.crashed.borrow();
+            let answers = self.tiles.answers.borrow();
+            crashed
+                .iter()
+                .filter(|(tab, _)| self.handle.ended_answer(**tab).is_none())
+                .filter_map(|(tab, app)| answers.get(app).cloned().map(|answer| (*tab, answer)))
+                .collect()
+        };
+        let mut answered = false;
+        for (tab, answer) in notices {
+            answered |= self.handle.set_ended_answer(tab, Some(ended(&answer)));
+        }
+        stepped || answered
     }
 
     /// The desktop's pass, to give it the history, the activity requests and the notifications it
@@ -758,8 +793,7 @@ impl DesktopPolicy {
     ) -> Result<(), String> {
         let answer = closed.outcome(title, tilo_session_core::desktop::i18n::t("answer-reopen"));
         if let Some(tab) = tab {
-            if self.answer_where_it_was(tab, asked, title) {
-                self.failed_at(tab, asked, answer);
+            if self.card_where_it_was(tab, asked, title, answer.clone()) {
                 return Ok(());
             }
             if self.handle.read(|tree| {
@@ -787,13 +821,25 @@ impl DesktopPolicy {
         if !placed {
             return false;
         }
-        // The tile a notice's own tab opens with (`Windows::place`).
+        // The tile a notice's own tab opens with (`Windows::place`), named by the app the window
+        // announced where it announced one: the tab is that app's window, and the next start opens
+        // it by the name the app is known by, not by the launch that was asked.
+        let app =
+            match tabs_mut(&mut tree)
+                .find(|held| held.id == tab)
+                .map(|held| &held.tile)
+            {
+                Some(
+                    TileContent::Foreign { app_id, .. } | TileContent::LocalApp { app_id, .. },
+                ) if !app_id.trim().is_empty() => app_id.clone(),
+                _ => asked.to_owned(),
+            };
         let place = Tab {
             id: tab,
             title: title.to_owned(),
             tile: TileContent::AppPlaceholder {
-                kind: tilo_desktop_model::AppKind::Other(asked.to_owned()),
-                label: asked.to_owned(),
+                kind: tilo_desktop_model::AppKind::Other(app.clone()),
+                label: app,
             },
             app_title: None,
             view: String::new(),
@@ -806,6 +852,25 @@ impl DesktopPolicy {
             .borrow_mut()
             .insert(asked.to_owned(), title.to_owned());
         self.handle.replace_tree(tree);
+        true
+    }
+
+    /// Say `answer` in `tab`, the place the window of the app `asked` names had: the tab keeps the
+    /// window's place as the card that says so, and the window's close stays remembered, so the
+    /// button the card offers asks for the app again there ([`Self::stopped`]). The app need not
+    /// have ended: one still running from before an update holds the window's work where it stands.
+    /// False when no window of this device stood in `tab`.
+    pub fn card_where_it_was(
+        &mut self,
+        tab: TabId,
+        asked: &str,
+        title: &str,
+        answer: Outcome,
+    ) -> bool {
+        if !self.answer_where_it_was(tab, asked, title) {
+            return false;
+        }
+        self.failed_at(tab, asked, answer);
         true
     }
 
@@ -842,16 +907,7 @@ impl DesktopPolicy {
     /// the shell yet: the answer waits in the maps the tile source reads.
     pub fn failed_at(&mut self, tab: TabId, asked: &str, answer: Outcome) {
         self.crashed.borrow_mut().insert(tab, asked.to_owned());
-        self.handle.set_ended_answer(
-            tab,
-            Some(tilo_session_core::desktop::state::EndedAnswer {
-                what: answer.what.clone(),
-                why: answer.why.clone(),
-                said: answer.said.clone(),
-                retry: answer.retry.clone(),
-                details: answer.technical_details.clone(),
-            }),
-        );
+        self.handle.set_ended_answer(tab, Some(ended(&answer)));
         self.answers.borrow_mut().insert(asked.to_owned(), answer);
         // The tab's content stood from the frame it was opened in: the
         // answer takes its place on the shell's next pass.

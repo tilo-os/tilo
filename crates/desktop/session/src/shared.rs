@@ -114,6 +114,10 @@ impl Shared {
             self.desktops.step(room, &self.person, redo, &self.handle);
         }
         let mut tree = self.handle.read(Clone::clone);
+        // A tab that says its app is not here is the window the person left: the layout's write
+        // keeps it as the app, and the next start opens the app in it rather than close a place
+        // nothing fills.
+        self.desktops.note_cards(self.handle.ended_tabs());
         self.desktops.capture(&tree);
         // What the workspace did not take of this session is on the shell the person used: they hear it
         // once, naming the workspace and why.

@@ -210,6 +210,19 @@ fn apply(
         }
         Admitted::ReopenWindow(tab) => {
             let reopened = shared.tree.reopen_closed_window(tab);
+            if reopened.is_none() {
+                // The tab stands as the card that says its app is not here, with no close under
+                // it: its card asks the app for the window again in that same place.
+                let standing = shared.tree.workspaces.iter().find_map(|workspace| {
+                    workspace
+                        .tabs()
+                        .find(|found| found.id == tab)
+                        .map(|tab| (workspace, tab))
+                });
+                if let Some((workspace, tab)) = standing {
+                    tiles.reopened(workspace, tab, None);
+                }
+            }
             put_back(shared, tiles, ops, reopened)
         }
         Admitted::Strip(workspace, strip) => switched(shared, workspace, Some(strip)),

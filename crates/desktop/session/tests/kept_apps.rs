@@ -1047,7 +1047,12 @@ fn an_app_from_before_an_update_says_so_in_its_tab_and_restart_opens_it_again() 
     assert_eq!(rig.starts(), [pid], "no second copy started beside it");
     assert!(running(pid, at), "it goes on with what it holds");
 
-    crate::common::press_control(&mut second.session, "Restart");
+    // Its Restart, as an assistive technology presses it by name: the press the person's pointer
+    // makes of the card goes to the window it stands in, which is the shell's to hit-test.
+    second
+        .session
+        .press_action("Restart", ui::window_targets::TargetAction::Activate)
+        .expect("the card takes the press");
     until(
         &mut second.session,
         "the old app ended and a new one started",
@@ -1109,8 +1114,13 @@ fn an_app_from_before_an_update_that_left_no_tab_says_so_in_a_tab_of_its_own() {
     fs::write(dir.join("launch"), launch.encode()).expect("the launch rewritten");
 
     let mut second = rig.desktop(true);
+    // A tab of its own says so, and it is a window of the shell's while it does: the card stands
+    // where a window of that app would, with Restart on it.
     crate::common::wait_for(&mut second.session, "a tab of its own says so", |session| {
-        crate::common::control_on_screen(session, "Restart").map(|_| ())
+        crate::common::windows(session)
+            .into_iter()
+            .find(|window| window.title == "Elsewhere" && window.ended.is_some())
+            .map(|_| ())
     });
     assert!(
         second
@@ -1119,6 +1129,15 @@ fn an_app_from_before_an_update_that_left_no_tab_says_so_in_a_tab_of_its_own() {
             .iter()
             .any(|label| label == "Elsewhere is still running from before the update"),
         "{:?}",
+        second.session.accessible_labels()
+    );
+    assert!(
+        second
+            .session
+            .accessible_labels()
+            .iter()
+            .any(|label| label == "Restart"),
+        "the card offers Restart: {:?}",
         second.session.accessible_labels()
     );
     assert!(running(pid, at), "it goes on with what it holds");

@@ -84,6 +84,10 @@ pub(crate) struct Restore {
     /// saved tabs say the app stopped working ([`Self::show_stopped`]).
     #[cfg(target_os = "linux")]
     stopped: Vec<tilo_app_launch::kept::KeptLaunch>,
+    /// The saved tabs of each launch in `stopped`, by its place there: the windows it no longer
+    /// holds, which no app is started for ([`Self::hold_stopped_tabs`]).
+    #[cfg(target_os = "linux")]
+    stopped_tabs: Vec<Vec<TabId>>,
     /// The revision of the layout the kept windows' keepers were last told their tabs at.
     placed_at: Option<u64>,
     /// The apps still running from before an update that this desktop cannot show, while they
@@ -308,7 +312,6 @@ impl Restore {
             let waited = self
                 .kept_since
                 .is_some_and(|since| since.elapsed() >= KEPT_WAIT);
-            let shown = self.outdated.len();
             for keeper in self.claim_kept(desktop) {
                 apps.attach_kept(keeper);
             }
@@ -316,9 +319,10 @@ impl Restore {
             // for the workspaces' layouts, where those tabs are, rather than open a tab of its
             // own before the shell holds them.
             if self.read || waited {
-                self.claim_outdated(apps, shown);
+                self.claim_outdated(apps);
             }
             // Before the tabs are asked for: no app is started for one that says its app stopped.
+            self.hold_stopped_tabs();
             self.show_stopped(desktop);
         }
         // A saved tab's Windows program the service would not open: the tab says so.
@@ -626,14 +630,8 @@ impl Restore {
         if self.stopped.is_empty() || !(self.read || waited) {
             return;
         }
-        for launch in std::mem::take(&mut self.stopped) {
-            let tabs: Vec<TabId> = self
-                .waiting
-                .iter()
-                .filter(|saved| launch_by(&launch, saved))
-                .map(|saved| saved.tab)
-                .collect();
-            self.waiting.retain(|saved| !tabs.contains(&saved.tab));
+        for (index, launch) in std::mem::take(&mut self.stopped).into_iter().enumerate() {
+            let tabs = self.stopped_tabs.get(index).cloned().unwrap_or_default();
             let asked = launch.asked.clone().unwrap_or_else(|| launch.app.clone());
             let title = launch.title.clone();
             let mut tabs = tabs.into_iter();
@@ -647,21 +645,37 @@ impl Restore {
                 tracing::warn!(%error, app = %asked, "no notice for an app that stopped");
             }
         }
+        self.stopped_tabs.clear();
+    }
+
+    /// Take the saved tabs of each app that stopped while no desktop was there out of the windows
+    /// this session asks for: an app that stopped is not started again for a window it no longer
+    /// holds, and each of its tabs says what became of it there once the layout is laid out
+    /// ([`Self::show_stopped`]). Only the look that has the window takes its tab; until then the
+    /// tabs wait here, and none of them is asked for.
+    #[cfg(target_os = "linux")]
+    fn hold_stopped_tabs(&mut self) {
+        let held = std::mem::take(&mut self.stopped_tabs);
+        for (index, launch) in self.stopped.iter().enumerate() {
+            let mut tabs = held.get(index).cloned().unwrap_or_default();
+            for saved in &self.waiting {
+                if launch_by(launch, saved) && !tabs.contains(&saved.tab) {
+                    tabs.push(saved.tab);
+                }
+            }
+            self.waiting.retain(|saved| !tabs.contains(&saved.tab));
+            self.stopped_tabs.push(tabs);
+        }
     }
 
     /// The saved tabs of each app still open from before an update, which this desktop cannot
     /// show: each says so, with Restart, and the app is not started a second time beside the one
-    /// that still holds the person's unsaved work. The ones from `shown` on were just taken back,
-    /// and one of those that left no saved tab gets a tab of its own.
+    /// that still holds the person's unsaved work. One that left no saved tab gets a tab of its
+    /// own, once: what was shown is the desktop's to remember ([`Apps::show_outdated`]).
     #[cfg(target_os = "linux")]
-    fn claim_outdated(&mut self, apps: &Apps, shown: usize) {
-        let mut fresh = self.outdated.split_off(shown.min(self.outdated.len()));
+    fn claim_outdated(&mut self, apps: &Apps) {
         self.outdated.retain(|kept| apps.is_launched(kept.id));
-        fresh.retain(|kept| apps.is_launched(kept.id));
-        let fresh_from = self.outdated.len();
-        self.outdated.append(&mut fresh);
-        for (index, kept) in self.outdated.iter().enumerate() {
-            let first = index >= fresh_from;
+        for kept in &self.outdated {
             let ids: Vec<&str> = std::iter::once(kept.launch.app.as_str())
                 .chain(kept.launch.window_identities.iter().map(String::as_str))
                 .collect();
@@ -675,13 +689,11 @@ impl Restore {
                         })
                     });
             self.waiting = rest;
-            if first || !theirs.is_empty() {
-                let tabs: Vec<(u64, String)> = theirs
-                    .into_iter()
-                    .map(|saved| (saved.tab, saved.name))
-                    .collect();
-                apps.show_outdated(kept, &tabs);
-            }
+            let tabs: Vec<(u64, String)> = theirs
+                .into_iter()
+                .map(|saved| (saved.tab, saved.name))
+                .collect();
+            apps.show_outdated(kept, &tabs);
         }
     }
 
