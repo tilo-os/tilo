@@ -158,6 +158,7 @@ mod tasks;
 mod tasks_devices;
 mod tasks_features;
 mod tasks_menu;
+mod tasks_number;
 mod tasks_places;
 mod tasks_settles;
 mod tasks_time;

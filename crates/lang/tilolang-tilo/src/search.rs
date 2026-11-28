@@ -37,7 +37,7 @@ use tilo_resource::search_index::{
 };
 use tilolang_runtime::meta::{FieldKind, Meta};
 use tilolang_runtime::rich::RichValue;
-use tilolang_runtime::store::{FieldSpec, FieldValue, Store as _};
+use tilolang_runtime::store::{FieldSpec, FieldValue, Scalar, Store as _};
 use tilolang_runtime::value::ResourceRef;
 
 use crate::host::Host;
@@ -58,6 +58,9 @@ pub struct Hit {
     pub title: String,
     /// Every text it holds, in field order.
     pub texts: Vec<String>,
+    /// The number its type names it by (`search { identity number }`), which search keeps as `#12`
+    /// and `12`: none for a type that says no `identity`.
+    pub identity: Option<i64>,
     /// The resources its rich text refers to, in the one form (`tilo_reference::embed`): the
     /// system's index finds it by what they are called now, and keeps its backlinks.
     pub references: Vec<String>,
@@ -377,6 +380,16 @@ fn texted(store: &ResourceStore, meta: &Meta, ty: &str) -> Vec<FieldSpec> {
             });
         }
     }
+    // The number the type names its resources by (`identity number`) rides with them: the index
+    // keeps it as the address a person types, so `#12` finds the task.
+    if let Some(identity) = &declared.search.identity
+        && let Some(kind) = entry.fields.get(identity).map(|field| field.kind)
+    {
+        fields.push(FieldSpec {
+            id: identity.clone(),
+            kind,
+        });
+    }
     fields
 }
 
@@ -409,13 +422,25 @@ fn hit_of(
         .find(|declared| declared.id == at.ty)?
         .name
         .clone();
+    let identity_field = meta
+        .types
+        .iter()
+        .find(|declared| declared.id == at.ty)
+        .and_then(|declared| declared.search.identity.as_deref());
     let id = at.id_string();
     // A page shows the resource's text: each of its paragraphs is a place in it to open at.
     let paged = meta.default_view(&at.ty).is_some();
     let mut texts = Vec::new();
+    let mut identity = None;
     let mut references: Vec<String> = Vec::new();
     let mut blocks = Vec::new();
     for (field, value) in values {
+        // The number the type names it by: the address a person types, kept as it is.
+        if identity_field == Some(field.as_str())
+            && let FieldValue::Scalar(Scalar::Int(number)) = value
+        {
+            identity = Some(number);
+        }
         let value = match value {
             FieldValue::Text(text) => {
                 // A page shows the source's lines: each of them is a place in it to open at.
@@ -460,6 +485,7 @@ fn hit_of(
         type_name,
         title: texts.first()?.clone(),
         texts,
+        identity,
         references,
         facts: Facts::of(holdings.store, at),
         blocks,
@@ -751,13 +777,25 @@ pub fn entries_in(host: &Host, document: &str) -> Vec<IndexEntry> {
 /// resource, which every window showing anything of the document publishes: the caller names
 /// the resource as the item to show, which no window may show yet.
 fn entry(hit: &Hit) -> Option<IndexEntry> {
+    // The number the resource is named by, as a person types it (`#12`) and bare (`12`): both an
+    // identity the index ranks above every text of a resource, so the one it names comes first.
     let mut fields: Vec<(String, IndexWeight)> = hit
-        .texts
+        .identity
         .iter()
-        .skip(1)
-        .filter(|text| text.chars().count() <= SHORT_TEXT)
-        .map(|text| (text.clone(), IndexWeight::Metadata))
+        .flat_map(|number| {
+            [
+                (format!("#{number}"), IndexWeight::Identity),
+                (number.to_string(), IndexWeight::Identity),
+            ]
+        })
         .collect();
+    fields.extend(
+        hit.texts
+            .iter()
+            .skip(1)
+            .filter(|text| text.chars().count() <= SHORT_TEXT)
+            .map(|text| (text.clone(), IndexWeight::Metadata)),
+    );
     fields.extend(
         hit.texts
             .iter()

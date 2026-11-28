@@ -638,8 +638,9 @@ search.md, "What a type declares" and "Types, references and paths".
 - **`search` blocks.** `search` is contextual: a type body's line `search {` starts the block,
   one per type (a second is a syntax error). Lines: `filter field ["Label"]`,
   `filter "Label" = expr`, `sort field newest|oldest|a_z|z_a`, `hide field`, `kind
-  conversation|message|person|agent`, `people field` (an Actor, an option or a set of them). A
-  block of only `kind` and `people` keeps the default filters. A filter's key is
+  conversation|message|person|agent`, `people field` (an Actor, an option or a set of them),
+  `identity field` (the Int a resource is named by, `#12`). A block of only `kind`, `people`
+  and `identity` keeps the default filters. A filter's key is
   the field's name, a named filter's its label in snake case (`Has attachment` is
   `has_attachment`); `is`, `sort`, `in` and `text` are search's own words and no key. A
   field's label is its name in sentence case; its doc comment's first line is its description.

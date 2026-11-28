@@ -277,6 +277,10 @@ pub enum SearchEntryKind {
     Kind { kind: Ident },
     /// `people person`: a field naming who the resource is with, an `Actor` or a set of them.
     People { field: Ident },
+    /// `identity number`: the `Int` field a person names a resource by, as `#12`. Search indexes
+    /// both `#12` and `12`, so typing either finds the resource and opens it (search.md, "A number
+    /// a resource is named by").
+    Identity { field: Ident },
 }
 
 /// `enum Name { a, b(x: T, y: U), c }`: values are written `.a`, `.b(x: 1, y: 2)`.

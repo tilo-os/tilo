@@ -292,7 +292,7 @@ type Today {
             };
             assert!(
                 err.contains(
-                    "a search block holds `filter`, `sort`, `hide`, `conceal`, `kind` and `people` lines"
+                    "a search block holds `filter`, `sort`, `hide`, `conceal`, `kind`, `people` and `identity` lines"
                 ),
                 "`{line}` is not a search line: {err}"
             );
@@ -1009,3 +1009,61 @@ type Board {
     tasks: Collection<Task>
 }
 ";
+
+/// A type names its resources by a number: `#12` and `12` find it in the system's search.
+const NUMBERED: &str = r"/// A task of the workspace.
+type Task {
+    /// Its number in the workspace.
+    number: Int
+    title: Text
+
+    search {
+        identity number
+    }
+}
+";
+
+tilo_test_env::scenario! {
+    /// The number a type names its resources by (search.md, "A number a resource is named by").
+    fn a_type_names_its_resources_by_a_number;
+
+    phase the_identity_field_is_an_int_kept_by_its_id;
+    {
+        let meta = compile_body(NUMBERED).meta;
+        let task = type_meta(&meta, "Task");
+        assert_eq!(
+            task.search.identity.as_deref(),
+            Some(field_id(task, "number").as_str()),
+            "the identity is the field's id"
+        );
+        // A block that only says how a resource is named keeps the default filters and order.
+        assert!(!task.search.declared, "no filter is declared here");
+        let keys: Vec<&str> = task.search.filters.iter().map(|f| f.key.as_str()).collect();
+        assert_eq!(keys, ["number"], "the number stays a filter of the default set");
+        assert!(task.search.sort.is_none(), "a Task has no time to sort by");
+    }
+
+    phase a_number_a_resource_is_named_by_is_an_int;
+    {
+        let got = first_message(
+            "type Note {\n    title: Text\n\n    search {\n        identity title\n    }\n}",
+        );
+        assert!(got.contains("E104"), "{got}");
+        assert!(got.contains("not an Int"), "{got}");
+        assert!(got.contains("`identity title`"), "{got}");
+    }
+
+    phase a_type_says_its_identity_once_and_never_conceals_it;
+    {
+        let twice = first_message(
+            "type Task {\n    number: Int\n    title: Text\n\n    search {\n        identity number\n        identity number\n    }\n}",
+        );
+        assert!(twice.contains("E104"), "{twice}");
+        assert!(twice.contains("says its `identity` once"), "{twice}");
+        let concealed = first_message(
+            "type Task {\n    number: Int\n    title: Text\n\n    search {\n        identity number\n        conceal number\n    }\n}",
+        );
+        assert!(concealed.contains("E104"), "{concealed}");
+        assert!(concealed.contains("concealed"), "{concealed}");
+    }
+}

@@ -298,12 +298,14 @@ pub fn resolve(
     let Some(block) = block else {
         return defaults(info, env);
     };
-    // A block that says only what the resource is and who it is with keeps the default filters
-    // and order: those lines are about the resource, not about how it is filtered.
+    // A block that says only what the resource is, who it is with and how it is named keeps the
+    // default filters and order: those lines are about the resource, not about how it is filtered.
     let filters_declared = block.entries.iter().any(|entry| {
         !matches!(
             entry.kind,
-            SearchEntryKind::Kind { .. } | SearchEntryKind::People { .. }
+            SearchEntryKind::Kind { .. }
+                | SearchEntryKind::People { .. }
+                | SearchEntryKind::Identity { .. }
         )
     });
     let mut ctx = Ctx { info, env, diags };
@@ -362,6 +364,41 @@ pub fn resolve(
                 }
                 out.people.push(id);
             }
+            SearchEntryKind::Identity { field } => {
+                let Some(f) = ctx.field(field, "`identity`") else {
+                    continue;
+                };
+                let (id, ty) = (f.id.clone(), f.ty.clone());
+                if ty != Ty::Int {
+                    let msg = format!(
+                        "`identity {}`: the field is {}, not an Int; a resource is named by an Int, as `#12`",
+                        field.name,
+                        ty.display(&env.app)
+                    );
+                    ctx.err("E104", field.span, msg);
+                    continue;
+                }
+                let concealed = block.entries.iter().any(|entry| {
+                    matches!(
+                        &entry.kind,
+                        SearchEntryKind::Conceal { field: kept } if kept.name == field.name
+                    )
+                });
+                if concealed {
+                    let msg = format!(
+                        "`identity {}`: search never holds a concealed field, and a number a person types must be found",
+                        field.name
+                    );
+                    ctx.err("E104", field.span, msg);
+                    continue;
+                }
+                if out.identity.is_some() {
+                    let msg = format!("{} says its `identity` once", about(info));
+                    ctx.err("E104", entry.span, msg);
+                    continue;
+                }
+                out.identity = Some(id);
+            }
             _ => {}
         }
     }
@@ -404,7 +441,9 @@ pub fn resolve(
                 }
                 out.sort = ctx.sort(field, order);
             }
-            SearchEntryKind::Kind { .. } | SearchEntryKind::People { .. } => {}
+            SearchEntryKind::Kind { .. }
+            | SearchEntryKind::People { .. }
+            | SearchEntryKind::Identity { .. } => {}
             SearchEntryKind::Hide { field } => {
                 if let Some(f) = ctx.field(field, "`hide`") {
                     let id = f.id.clone();

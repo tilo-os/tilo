@@ -1738,7 +1738,8 @@ impl<'a> Parser<'a> {
 
     fn search_entry(&mut self) -> PResult<SearchEntry> {
         let start = self.span();
-        let word = self.ident("`filter`, `sort`, `hide`, `kind` or `people`")?;
+        let word =
+            self.ident("`filter`, `sort`, `hide`, `conceal`, `kind`, `people` or `identity`")?;
         let kind = match word.name.as_str() {
             "filter" => {
                 if matches!(self.peek(), Tok::Str(_)) {
@@ -1784,11 +1785,14 @@ impl<'a> Parser<'a> {
             "people" => SearchEntryKind::People {
                 field: self.ident("the field naming who the resource is with")?,
             },
+            "identity" => SearchEntryKind::Identity {
+                field: self.ident("the Int field a resource is named by")?,
+            },
             other => {
                 return self.fail(
                     word.span,
                     format!(
-                        "a search block holds `filter`, `sort`, `hide`, `conceal`, `kind` and `people` lines; `{other}` is none of them"
+                        "a search block holds `filter`, `sort`, `hide`, `conceal`, `kind`, `people` and `identity` lines; `{other}` is none of them"
                     ),
                 );
             }

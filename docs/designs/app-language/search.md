@@ -71,7 +71,13 @@ type Message {
 - `people field` names who the resource is with: an `Actor` field, an option of one or a set of
   them, one line each. An entry's people are who made the resource (its first version's author),
   then the people these fields name, each once; its time is when it was made.
-- A block of only `kind` and `people` lines keeps the default filters and order.
+- `identity number` names the `Int` field a person addresses a resource by. The system's index
+  keeps the number as `#12` and as `12`, both above the resource's words, so typing either in the
+  palette or to an agent's `find` finds the resource, and choosing the result opens it. A type
+  says it once, and the field is an `Int` it does not conceal: a number a person types must be
+  found. The number is the workspace's: a workspace the person may not read answers none of its
+  numbers.
+- A block of only `kind`, `people` and `identity` lines keeps the default filters and order.
 
 ```
 type Direct {

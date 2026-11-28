@@ -1365,6 +1365,7 @@ impl Printer<'_> {
                 SearchEntryKind::Conceal { field } => format!("conceal {}", field.name),
                 SearchEntryKind::Kind { kind } => format!("kind {}", kind.name),
                 SearchEntryKind::People { field } => format!("people {}", field.name),
+                SearchEntryKind::Identity { field } => format!("identity {}", field.name),
             };
             self.line(&text);
         }

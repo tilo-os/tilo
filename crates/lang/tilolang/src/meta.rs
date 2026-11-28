@@ -472,6 +472,10 @@ pub struct SearchMeta {
     /// The fields naming who a resource is with (`people person`), by id, in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub people: Vec<String>,
+    /// The field a person names a resource by (`identity number`), by id: an `Int` the system's
+    /// index keeps as `#12` and `12`, so either finds the resource and opens it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<String>,
 }
 
 /// What a resource is to the system's search: it draws a row of the kind as one, and a message
@@ -512,6 +516,7 @@ impl SearchMeta {
             && !self.declared
             && self.kind.is_none()
             && self.people.is_empty()
+            && self.identity.is_none()
     }
 
     pub fn filter(&self, key: &str) -> Option<&FilterMeta> {

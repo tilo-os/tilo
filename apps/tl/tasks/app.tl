@@ -295,6 +295,8 @@ type Task {
         hide waiting_on
         hide contact
         hide related
+        // A task is named by its number: `#12` and `12` in the system's search find it.
+        identity number
     }
 }
 
