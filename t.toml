@@ -3700,11 +3700,12 @@ arch = ["x86_64", "aarch64"]
 
 # A release's signed packages, published to the registry at apps.tilo.so from main
 # (`tools/apps/publish-apps.sh`): every tapp with its compressed twin and the store's artwork go up
-# as immutable generic packages, then the Tilo and tilolang runtimes, the apps and the language
-# packs are submitted as entries the publisher identity signs, which the registry verifies again
-# before its signed catalogue names them. It refuses a registry at another package format, and a
-# release signed by keys devices do not already trust. `--input apps="tl-chat"` publishes only the
-# apps named, with the runtimes; a second run of the same commit uploads and submits nothing new.
+# as immutable generic packages, then the Tilo, tilolang and Browser engine runtimes, the apps and
+# the language packs are submitted as entries the publisher identity signs, which the registry
+# verifies again before its signed catalogue names them. It refuses a registry at another package
+# format, and a release signed by keys devices do not already trust. `--input apps="tl-chat"`
+# publishes only the apps named, with the runtimes; a second run of the same commit uploads and
+# submits nothing new.
 [[check]]
 name = "publish-apps-{arch}"
 # Publishes with a stored token, to hosts no fixed list names.
@@ -3712,9 +3713,10 @@ egress = { to = ["0.0.0.0/0", "::/0"] }
 # t gives the package token only to jobs on a disk-100g node, so both architectures publish from
 # x86_64 with the x86_64 release's package CLI.
 run = "bash tools/apps/publish-apps.sh /target/app-release/{arch} /target/app-release/x86_64/tilo-app-package"
-needs = ["sign-apps-{arch}", "app-release-smoke-{arch}"]
+needs = ["sign-apps-{arch}", "app-release-smoke-{arch}", "sign-engine-x86_64", "sign-engine-aarch64"]
 requires = ["arch=x86_64", "disk-100g"]
 secrets = ["TILO_PACKAGES_TOKEN", "TAPP_PUBLISHER_IDENTITY"]
+env = { TILO_ENGINE_PACKAGES = "/target/engine-release/x86_64/signed/package /target/engine-release/aarch64/signed/package" }
 cache = false
 on = ["dispatch"]
 timeout_secs = 3600

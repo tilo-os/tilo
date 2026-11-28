@@ -177,7 +177,7 @@ runtime_metadata "Tilolang runtime" "Runtime for tilolang apps" \
   "The program every tilolang app runs on, with the standard library it was built against. The Store installs it together with the apps that need it." \
   "$work/tilolang.json"
 publish_runtime() {
-  VERSION=$version PACKAGE_API=$package_api REGISTRY_URL=$registry OWNER=$owner \
+  VERSION=${RUNTIME_VERSION:-$version} PACKAGE_API=$package_api REGISTRY_URL=$registry OWNER=$owner \
     REGISTRY_CLI=$cli REGISTRY_IDENTITY=$identity \
     tools/apps/publish-runtime-package.sh "$@"
 }
@@ -187,6 +187,20 @@ publish_runtime "$release/runtime-package" "$arch" so.tilo.runtime tilo-app-runt
 if [[ -d $release/runtime-package/tilolang ]]; then
   publish_runtime "$release/runtime-package/tilolang" "$arch" so.tilo.runtime.tilolang \
     tilo-app-runtime-tilolang "$work/tilolang.json" || failed+=(so.tilo.runtime.tilolang)
+fi
+# The Browser's engine is a runtime no app collection carries: sign-engine seals it, and a device
+# whose image lacks it installs the Browser only when a registry offers this build. It is offered
+# with the other runtimes, before the apps, so its entries are there when theirs arrive.
+if [[ $arch == x86_64 && -n ${TILO_ENGINE_PACKAGES:-} ]]; then
+  runtime_metadata "Browser engine" "Web engine for the Browser" \
+    "The Chromium engine the Browser renders web pages with. The Store installs it together with the Browser." \
+    "$work/engine.json"
+  read -r -a engines <<<"$TILO_ENGINE_PACKAGES"
+  for dir in "${engines[@]}"; do
+    RUNTIME_VERSION=$(jq -er '.package_version' "$dir/provenance.json") publish_runtime "$dir" \
+      "$(jq -er '.architecture' "$dir/provenance.json")" so.tilo.runtime.chromium \
+      tilo-app-runtime-chromium "$work/engine.json" || failed+=(so.tilo.runtime.chromium)
+  done
 fi
 
 # One package id is one entry. A request still waiting for review is replaced by the next, so a

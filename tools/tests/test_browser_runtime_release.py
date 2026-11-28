@@ -7,6 +7,7 @@ from unittest.mock import patch
 from pathlib import Path
 import subprocess
 import tempfile
+import tomllib
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -52,6 +53,20 @@ class BrowserRuntimeRelease(unittest.TestCase):
             app.write_text(app.read_text().replace(version, 'wrong-chromium'))
             with self.assertRaisesRegex(ValueError, 'Browser engine runtime differs'):
                 release.runtime_version(root)
+
+    def test_the_release_offers_the_engine_the_apps_name(self):
+        """No app collection carries the engine, so a device whose image lacks it installs the
+        Browser only when the release path offers the build its manifest names."""
+        app = (ROOT / 'tools/apps/publish-apps.sh').read_text()
+        self.assertIn('so.tilo.runtime.chromium', app, 'the release path offers the engine')
+        self.assertIn('TILO_ENGINE_PACKAGES', app, 'from the packages sign-engine sealed')
+        with (ROOT / 't.toml').open('rb') as source:
+            checks = tomllib.load(source)['check']
+        publishing = next(c for c in checks if c['name'] == 'publish-apps-{arch}')
+        self.assertTrue(any('sign-engine' in need for need in publishing['needs']),
+                        'the app publication reads what sign-engine sealed')
+        self.assertIn('TILO_ENGINE_PACKAGES', publishing.get('env', {}),
+                      'the app publication is given the sealed engine packages')
 
     def test_native_payload_rejects_foreign_machine_missing_elf_and_escape(self):
         with tempfile.TemporaryDirectory() as directory:
