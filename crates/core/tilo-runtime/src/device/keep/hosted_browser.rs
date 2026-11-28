@@ -174,10 +174,6 @@ pub const OPERATING_ACTIONS: [&str; 9] = [
 /// it under. It names the page action whose run made the page hold it, where one did, as the
 /// call it continues (`on_behalf_of`).
 pub const LET_LEAVE: &str = "let_leave";
-/// How long a device certified for a session lasts: as long as the session
-/// may run.
-pub const DEVICE_LIFETIME: Duration =
-    Duration::from_nanos(tilo_user_identity::MAX_PLACED_DEVICE_LIFETIME_NS);
 /// How long an environment device whose last connection here ended has to
 /// come back before its environment stops. A session in a VM that dies is
 /// gone; one whose connection dropped is back in a moment, and its window
@@ -2385,12 +2381,6 @@ pub fn no_payment_method(free: u64) -> Refusal {
 #[must_use]
 pub fn unplaced() -> String {
     tilo_workspace_service::app_serving::UNPLACED.to_owned()
-}
-
-/// What a host that places no Linux apps refuses an open of one with.
-#[must_use]
-pub fn unplaced_linux_apps() -> String {
-    "Linux apps don't open here. Open the app on your own device instead.".to_owned()
 }
 
 /// What a host knows of one of a caller's invocations: how it follows an open that answers with

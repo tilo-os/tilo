@@ -2715,7 +2715,7 @@ impl Daemon {
             stage("keeping what this server keeps");
             Some(keeping.keep(super::keep::On {
                 dir: &identity.place.dir().join(OWN),
-                machine: &super::keep::machine(root),
+                machine: root,
                 joined,
                 identity: itself,
                 service: Arc::clone(workspaces.service()),

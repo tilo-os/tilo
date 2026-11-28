@@ -2,7 +2,7 @@
 //! the daemon writes its request where the helper reads it, waits for the
 //! answer a stale one is never taken for, and answers what it did.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use tilo_server_protocol::transport::{ServerAnswer, ServerOperation};
@@ -279,7 +279,7 @@ fn the_status_says_which_way_this_boots_volume_opened() {
 #[test]
 fn the_machine_files_are_where_the_image_reads_them() {
     use crate::device::keep::servers::{applied, policy};
-    let machine = crate::device::keep::machine(Path::new(tilo_machine::DAEMON_SYSTEM_PROFILE));
+    let machine = PathBuf::from(tilo_machine::DAEMON_SYSTEM_PROFILE);
     let requests = applied::Requests::at(machine.join(policy::POLICY_REQUEST_FILE));
     let device = requests.device;
     let written = std::collections::BTreeSet::from([
