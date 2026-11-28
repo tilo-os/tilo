@@ -59,8 +59,9 @@ fn runtime() -> &'static str {
 /// The publisher key file of a build, in the build's own directory.
 const PUBLISHER: &str = "publisher.json";
 
-/// The list a finished build ends with, in the build's own directory: a line for each app, its
-/// package id and its `.tapp`. A build that has it is whole.
+/// The list a finished build ends with, in the build's own directory: a line for each app, the
+/// directory of `apps/tl` it was built from, its package id and its `.tapp`. A build that has it
+/// is whole.
 const BUILT: &str = "apps";
 
 /// How long a build is kept once another takes its place: a build is made anew whenever the
@@ -76,11 +77,24 @@ fn publisher() -> SigningIdentity {
     tilolang_cli::identity_at(&built().dir.join(PUBLISHER)).expect("a publisher key")
 }
 
-/// One build of [`APPS`]: where it stands, and each app's package id with its signed `.tapp`, in
-/// the order they were built.
+/// One build of [`APPS`] and [`EXTRA`]: where it stands, and each app's package id with its
+/// signed `.tapp`, in the order they were built, with the directory each was built from.
 struct Built {
     dir: PathBuf,
     apps: Vec<(String, PathBuf)>,
+    from: Vec<String>,
+}
+
+impl Built {
+    /// The package ids of the apps built from `dirs`, directories of `apps/tl`.
+    fn ids_from(&self, dirs: &[&str]) -> Vec<&str> {
+        self.apps
+            .iter()
+            .zip(&self.from)
+            .filter(|(_, from)| dirs.contains(&from.as_str()))
+            .map(|((app, _), _)| app.as_str())
+            .collect()
+    }
 }
 
 /// [`APPS`] built from this tree into signed `.tapp`s, once for every test process of a run that
@@ -118,14 +132,22 @@ fn built() -> &'static Built {
         }
         let list = std::fs::read_to_string(dir.join(BUILT))
             .unwrap_or_else(|error| panic!("the build at {} is whole: {error}", dir.display()));
-        let apps = list
+        let (apps, from) = list
             .lines()
             .map(|line| {
-                let (app, tapp) = line.split_once('\t').expect("an app and its package");
-                (app.to_owned(), dir.join("tapps").join(tapp))
+                let mut parts = line.splitn(3, '\t');
+                let (Some(from), Some(app), Some(tapp)) =
+                    (parts.next(), parts.next(), parts.next())
+                else {
+                    panic!("a built app names its directory, its id and its package: {line}");
+                };
+                (
+                    (app.to_owned(), dir.join("tapps").join(tapp)),
+                    from.to_owned(),
+                )
             })
-            .collect();
-        Built { dir, apps }
+            .unzip();
+        Built { dir, apps, from }
     })
 }
 
@@ -215,7 +237,7 @@ fn build_into(dir: &Path) {
     let source = dir.join("tl");
     let out = dir.join("tapps");
     let publisher = tilolang_cli::identity_at(&dir.join(PUBLISHER)).expect("a publisher key");
-    let mut apps: Vec<(String, String)> = Vec::new();
+    let mut apps: Vec<(&str, String, String)> = Vec::new();
     for app in APPS.into_iter().chain(EXTRA) {
         // A build writes the package's ids lock and source catalogue, so the tree's own copy is
         // never built: a scratch copy of the package and of the packages it uses.
@@ -250,14 +272,14 @@ fn build_into(dir: &Path) {
             .into_iter()
             .last()
             .unwrap_or_else(|| panic!("{app} builds no package"));
-        if !apps.iter().any(|(held, _)| *held == named.app) {
+        if !apps.iter().any(|(_, built, _)| *built == named.app) {
             let tapp = named
                 .tapp
                 .file_name()
                 .expect("a built .tapp is named")
                 .to_string_lossy()
                 .into_owned();
-            apps.push((named.app, tapp));
+            apps.push((app, named.app, tapp));
         }
     }
     // What a build leaves beside its `.tapp`s is of no use once they are packed: the copied
@@ -272,7 +294,9 @@ fn build_into(dir: &Path) {
         std::fs::remove_dir_all(&staged).ok();
     }
     let mut list = String::new();
-    for (app, tapp) in &apps {
+    for (from, app, tapp) in &apps {
+        list.push_str(from);
+        list.push('\t');
         list.push_str(app);
         list.push('\t');
         list.push_str(tapp);
@@ -289,7 +313,7 @@ fn build_into(dir: &Path) {
 /// # Panics
 /// A package does not compile, the store refuses one, or a file cannot be written.
 pub fn install(store: &Path, _scratch: &Path) -> Vec<String> {
-    install_named(store, &APPS)
+    install_named(store, &built().ids_from(&APPS))
 }
 
 /// Install the apps built beside [`APPS`] (the directories [`EXTRA`] names), from the signed
@@ -299,13 +323,7 @@ pub fn install(store: &Path, _scratch: &Path) -> Vec<String> {
 /// # Panics
 /// A package does not compile, the store refuses one, or a file cannot be written.
 pub fn install_extra(store: &Path) -> Vec<String> {
-    let extra: Vec<&str> = built()
-        .apps
-        .iter()
-        .map(|(app, _)| app.as_str())
-        .filter(|app| !APPS.contains(app))
-        .collect();
-    install_named(store, &extra)
+    install_named(store, &built().ids_from(&EXTRA))
 }
 
 /// The signed package of `app`, by its package id, as this run built it ([`built`]): what a
