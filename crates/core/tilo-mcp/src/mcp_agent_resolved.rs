@@ -196,6 +196,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             path: known.path,
             descriptor: Box::new(known.descriptor),
             provider: known.provider,
+            app_id: known.app_id,
         })
     }
 

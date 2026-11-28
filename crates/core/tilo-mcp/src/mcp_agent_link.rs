@@ -249,16 +249,16 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         &self,
         asked: Option<&str>,
         value: &Value,
-        provider: &str,
+        (provider, app_id): (&str, &str),
         descriptor: &ActionDescriptor,
     ) -> Shown {
         if descriptor.contract.kind == tilo_actions::ActionKind::Read {
             return Shown::default();
         }
         if succeeded(value) {
-            return self.changed_shown(provider, value).await;
+            return self.changed_shown(provider, app_id, value).await;
         }
-        self.note_changing(asked, value, provider);
+        self.note_changing(asked, value, provider, app_id);
         Shown::default()
     }
 
@@ -268,19 +268,13 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// it. Once asked for, where the window stays (or that it was closed) is
     /// the person's: a session making many changes in one document opens it
     /// once.
-    pub(super) async fn changed_shown(&self, provider: &str, value: &Value) -> Shown {
+    pub(super) async fn changed_shown(&self, provider: &str, app_id: &str, value: &Value) -> Shown {
         // The link comes with the change itself, whatever provider made it.
         let link = link_of(value);
-        if !tilo_actions::remote::names_app(provider) {
-            return Shown {
-                link,
-                not_shown: None,
-            };
-        }
-        // A provider no app of this session names is a device's own (`tilo.seats`,
-        // `tilo.wifi`): its call changed no document, so it shows no window and none is said
-        // missing from the person's layout.
-        if self.surface_bytes(provider).await.is_none() {
+        // A provider that is not `app_id`'s own is a device's own (`tilo.seats`, `tilo.wifi`):
+        // its call changed no document, so it shows no window. An app this session knows no
+        // surface for is still an app, whose missing window the person reads.
+        if !tilo_actions::remote::names_its_own_app(provider, app_id) {
             return Shown {
                 link,
                 not_shown: None,
@@ -376,9 +370,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         Ok(())
     }
 
-    /// Keep the record `provider` that the change `invocation` is still
+    /// Keep the record `provider`, the app `app_id`'s own, that the change `invocation` is still
     /// making, so `tilo_status` answers its link once it finished.
-    fn note_changing(&self, invocation: Option<&str>, value: &Value, provider: &str) {
+    fn note_changing(&self, invocation: Option<&str>, value: &Value, provider: &str, app_id: &str) {
         /// Changes kept at most: a session that never asks after its changes
         /// does not grow this without end.
         const KEPT: usize = 256;
@@ -400,7 +394,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         if changing.len() >= KEPT {
             changing.clear();
         }
-        changing.insert(id.to_owned(), provider.to_owned());
+        changing.insert(id.to_owned(), (provider.to_owned(), app_id.to_owned()));
     }
 
     /// The link of the record the change `invocation` made, once `value`
@@ -413,13 +407,13 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         if !matches!(state, "succeeded" | "failed" | "cancelled") {
             return Shown::default();
         }
-        let Some(provider) = self.changing.lock_recover().remove(invocation) else {
+        let Some((provider, app_id)) = self.changing.lock_recover().remove(invocation) else {
             return Shown::default();
         };
         if state != "succeeded" {
             return Shown::default();
         }
-        self.changed_shown(&provider, value).await
+        self.changed_shown(&provider, &app_id, value).await
     }
 
     async fn mint_link(

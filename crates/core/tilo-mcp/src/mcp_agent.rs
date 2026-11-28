@@ -127,6 +127,9 @@ enum Done {
         descriptor: Box<ActionDescriptor>,
         /// Where it ran: the document whose link a change answers.
         provider: String,
+        /// The app that provider is: a record's own, whose change shows its window, and another
+        /// app's for a device's own provider, which makes none.
+        app_id: String,
     },
 }
 
@@ -1550,6 +1553,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 path,
                 descriptor,
                 provider,
+                app_id,
             } => {
                 let mut reply = outcome(&value);
                 if reply.failed && reply.text.contains("invalid_arguments") {
@@ -1557,7 +1561,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 }
                 self.invocations_moved();
                 let shown = self
-                    .invoked_link(asked.as_deref(), &value, &provider, &descriptor)
+                    .invoked_link(asked.as_deref(), &value, (&provider, &app_id), &descriptor)
                     .await;
                 link::tell(&mut reply, &shown);
                 if structured {

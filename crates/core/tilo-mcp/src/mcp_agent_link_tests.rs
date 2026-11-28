@@ -24,6 +24,8 @@ struct Tracker {
     invoked: Arc<Mutex<Vec<InvokeRequest>>>,
     /// How many directory queries were asked.
     queried: Arc<Mutex<usize>>,
+    /// Whether the app's window cannot come up yet, as one no layout holds refuses it.
+    no_window: Arc<Mutex<bool>>,
 }
 
 fn descriptor(resource: &str, action: &str, kind: OperationKind) -> ActionDescriptor {
@@ -144,6 +146,11 @@ impl ActionProvider for Tracker {
         _caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        if *self.no_window.lock().unwrap()
+            && request.target.address.action == tilo_actions::remote::APPLICATION_OPEN_ACTION
+        {
+            return Pending::ready(Err(ActionCallError::refused("no window yet")));
+        }
         let invocation = request.invocation;
         self.invoked.lock().unwrap().push(request);
         Pending::ready(Ok(InvocationReceipt {
@@ -214,6 +221,9 @@ async fn tool<H: ActionProvider + Send + Sync + 'static>(
 #[test]
 fn a_create_answers_the_link_minted_with_it_and_a_second_asks_only_the_invocation() {
     let host = Tracker::default();
+    // A window no layout holds yet: still the app's own change, and said so, whether or not
+    // this session knows the app's surface.
+    *host.no_window.lock().unwrap() = true;
     run(async {
         let server = agent(&host);
         let create = json!({"path": "test#create", "args": {"title": "First note"}});
@@ -221,8 +231,12 @@ fn a_create_answers_the_link_minted_with_it_and_a_second_asks_only_the_invocatio
         assert!(!failed, "{text}");
         assert!(text.contains(&format!("-> {ITEM}")), "{text}");
         assert!(
-            text.ends_with(&format!("link: {}", url(ITEM))),
+            text.contains(&format!("link: {}", url(ITEM))),
             "the link names the item it made: {text}"
+        );
+        assert!(
+            text.contains("not shown on the person's layout"),
+            "an app whose window is refused says so: {text}"
         );
         let share = tilo_actions::remote::SHARE_LINK_ACTION;
         assert!(

@@ -194,8 +194,9 @@ pub struct McpServer<H> {
     /// shows the person.
     acted: std::sync::Mutex<Option<ActedRecord>>,
     /// The record each of this session's changes still running is changing,
-    /// by invocation id: `tilo_status` answers its link once it finished.
-    changing: std::sync::Mutex<std::collections::HashMap<String, String>>,
+    /// by invocation id, and the app that record is its own provider of:
+    /// `tilo_status` answers its link once it finished.
+    changing: std::sync::Mutex<std::collections::HashMap<String, (String, String)>>,
     /// The action each path this session invoked named, by the path as written:
     /// the next call of it goes straight there. A path whose action has gone
     /// or moved is refused by the server, and resolved again then.

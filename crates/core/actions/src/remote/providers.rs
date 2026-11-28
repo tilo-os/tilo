@@ -59,6 +59,14 @@ pub fn names_app(provider: &str) -> bool {
     !provider.is_empty() && provider.parse::<u64>().is_err() && !provider.contains(':')
 }
 
+/// Whether `provider` is the app `app_id`'s own: a catalogue lists an app's provider under the
+/// app's id, and a device's own under the apps whose resources it serves (`tilo.wifi` under
+/// `so.tilo.settings`, `tilo.seats` under `seats`), so its changes make no window.
+#[must_use]
+pub fn names_its_own_app(provider: &str, app_id: &str) -> bool {
+    names_app(provider) && provider == app_id
+}
+
 /// The path of one of several records of a kind, as a call names it under the record's app: the
 /// kind's resource with the record's id nested under it (`tl.so.tilo.terminal.Session/<id>`).
 /// A record that is its kind's only one is the kind's resource itself.
