@@ -18,6 +18,8 @@ use serde_json::Value;
 use tilo_actions::remote::ReceiptStatus;
 use tilo_api::calls::{Calls, Reach};
 use tilo_device_identity::login::Place;
+use tilo_device_identity::persist;
+use tilo_local_identity as identity;
 use tilo_person_services::person_telling;
 use tilo_person_services::person_telling::ToldAction;
 use tilo_resource::Effect as _;
@@ -94,6 +96,7 @@ impl Device {
     /// The daemon did not start, or no runtime for its API calls could be made.
     pub fn start(profile: &Path) -> Result<Self> {
         let running = Running::start(profile).context("the device daemon did not start")?;
+        Self::hold_person();
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("tilo-device-api")
@@ -426,6 +429,7 @@ impl Device {
     /// wrong: what the person is told.
     pub fn log_in(&mut self, ticket: &str, label: &str) -> Result<()> {
         tilo_api::daemon::who::log_in(ticket.trim(), AGENT, label).map_err(anyhow::Error::msg)?;
+        Self::hold_person();
         Ok(())
     }
 
@@ -444,7 +448,27 @@ impl Device {
             .and_then(|daemon| daemon.found(&tilo_api::daemon::Founding::default()))
             .map(drop)
             .map_err(anyhow::Error::msg)?;
-        self.restart()
+        self.restart()?;
+        Self::hold_person();
+        Ok(())
+    }
+
+    /// The app's windows act as the person this device's certificate names: no launcher binds
+    /// this process to an identity service.
+    fn hold_person() {
+        let read = Self::login_place()
+            .ok()
+            .map(|place| persist::read_owner_cert(place.keys()));
+        if let Some(Ok(Some(cert))) = read {
+            identity::install_source(Some(std::sync::Arc::new(identity::FixedIdentity(
+                identity::LocalIdentity {
+                    group_public_key: cert.user_public_key,
+                    display_name: String::new(),
+                    avatar_color: [0; 3],
+                    device_public_key: Some(cert.device_public_key),
+                },
+            ))));
+        }
     }
 
     /// Whether this device's identity names a person its daemon serves.

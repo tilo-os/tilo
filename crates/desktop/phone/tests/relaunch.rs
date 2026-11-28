@@ -64,6 +64,13 @@ fn a_signed_in_phone_opens_its_window_in_the_workspace() {
     // Launched again, as the APK's `android_main` launches it: the device starts, and its window
     // is handed its connection to the person's workspace.
     tilo_phone::start().expect("the phone's device starts as its launch starts it");
+    // No launcher binds the phone to an identity service: its windows write as the person the
+    // device's certificate names, which the workspace checks every change of theirs against.
+    assert_eq!(
+        ui::collaboration::local_user_id().id(),
+        hex::encode(server.person.verifying_key().to_bytes()),
+        "the phone's windows act as the person who signed in"
+    );
     let spec = ui::framework::launch_spec::<tilo_phone::Phone>();
     let args = LaunchArgs::component();
     assert!(

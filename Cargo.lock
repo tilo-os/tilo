@@ -19981,6 +19981,7 @@ dependencies = [
  "tilo-key-group",
  "tilo-live",
  "tilo-liveness",
+ "tilo-local-identity",
  "tilo-local-time",
  "tilo-location",
  "tilo-lock",
