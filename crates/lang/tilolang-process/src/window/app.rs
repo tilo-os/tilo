@@ -218,6 +218,7 @@ fn in_process(
             route,
             bundle,
             (joined.collaboration, joined.identity),
+            Some(joined.content),
         )
         .inspect_err(
             |error| tracing::error!(%error, "the app's instance did not join its workspace"),

@@ -185,7 +185,7 @@ fn joined_links(
     command
         .arg("--tilolang-joined")
         .arg(format!("{} {workspace} {}", joined.instance, joined.person));
-    [&joined.collaboration, &joined.identity]
+    [&joined.collaboration, &joined.identity, &joined.content]
         .into_iter()
         .map(|connection| {
             connection

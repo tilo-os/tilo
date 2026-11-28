@@ -3144,7 +3144,8 @@ pub(crate) fn launch_with_context(
         #[cfg(target_os = "linux")]
         if opts.tilolang_joined.is_some() {
             use runtime_portal::joined_capture as joined;
-            let (Some(collaboration), Some(identity)) = (
+            let (Some(collaboration), Some(identity), Some(content)) = (
+                crate::launch_hold::take_window_link(),
                 crate::launch_hold::take_window_link(),
                 crate::launch_hold::take_window_link(),
             ) else {
@@ -3154,16 +3155,21 @@ pub(crate) fn launch_with_context(
                         .into(),
                 ));
             };
-            resolved.push(crate::services::ResolvedService {
-                name: joined::COLLABORATION.to_owned(),
-                host: collaboration,
-                child_fd: joined::COLLABORATION_CHILD_FD,
-            });
-            resolved.push(crate::services::ResolvedService {
-                name: joined::IDENTITY.to_owned(),
-                host: identity,
-                child_fd: joined::IDENTITY_CHILD_FD,
-            });
+            for (name, host, child_fd) in [
+                (
+                    joined::COLLABORATION,
+                    collaboration,
+                    joined::COLLABORATION_CHILD_FD,
+                ),
+                (joined::IDENTITY, identity, joined::IDENTITY_CHILD_FD),
+                (joined::CONTENT, content, joined::CONTENT_CHILD_FD),
+            ] {
+                resolved.push(crate::services::ResolvedService {
+                    name: name.to_owned(),
+                    host,
+                    child_fd,
+                });
+            }
         }
         // The shell opens the app's later windows in this process through the link it released this
         // launch with (`runtime_portal::process_link`).

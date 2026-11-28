@@ -680,10 +680,9 @@ impl Instances {
     }
 
     /// The instance's content connection: the device's content store for `app` in `workspace`,
-    /// as a window's instance is handed one. A file the instance makes is kept there, not in the
-    /// process alone, so its workspace hands it on to whoever an action answered it to. A daemon
-    /// serving no document media leaves the instance on the process's own store.
-    fn content(&self, app: &str, workspace: &str) -> Option<Descriptor> {
+    /// as a window's instance is handed one, so a file it makes is kept in the workspace whoever
+    /// an action answered it to reads it from; none where the daemon serves no document media.
+    pub(crate) fn content(&self, app: &str, workspace: &str) -> Option<Descriptor> {
         #[cfg(unix)]
         {
             crate::host::connect_blobs(&self.blobs, app, workspace).map(descriptor_of)
@@ -693,6 +692,12 @@ impl Instances {
             let _ = (app, workspace);
             None
         }
+    }
+
+    /// [`Self::content`] for a capture's instance, refused where the device serves none.
+    pub(crate) fn capture_content(&self, app: &str, workspace: &str) -> Result<Descriptor, String> {
+        self.content(app, workspace)
+            .ok_or_else(|| format!("{app} has no media here"))
     }
 
     /// The instance's identity-service connection, opened and named for `app` in `workspace` as

@@ -48,13 +48,14 @@ impl Writes {
 }
 
 /// The instance a capture's process joins its workspace as, the person at it, and the
-/// collaboration and identity connections this daemon made for it, attested as that instance: the
-/// capture's calls go through the device's dispatch as a launched window's do.
+/// collaboration, identity and content connections this daemon made for it, attested as that
+/// instance: the capture's calls go through the device's dispatch as a launched window's do.
 pub(crate) struct Joined {
     pub instance: u64,
     pub person: String,
     pub collaboration: runtime_portal::process_link::Descriptor,
     pub identity: runtime_portal::process_link::Descriptor,
+    pub content: runtime_portal::process_link::Descriptor,
 }
 
 /// Whether the capture `args` of `writer`'s app joins the workspace its device serves, as a spec

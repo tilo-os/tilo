@@ -355,6 +355,7 @@ pub fn open(
                 route,
                 bundle,
                 (connection.collaboration, connection.identity),
+                None,
             )
         }
     };

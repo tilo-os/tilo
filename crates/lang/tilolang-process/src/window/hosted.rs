@@ -375,7 +375,7 @@ pub fn start(
     let store = tilolang_tilo::resources::ResourceStore::new(Rc::new(port));
     host_over(
         spec,
-        (crate::connection::Connection::local(route), store),
+        (crate::connection::Connection::local(route), store, None),
         bundle,
         phrases,
         wake,
@@ -400,6 +400,7 @@ pub fn start_joined(
         runtime_portal::process_link::Descriptor,
         &runtime_portal::process_link::Descriptor,
     ),
+    content: Option<runtime_portal::process_link::Descriptor>,
     wake: tilolang_tilo::background::Waker,
 ) -> Result<(TilolangProcess, PatchConnection), StartError> {
     let kind = collab_types::document::ResourceType::new(
@@ -408,7 +409,8 @@ pub fn start_joined(
     let connection =
         joined(&bundle, &kind, route, (collaboration, identity)).map_err(StartError::Join)?;
     let store = tilolang_tilo::resources::ResourceStore::new(Rc::new(connection.port(None)));
-    host_over(spec, (connection, store), bundle, phrases, wake)
+    let content = crate::store_of(content);
+    host_over(spec, (connection, store, content), bundle, phrases, wake)
 }
 
 /// The connection a window of `bundle`'s app opens: its instance joins `route` as the record
@@ -459,12 +461,13 @@ pub fn joined_port(
 }
 
 /// The host running the one instance `spec` of `bundle` on `connection`, its resources in
-/// `store`, and the window's end of the instance's patch connection.
+/// `store`, its files and its engine's reads in `content`, and the window's end of its patches.
 fn host_over(
     spec: Spec,
-    (connection, store): (
+    (connection, store, content): (
         crate::connection::Connection,
         tilolang_tilo::resources::ResourceStore,
+        Option<tilo_content::ContentStore>,
     ),
     bundle: Arc<Bundle>,
     phrases: &Rc<Phrases>,
@@ -475,12 +478,16 @@ fn host_over(
     let (transport, watched) = crate::patch_transport(ours)?;
     super::updates::start(&spec.app);
     host.follow_builds(&spec.app, super::updates::builds());
+    let content = content.unwrap_or_else(crate::hosted::memory_content);
     let hosted = Hosted::new(
         spec,
         connection,
-        (store, crate::hosted::memory_content()),
+        (store, content.clone()),
         bundle,
-        &crate::hosted::Kept::default(),
+        &crate::hosted::Kept {
+            content: Some(content),
+            ..Default::default()
+        },
         transport,
         (phrases, host.formats()),
         wake,
@@ -785,6 +792,7 @@ impl HostedWindow {
             runtime_portal::process_link::Descriptor,
             runtime_portal::process_link::Descriptor,
         ),
+        content: Option<runtime_portal::process_link::Descriptor>,
     ) -> Result<Self, StartError> {
         let (wake, woken, waker) = Self::wakes();
         let phrases = Rc::new(Phrases::from_env());
@@ -795,6 +803,7 @@ impl HostedWindow {
             bundle,
             &phrases,
             (collaboration, &identity),
+            content,
             waker,
         )?;
         Ok(Self::running(

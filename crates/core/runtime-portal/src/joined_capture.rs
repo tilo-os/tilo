@@ -2,15 +2,17 @@
 //! device started runs its instance in its own process, as a window without a session does, but
 //! over the workspace's one store, so what it calls (a session's playback, another app's actions)
 //! goes through the device's dispatch as a launched window's calls do. The device's daemon makes
-//! the instance's collaboration and identity connections, attested as that instance, and the
-//! launch hands both to the process with its release ([`crate::launch_hold`]).
+//! the instance's collaboration, identity and content connections, attested as that instance, and
+//! the launch hands them to the process with its release ([`crate::launch_hold`]).
 
 /// The service the instance's collaboration connection is handed as.
 pub const COLLABORATION: &str = "tilolang-joined-collaboration";
 /// The service the instance's identity connection is handed as.
 pub const IDENTITY: &str = "tilolang-joined-identity";
+pub const CONTENT: &str = "tilolang-joined-content";
 pub const COLLABORATION_CHILD_FD: i32 = 44;
 pub const IDENTITY_CHILD_FD: i32 = 45;
+pub const CONTENT_CHILD_FD: i32 = 46;
 /// The variable the launcher names the instance, its workspace and the person at it with:
 /// `<instance> <workspace> <person>`.
 pub const ENV: &str = "TILO_TILOLANG_JOINED";
@@ -23,6 +25,7 @@ pub struct Joined {
     pub person: String,
     pub collaboration: crate::packet::Descriptor,
     pub identity: crate::packet::Descriptor,
+    pub content: crate::packet::Descriptor,
 }
 
 /// What [`ENV`] says: the instance, its workspace and the person at it.
@@ -56,12 +59,15 @@ pub fn take() -> Option<Joined> {
         let collaboration = unsafe { crate::take_service_fd(COLLABORATION) }?;
         // SAFETY: as above.
         let identity = unsafe { crate::take_service_fd(IDENTITY) }?;
+        // SAFETY: as above.
+        let content = unsafe { crate::take_service_fd(CONTENT) }?;
         Some(Joined {
             instance,
             workspace,
             person,
             collaboration,
             identity,
+            content,
         })
     }
     #[cfg(not(target_os = "linux"))]

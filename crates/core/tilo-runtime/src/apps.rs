@@ -1075,6 +1075,7 @@ impl Apps {
                 person,
                 collaboration,
                 identity,
+                content: self.instances.capture_content(app_id, workspace)?,
             })
         } else {
             None
