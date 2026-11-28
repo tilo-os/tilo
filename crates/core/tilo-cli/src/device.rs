@@ -72,13 +72,12 @@ pub fn add(
             _ => "a computer".to_owned(),
         };
         // A ticket is the person's own to issue: a program of theirs asks, and they say yes on
-        // the asking card, on whichever of their devices is at hand.
-        if !json {
-            eprintln!(
-                "tilo: adding {what}: confirm on the asking card on any of your devices. \
-                 Nothing is added until you do."
-            );
-        }
+        // the asking card, on whichever of their devices is at hand. Said in JSON mode too: a
+        // caller whose command waits on it reads why nothing came.
+        eprintln!(
+            "tilo: adding {what}: confirm on the asking card on any of your devices. \
+             Nothing is added until you do."
+        );
         let issued = client
             .act(
                 Some(&workspace),

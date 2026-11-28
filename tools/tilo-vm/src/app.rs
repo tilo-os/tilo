@@ -645,6 +645,18 @@ impl App {
         commands
     }
 
+    /// What the guest's own daemon says of itself over SSH, or that it does not answer there.
+    fn guest_said(&mut self, vm: &Resolved) -> Option<String> {
+        let words = ["journalctl", "-u", "tilo-runtime"].map(str::to_owned);
+        let said = self.endpoint(vm).ok().and_then(|endpoint| {
+            let line = sshkey::ssh_command(&endpoint, vm.entry.key.as_deref(), &words, false);
+            self.runner.output(&line).ok()
+        });
+        let said = said.map(|output| output.stdout).unwrap_or_default();
+        let said = said.trim();
+        (!said.is_empty()).then(|| format!("; the guest's daemon said: {said}"))
+    }
+
     fn connect(&mut self, vm: &Resolved) -> Result<Remote, CliError> {
         self.connect_with_wake(vm, false)
     }
@@ -2510,9 +2522,10 @@ impl App {
         }
         self.receipt.record("boot", started.elapsed().as_secs_f64());
         let Some(remote) = remote else {
+            let said = self.guest_said(&vm).unwrap_or_default();
             return Err(CliError::Unreachable {
                 vm: vm.name.clone(),
-                detail: "its device did not answer within 180s of starting".into(),
+                detail: format!("its device did not answer within 180s of starting{said}"),
                 debug: Self::debug_commands(adapter.as_ref(), &vm.name),
             });
         };
