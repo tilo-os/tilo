@@ -23,6 +23,36 @@ mod hosted_key_tests;
 #[path = "machine_tests.rs"]
 mod machine_tests;
 
+/// A reader that closes the pipe, as `| head -1` does, has what it asked for: the command
+/// finishes its work and exits quietly. Std's `println!` panics on the broken pipe, exit 101.
+#[test]
+fn a_closed_stdout_is_a_quiet_success() {
+    use std::os::fd::OwnedFd;
+    use std::process::Stdio;
+
+    // The page is short of a pipe's buffer, so `| head -1` may read it whole before it exits;
+    // a pipe with its read end closed before the run is the same closed stdout on every write.
+    let (read, write) = std::io::pipe().unwrap();
+    drop(read);
+    let scratch = tempfile::tempdir().unwrap();
+    let out = Command::new(tilo_test_env::package_binary!("tilo"))
+        .arg("help-markdown")
+        .env("HOME", scratch.path())
+        .env("XDG_RUNTIME_DIR", scratch.path().join("run"))
+        .stdout(Stdio::from(OwnedFd::from(write)))
+        .stderr(Stdio::piped())
+        .spawn_locked()
+        .unwrap()
+        .wait_with_output()
+        .unwrap();
+    assert!(out.status.success(), "it exits quietly: {out:?}");
+    assert!(
+        out.stderr.is_empty(),
+        "it says nothing to stderr: {:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 /// The old names, as `tilo` lists them in `src/aliases.rs`.
 fn moved() -> Vec<String> {
     let source = include_str!("../src/aliases.rs");

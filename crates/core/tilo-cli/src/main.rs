@@ -27,6 +27,56 @@ use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
+
+// A reader that closes the pipe, as `tilo <command> | head -1` does, has what it asked for. The
+// command finishes its work and exits quietly instead of dying at its next line, where std's
+// `println!` panics: that would abort `tilo login` halfway through joining. Every command prints
+// through these; a write failing on a stream still open panics as before.
+macro_rules! print {
+    ($($arg:tt)*) => {
+        $crate::said(::std::io::stdout(), "stdout", false, format_args!($($arg)*))
+    };
+}
+macro_rules! println {
+    () => {
+        $crate::said(::std::io::stdout(), "stdout", true, format_args!(""))
+    };
+    ($($arg:tt)*) => {
+        $crate::said(::std::io::stdout(), "stdout", true, format_args!($($arg)*))
+    };
+}
+macro_rules! eprint {
+    ($($arg:tt)*) => {
+        $crate::said(::std::io::stderr(), "stderr", false, format_args!($($arg)*))
+    };
+}
+macro_rules! eprintln {
+    () => {
+        $crate::said(::std::io::stderr(), "stderr", true, format_args!(""))
+    };
+    ($($arg:tt)*) => {
+        $crate::said(::std::io::stderr(), "stderr", true, format_args!($($arg)*))
+    };
+}
+
+#[allow(
+    clippy::panic,
+    reason = "a stream still open whose write failed is the same failure std's `println!` panics \
+              on: the command cannot say what it was asked to"
+)]
+fn said(mut to: impl Write, stream: &str, newline: bool, args: std::fmt::Arguments<'_>) {
+    let wrote = if newline {
+        writeln!(to, "{args}")
+    } else {
+        write!(to, "{args}")
+    };
+    if let Err(error) = wrote
+        && error.kind() != std::io::ErrorKind::BrokenPipe
+    {
+        panic!("failed printing to {stream}: {error}");
+    }
+}
+
 mod agent;
 mod aliases;
 use tilo_api::calls as api;
