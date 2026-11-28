@@ -264,8 +264,23 @@ view side_dock(s: Shell, edge: Edge) {
     // parent's width by default, so beside the band it would take half the display and leave
     // the page half its room. `fill: 0` keeps it at the dock's own band, and a full dock takes
     // the edge's width from `dock_ground` itself.
-    row(fill: 0, align: .center, padding: if s.dock_fit == .floating { .related } else { .none }) {
-        dock_ground(s, edge)
+    // The room it keeps from the page is the room a dock on the foot keeps: one gap between the
+    // two bands, its own inset counted once. `gap: .none` with the `tight` inset is that gap.
+    row(
+        fill: 0,
+        gap: .none,
+        align: .stretch,
+        padding: if s.dock_fit == .floating { .tight } else { .none },
+    ) {
+        // The dock stands at the display's own middle, not at the middle of the band under the
+        // bar: the bar's band stands under it in the same layer, so the pair is centred as one.
+        layers(fill) {
+            stack(at: .center) {
+                dock_ground(s, edge)
+                stack(height: device.room.y * 1dp) {
+                }
+            }
+        }
     }
 }
 

@@ -46,6 +46,7 @@ fn dock(zoom: f64, count: usize) -> Row {
             &format!("m{index}"),
             MagnifyProps {
                 zoom,
+                axis: None,
                 body: Some(Box::new(wrapper)),
             },
         )));
@@ -193,6 +194,7 @@ fn a_row_of_bare_tiles_at_touch_keeps_them_apart() {
             &format!("m{index}"),
             MagnifyProps {
                 zoom: 0.6,
+                axis: None,
                 // Each tile as the shell's view builds it: a component's props, an icon-only
                 // plain button at the dock's size, with its badge.
                 body: Some(Box::new(<Button as Described>::from_props(
@@ -351,6 +353,7 @@ fn a_dock_body_keeps_its_band_while_an_item_grows_over_it() {
         "m",
         MagnifyProps {
             zoom: 0.6,
+            axis: None,
             body: Some(Box::new(tile)),
         },
     );
@@ -416,6 +419,20 @@ fn a_plain_hover_plate_clears_the_non_text_floor_on_chrome() {
         assert!(
             ratio >= NON_TEXT_MIN_CONTRAST - 0.05,
             "the hover plate is a {ratio:.2}:1 step on the chrome ground"
+        );
+        // The bar's own pill is the same step: the toolbar's controls stand on the chrome too.
+        let (pill, _, _) = face_colors(
+            &inside,
+            ButtonRole::Bar,
+            Interaction {
+                hovered: true,
+                ..Interaction::default()
+            },
+        );
+        let ratio = contrast_ratio(pill, ground);
+        assert!(
+            ratio >= NON_TEXT_MIN_CONTRAST - 0.05,
+            "the bar's hover pill is a {ratio:.2}:1 step on the chrome ground"
         );
     }
 }

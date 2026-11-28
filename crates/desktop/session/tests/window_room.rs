@@ -135,6 +135,23 @@ fn light(session: &mut Session) {
     }
 }
 
+/// Back to the dark theme, as Settings' Appearance page does.
+fn dark(session: &mut Session) {
+    for (field, value) in [("light_theme", json!("tilo-dark")), ("mode", json!("dark"))] {
+        let arguments: serde_json::Map<String, Value> = json!({ "value": value })
+            .as_object()
+            .cloned()
+            .expect("an object");
+        let action = format!("set-{}", field.replace('_', "-"));
+        session
+            .invoke("settings/appearance", &action, &arguments)
+            .unwrap_or_else(|error| panic!("the appearance's {action}: {error:?}"));
+    }
+    for _ in 0..8 {
+        step(session);
+    }
+}
+
 /// The mean luminance of the capture `<name>`, 0 to 255: the theme a person sees is its light.
 fn mean_luminance(name: &str) -> f64 {
     let picture = image::open(shots().join(format!("{name}.png")))
@@ -297,7 +314,7 @@ fn a_window_fills_the_room_a_dock_beside_it_leaves() {
 #[test]
 fn a_hidden_dock_leaves_the_window_the_whole_display() {
     let mut session = session();
-
+    let docked = on_screen(&session, "Dock").expect("the dock rides the foot");
     session
         .run_shell_action("set_dock_showing", vec![Value::from("edge_reveal")])
         .expect("the dock hides itself");
@@ -311,6 +328,9 @@ fn a_hidden_dock_leaves_the_window_the_whole_display() {
         "the window reaches the display's foot: {window:?}"
     );
     capture(&mut session, "room-autohide-hidden-dark");
+    light(&mut session);
+    capture(&mut session, "room-autohide-hidden-light");
+    dark(&mut session);
     // Reach for the dock: it comes out over the window, which stays where it was.
     let pointer = session.compositor().pointer_location();
     session
@@ -320,12 +340,36 @@ fn a_hidden_dock_leaves_the_window_the_whole_display() {
     until(&mut session, "the dock reached for", |session| {
         on_screen(session, "Dock").is_some()
     });
+    // The revealed dock is the dock that was docked: reaching in from the screen's edge grows
+    // no item, so its body keeps its own size while it comes out.
+    let mut before = on_screen(&session, "Dock").expect("the dock reached for");
+    let mut still = 0;
+    until(
+        &mut session,
+        "the revealed dock to stand still",
+        |session| {
+            let now = on_screen(session, "Dock").expect("the dock reached for");
+            let same = (now.0 - before.0).abs() < 0.5
+                && (now.2 - before.2).abs() < 0.5
+                && (now.3 - before.3).abs() < 0.5;
+            still = if same { still + 1 } else { 0 };
+            before = now;
+            still >= 3
+        },
+    );
+    let revealed = on_screen(&session, "Dock").expect("the dock reached for");
+    assert!(
+        (revealed.2 - docked.2).abs() < 1.0 && (revealed.3 - docked.3).abs() < 1.0,
+        "the revealed dock is the dock that was docked: {revealed:?} against {docked:?}"
+    );
     assert_eq!(
         frame(&session),
         Some(window),
         "the reached-for dock draws over the window without moving it"
     );
     capture(&mut session, "room-autohide-reached-dark");
+    light(&mut session);
+    capture(&mut session, "room-autohide-reached-light");
     session
         .compositor()
         .input(InputEvent::PointerMotion {

@@ -774,17 +774,19 @@ view window_controls(s: LayoutStrip, shown: Option<LayoutPlace>, listed: Bool) {
         if not compact {
             share_control(shown)
         }
+        // The window's own controls are the size the frame's glass pill is laid out for
+        // (`CONTROL_PX`): a regular face is wider than the pill, and its glyph lands outside it.
         if s.maximized {
-            ui.Button("Restore", icon: .minimize_2, icon_only: true, role: .plain) {
+            ui.Button("Restore", icon: .minimize_2, icon_only: true, role: .plain, size: .small) {
                 on press: session.maximize_strip(strip: the_strip(s.key), on: false)
             }
         } else {
-            ui.Button("Maximize", icon: .maximize_2, icon_only: true, role: .plain) {
+            ui.Button("Maximize", icon: .maximize_2, icon_only: true, role: .plain, size: .small) {
                 on press: session.maximize_strip(strip: the_strip(s.key), on: true)
             }
         }
         if let p = shown {
-            ui.Button("Close", icon: .x, icon_only: true, role: .plain) {
+            ui.Button("Close", icon: .x, icon_only: true, role: .plain, size: .small) {
                 on press: session.close(place: the_place(p.key))
             }
         }

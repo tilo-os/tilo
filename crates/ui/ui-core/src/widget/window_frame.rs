@@ -1473,10 +1473,19 @@ impl WindowFrame {
         // The window in front wears the focused edge whatever the finish is: a shell tells the
         // person which window the keyboard is in, and a quiet border would say nothing.
         if self.focused {
+            // The edge says which window the keyboard is in, so it clears the non-text floor on
+            // the window's own ground whatever the theme's accent is there: a light theme's
+            // accent over its light surface would otherwise be no edge at all.
+            let colors = &theme.tokens.colors;
+            let edge = colors.ink_on(
+                SurfaceLevel::Window.color(theme),
+                colors.window_edge_focused(),
+                tilo_ui_base::tokens::colors::NON_TEXT_MIN_CONTRAST,
+            );
             scene.stroke(
                 &vello::kurbo::Stroke::new(1.5),
                 transform,
-                theme.tokens.colors.window_edge_focused(),
+                edge,
                 None,
                 &RoundedRect::from_rect(rect.inflate(0.5, 0.5), radius + 0.5),
             );

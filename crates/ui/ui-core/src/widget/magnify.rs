@@ -16,6 +16,10 @@ use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::EffectiveMotion;
 use tilo_ui_base::widget::{DrawChild, Element, Spacer, Widget};
 
+/// How far past an item's own box the pointer may stand and still grow it: the gap to the next
+/// item, so a pointer in the gap grows both, and no further, so an edge's reveal grows none.
+const REACH: f64 = 6.0;
+
 /// How fast the growth falls away from the pointer, in an item's own heights: a neighbour is
 /// half again as far, the next twice that, so the icons nearest the pointer grow most and each
 /// one further grows less — a dock's taper.
@@ -23,6 +27,20 @@ const DECAY_HEIGHTS: f64 = 2.0;
 
 /// Below this share of the peak an item rests: far enough that its growth is not seen.
 const REST_SHARE: f64 = 0.02;
+
+/// The direction a run of magnified items lies in: an item grows while the pointer is on the
+/// run's band, and never because it merely stands near it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MagnifyAxis {
+    #[default]
+    Horizontal,
+    Vertical,
+}
+
+tilo_ui_base::choice!(MagnifyAxis, "MagnifyAxis", {
+    Horizontal => "horizontal",
+    Vertical => "vertical",
+});
 
 /// An item of a dock that magnifies under the pointer.
 #[derive(Component, Default)]
@@ -32,6 +50,9 @@ pub struct MagnifyProps {
     /// again as large at its middle, falling away to its own size a few items off, and `0` leaves
     /// it its size.
     pub zoom: f64,
+    /// The direction the run lies in: `horizontal` for a dock along the foot, `vertical` for one
+    /// up an edge.
+    pub axis: Option<MagnifyAxis>,
     /// What it holds: one item's face.
     #[component(part(default))]
     pub body: Option<Element>,
@@ -39,6 +60,7 @@ pub struct MagnifyProps {
 
 pub struct Magnify {
     zoom: f64,
+    axis: MagnifyAxis,
     child: Element,
     /// How much larger than its own size the item stands this frame, and the motion taking it
     /// there.
@@ -60,6 +82,7 @@ impl Magnify {
     fn new(zoom: f64, child: Element) -> Self {
         Self {
             zoom: zoom.clamp(0.0, 3.0),
+            axis: MagnifyAxis::default(),
             child,
             extra: MotionValue::new(0.0),
             applied: 0.0,
@@ -86,6 +109,16 @@ impl Magnify {
             self.rect
         };
         if rest.width() <= 0.0 || rest.height() <= 0.0 {
+            return 0.0;
+        }
+        // The item grows while the pointer is on the run's band, not merely near it: a pointer
+        // at the screen's edge, reaching for a hidden dock, stands outside the band, while one
+        // on the band grows the items along it as it moves.
+        let on_band = match self.axis {
+            MagnifyAxis::Horizontal => pointer.y >= rest.y0 - REACH && pointer.y <= rest.y1 + REACH,
+            MagnifyAxis::Vertical => pointer.x >= rest.x0 - REACH && pointer.x <= rest.x1 + REACH,
+        };
+        if !on_band {
             return 0.0;
         }
         let decay = (rest.height().max(1.0) * DECAY_HEIGHTS).max(1.0);
@@ -124,15 +157,18 @@ impl Described for Magnify {
     type Props = MagnifyProps;
 
     fn from_props(_key: &str, props: MagnifyProps) -> Self {
-        let MagnifyProps { zoom, body } = props;
+        let MagnifyProps { zoom, axis, body } = props;
         let child = body.unwrap_or_else(|| {
             Box::new(Spacer::token(tilo_ui_base::tokens::SpacingStep::S0)) as Element
         });
-        Self::new(zoom, child)
+        let mut magnify = Self::new(zoom, child);
+        magnify.axis = axis.unwrap_or_default();
+        magnify
     }
 
     fn set_props(&mut self, props: MagnifyProps) -> bool {
         self.zoom = props.zoom.clamp(0.0, 3.0);
+        self.axis = props.axis.unwrap_or_default();
         true
     }
 

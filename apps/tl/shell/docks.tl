@@ -201,7 +201,11 @@ fn dock_item_name(item: DockItem) -> Text {
 view dock_tile(s: Shell, item: DockItem) {
     let title = dock_item_name(item)
     let name = if item.badge == 0 { title } else { "{title}, {item.badge} new" }
-    ui.Magnify(zoom: if s.dock_zoom { s.dock_zoom_amount } else { 0.0 }) {
+    let access = s.dock_edge == .left or s.dock_edge == .right
+    ui.Magnify(
+        zoom: if s.dock_zoom { s.dock_zoom_amount } else { 0.0 },
+        axis: if access { .vertical } else { .horizontal },
+    ) {
         ui.Button(
             name,
             icon: item.icon,
