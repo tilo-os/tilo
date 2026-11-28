@@ -76,7 +76,7 @@ pub(crate) fn firefox_home(home: &Path, now: i64) {
 
 /// A Chromium profile at cookie database version 24, whose values are sealed with Chromium's
 /// fixed `v10` key behind the hash of their host, with a partitioned cookie beside them.
-fn chromium_home(home: &Path, now: i64) {
+pub(crate) fn chromium_home(home: &Path, now: i64) {
     let profile = home.join(".config/chromium/Default/Network");
     std::fs::create_dir_all(&profile).unwrap();
     let connection = rusqlite::Connection::open(profile.join("Cookies")).unwrap();

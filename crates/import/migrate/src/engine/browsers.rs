@@ -155,13 +155,13 @@ fn history_count(bundle: &ImportBundle) -> usize {
 
 /// What a person reads of the sign-ins `cookies` bring beside their own window: the services
 /// that open signed in, each in a window of its own.
-fn sign_ins_note(cookies: &[Cookie]) -> Option<String> {
+fn sign_ins_note(profile: &BrowserProfile, cookies: &[Cookie]) -> Option<String> {
     let services: Vec<&str> = browsers::sign_ins::sessions(cookies)
         .iter()
         .filter(|(service, _)| *service != Service::Web)
         .map(|(service, _)| service.label())
         .collect();
-    match services.as_slice() {
+    let windows = match services.as_slice() {
         [] => None,
         [one] => Some(format!(
             "{one} also becomes an account of the workspace, opening signed in in a window of \
@@ -171,6 +171,42 @@ fn sign_ins_note(cookies: &[Cookie]) -> Option<String> {
             "{} also become accounts of the workspace, each opening signed in in a window of \
              its own",
             many.join(" and ")
+        )),
+    };
+    let lasting = session_only_said(profile, cookies);
+    match (windows, lasting) {
+        (Some(windows), Some(lasting)) => Some(format!("{windows}. {lasting}")),
+        (windows, lasting) => windows.or(lasting),
+    }
+}
+
+/// What becomes of the sign-ins `profile` keeps only until its browser closes: a Chromium-family
+/// browser's come over and last until Browser closes, as they did there; Firefox and Safari
+/// never write theirs down, so they stay behind.
+fn session_only_said(profile: &BrowserProfile, cookies: &[Cookie]) -> Option<String> {
+    if profile.engine != Engine::Chromium {
+        return Some(format!(
+            "Sites {} keeps you signed in to only until it closes stay there: sign in to them \
+             again in Browser",
+            profile.browser
+        ));
+    }
+    let session_only: Vec<Cookie> = cookies
+        .iter()
+        .filter(|cookie| cookie.expires_unix_seconds.is_none())
+        .cloned()
+        .collect();
+    match browsers::sign_ins::site_count(&session_only) {
+        0 => None,
+        1 => Some(format!(
+            "1 site kept you signed in only until {} closed: it stays signed in until Browser \
+             closes",
+            profile.browser
+        )),
+        sites => Some(format!(
+            "{sites} sites kept you signed in only until {} closed: they stay signed in until \
+             Browser closes",
+            profile.browser
         )),
     }
 }
@@ -251,7 +287,7 @@ pub fn review(home: &Path, config: &Path) -> Review {
             Ok(cookies) => parts.push((
                 "sign-ins",
                 browsers::sign_ins::site_count(cookies),
-                sign_ins_note(cookies),
+                sign_ins_note(&profile, cookies),
             )),
             Err(LoginsError::NoneSaved) => {}
             Err(LoginsError::Locked) => unreadable.push(format!(
@@ -653,6 +689,39 @@ mod tests {
         )
         .unwrap();
         assert!(again.websites.is_empty(), "nothing is kept twice");
+    }
+
+    /// What becomes of the sign-ins a browser keeps only until it closes is said where they are
+    /// chosen: a Chromium profile's come over for Browser's session, and Firefox's stay.
+    #[test]
+    fn a_review_says_what_becomes_of_sign_ins_kept_only_until_the_browser_closes() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        crate::browsers::sign_ins::tests::firefox_home(&home, now());
+        crate::browsers::sign_ins::tests::chromium_home(&home, now());
+        let review = review(&home, &home.join(".config"));
+        let note = |key: &str| -> String {
+            review
+                .items
+                .iter()
+                .find(|item| item.key == key)
+                .and_then(|item| item.note.clone())
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            note("chromium/Default/sign-ins"),
+            "Discord also becomes an account of the workspace, opening signed in in a window of \
+             its own. 1 site kept you signed in only until Chromium closed: it stays signed in \
+             until Browser closes"
+        );
+        assert!(
+            note("firefox/default-release/sign-ins").ends_with(
+                "Sites Firefox keeps you signed in to only until it closes stay there: sign in \
+                 to them again in Browser"
+            ),
+            "{}",
+            note("firefox/default-release/sign-ins")
+        );
     }
 
     /// The accounts a profile was signed in to are listed under it for Migrations to offer once
