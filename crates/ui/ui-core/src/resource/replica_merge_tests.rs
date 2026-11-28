@@ -306,7 +306,8 @@ tilo_test_env::scenario! {
                 assert_eq!(doc.text(&body).unwrap(), format!("// remote\n{source}"));
                 assert_eq!(doc.get_heads(), heads);
                 assert_eq!(doc.get_actor(), &actor);
-                assert_eq!(identity(doc).as_ref(), Some(&want));
+                // A record's document holds content only: what it is stays beside it.
+                assert_eq!(identity(doc), None);
                 assert_eq!(text(doc, "beside").as_deref(), Some("unchanged"));
                 assert_eq!(doc.get_changes_meta(&before).len(), 1);
                 assert!(doc.get_missing_deps(&[]).is_empty());
