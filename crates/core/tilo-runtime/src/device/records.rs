@@ -207,6 +207,7 @@ impl DeviceRecords {
     /// Follow the records: each write or removal of one moves what the watch answers, so a
     /// reader another process keeps is read again.
     #[must_use]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub fn changed(&self) -> tokio::sync::watch::Receiver<u64> {
         self.revision.subscribe()
     }

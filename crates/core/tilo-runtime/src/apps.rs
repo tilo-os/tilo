@@ -53,7 +53,7 @@ mod instances;
 /// The device's chosen files as the chooser's table keeps them, over the record a session's
 /// chooser writes: what an embedder's test grants a pick through
 /// ([`crate::device::services::Daemon::keep_chosen_folder`]).
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use instances::chosen_store;
 #[cfg(target_os = "linux")]
 mod linux;
@@ -471,7 +471,7 @@ impl Apps {
     }
 
     /// Keep the files people choose for hosted apps in the device's records from now on.
-    #[cfg(unix)]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn keep_chosen_records(&self, records: Arc<crate::device::records::DeviceRecords>) {
         self.instances.keep_chosen_records(records);
     }

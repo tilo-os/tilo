@@ -1710,7 +1710,10 @@ impl Daemon {
     /// # Errors
     /// The device keeps no records yet, the app or the workspace is not a name a choice carries,
     /// or the folder is not one that can be reached by a reference.
-    #[cfg(all(feature = "test-support", unix))]
+    #[cfg(all(
+        feature = "test-support",
+        any(target_os = "linux", target_os = "macos")
+    ))]
     pub fn keep_chosen_folder(
         &self,
         workspace: &str,
@@ -2684,7 +2687,7 @@ impl Daemon {
         records.carry_into(&identity.cert.user_public_key);
         // The files people choose for hosted apps are kept in the same records: one table for a
         // window and a hosted instance alike.
-        #[cfg(unix)]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         apps.keep_chosen_records(Arc::clone(&records));
         workspaces.hold_device_records(Arc::clone(&records));
         // A device placed for records of one workspace reaches it through the host its ticket's

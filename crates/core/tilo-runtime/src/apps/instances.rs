@@ -82,7 +82,7 @@ pub(crate) struct Instances {
     /// The tilolang processes, once one was asked for.
     processes: OnceLock<Arc<Processes>>,
     /// The files people choose for hosted apps, kept in this device's records.
-    #[cfg(unix)]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     chosen: Arc<tilo_dialogs::chosen::ChosenTable>,
     /// The member the device acts as: the one an instance that shows nothing is run for.
     person: OnceLock<String>,
@@ -228,12 +228,12 @@ fn pick_request(
 
 /// The device's chosen files, as the chooser reaches it: a choice is a grant, and only a grant
 /// this app was given opens again.
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 struct ChosenGrants {
     chosen: Arc<tilo_dialogs::chosen::ChosenTable>,
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl tilo_dialogs::chooser_service::Grants for ChosenGrants {
     fn grant(
         &self,
@@ -266,7 +266,7 @@ impl tilo_dialogs::chooser_service::Grants for ChosenGrants {
 }
 
 /// The app's key, as its launcher names it on the connection.
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn chosen_key(
     caller: &tilo_dialogs::chooser_service::Caller,
 ) -> Result<tilo_dialogs::chosen::AppKey, String> {
@@ -274,7 +274,7 @@ fn chosen_key(
         .ok_or_else(|| tilo_dialogs::chooser_service::CANNOT_HAND.to_owned())
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn kind_of(choice: tilo_dialogs::chooser_service::Choice) -> tilo_dialogs::chosen::Kind {
     use tilo_dialogs::chooser_service::Choice;
     match choice {
@@ -284,7 +284,7 @@ fn kind_of(choice: tilo_dialogs::chooser_service::Choice) -> tilo_dialogs::chose
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn granted_of(chosen: tilo_dialogs::chosen::Chosen) -> tilo_dialogs::chooser_service::Granted {
     use tilo_dialogs::chooser_service::{Choice, Granted};
     let choice = match chosen.kind {
@@ -303,12 +303,12 @@ fn granted_of(chosen: tilo_dialogs::chosen::Chosen) -> tilo_dialogs::chooser_ser
 
 /// The device's own records, as the chosen files are kept: the same path the desktop session
 /// keeps them by, so a hosted instance and a window see one table of choices.
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 struct ChosenRecords {
     records: Arc<crate::device::records::DeviceRecords>,
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl tilo_dialogs::chosen::Store for ChosenRecords {
     fn load(&self) -> Vec<tilo_dialogs::chosen::Kept> {
         chosen_in(&self.records)
@@ -338,7 +338,7 @@ impl tilo_dialogs::chosen::Store for ChosenRecords {
 
 /// The device's chosen files as the chooser's table keeps them, over the record a session's
 /// chooser writes: what an embedder's test grants a pick through.
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn chosen_store(
     records: Arc<crate::device::records::DeviceRecords>,
 ) -> Arc<dyn tilo_dialogs::chosen::Store> {
@@ -346,7 +346,7 @@ pub(crate) fn chosen_store(
 }
 
 /// The choices `records` keeps, as the table reads them.
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn chosen_in(records: &crate::device::records::DeviceRecords) -> Vec<tilo_dialogs::chosen::Kept> {
     match records.get(tilo_dialogs::chosen::RECORD) {
         Some(serde_json::Value::Array(entries)) => entries
@@ -358,8 +358,10 @@ fn chosen_in(records: &crate::device::records::DeviceRecords) -> Vec<tilo_dialog
 }
 
 /// A daemon opens no links in an app of its own.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 struct NoOpen;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl tilo_dialogs::chooser_service::Opens for NoOpen {
     fn open(&self, _workspace: &str, _uri: &str) -> Result<Option<()>, String> {
         Ok(None)
@@ -380,7 +382,7 @@ impl Instances {
             launcher,
             launched: started,
             processes: OnceLock::new(),
-            #[cfg(unix)]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             chosen: Arc::new(tilo_dialogs::chosen::ChosenTable::new()),
             person: OnceLock::new(),
             locale: Mutex::default(),
@@ -454,7 +456,7 @@ impl Instances {
 
     /// Keep the files people choose for hosted apps in the device's records from now on, the same
     /// place the desktop session keeps its choices.
-    #[cfg(unix)]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn keep_chosen_records(&self, records: Arc<crate::device::records::DeviceRecords>) {
         self.chosen.bind(Arc::new(ChosenRecords { records }));
     }
