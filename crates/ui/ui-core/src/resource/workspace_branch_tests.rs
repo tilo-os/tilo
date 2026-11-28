@@ -75,14 +75,13 @@ tilo_test_env::scenario! {
             })
             .unwrap();
         let held = source.read(AutoCommit::clone).unwrap();
-        let want = identity(&held).unwrap();
+        // A content-only record names no identity in its document: the store's checkout does.
+        let want = source.checkout().clone();
 
-        let copy = branch(&held, TO).unwrap();
-        assert_eq!(workspace_scope(&copy).as_deref(), Some(TO));
-        assert_eq!(
-            crate::resource::home(&copy).as_deref(),
-            Some(TO),
-            "minted again"
+        let copy = branch(&held, &want, FROM, TO).unwrap();
+        assert!(
+            validate_identity(&copy, &want, FROM).is_err(),
+            "the copy is founded in the branch, not in the source"
         );
         assert_eq!(emoji(&copy).as_deref(), Some("parrot.png"));
         let made = resources(TO)
@@ -105,6 +104,9 @@ tilo_test_env::scenario! {
             Some("parrot.png"),
             "the source keeps its own"
         );
-        assert_eq!(workspace_scope(&held).as_deref(), Some(FROM));
+        assert!(
+            validate_identity(&held, &want, FROM).is_ok(),
+            "the source is still the record of the workspace it was made in"
+        );
     }
 }

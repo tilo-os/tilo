@@ -57,6 +57,10 @@ pub enum ResourceOpenError {
 
 /// Whether `doc` is the live resource `want` names in `workspace`.
 ///
+/// A record that names its identity in its document must be the resource, home and workspace it
+/// names. A content-only record names none: the store's `want` names it, and its first change must
+/// be the founding every holder derives from its kind, id and workspace.
+///
 /// # Errors
 /// It is another resource, or of another workspace.
 pub fn validate_identity(
@@ -64,21 +68,19 @@ pub fn validate_identity(
     want: &DocumentCheckout,
     workspace: &str,
 ) -> Result<(), ResourceOpenError> {
-    match object_at(doc, &ROOT, META, ObjType::Map) {
-        ObjectAt::Object(metadata) => {
-            if matches!(
-                object_at(doc, &metadata, "refs", ObjType::List),
-                ObjectAt::Invalid
-            ) {
-                return Err(ResourceOpenError::IdentityMismatch);
-            }
-        }
-        ObjectAt::Missing if want.id.is_package_primary() => {}
-        ObjectAt::Missing | ObjectAt::Invalid => {
-            return Err(ResourceOpenError::IdentityMismatch);
-        }
-    }
     if want.id.is_package_primary() {
+        match object_at(doc, &ROOT, META, ObjType::Map) {
+            ObjectAt::Object(metadata) => {
+                if matches!(
+                    object_at(doc, &metadata, "refs", ObjType::List),
+                    ObjectAt::Invalid
+                ) {
+                    return Err(ResourceOpenError::IdentityMismatch);
+                }
+            }
+            ObjectAt::Missing => {}
+            ObjectAt::Invalid => return Err(ResourceOpenError::IdentityMismatch),
+        }
         return if primary_document(doc)
             && !want.kind.as_str().is_empty()
             && !workspace.is_empty()
@@ -89,11 +91,29 @@ pub fn validate_identity(
             Err(ResourceOpenError::IdentityMismatch)
         };
     }
-    if identity(doc).is_none_or(|found| found.id != want.id || found.kind != want.kind)
-        || want.kind.as_str().is_empty()
-        || home(doc).is_none_or(|home| home.is_empty())
-        || workspace_scope(doc).as_deref() != Some(workspace)
-    {
+    if let Some(found) = identity(doc) {
+        if found.id != want.id
+            || found.kind != want.kind
+            || want.kind.as_str().is_empty()
+            || home(doc).is_none_or(|home| home.is_empty())
+            || workspace_scope(doc).as_deref() != Some(workspace)
+        {
+            return Err(ResourceOpenError::IdentityMismatch);
+        }
+        return Ok(());
+    }
+    // A content-only record: the store keeps who it is, and its document is the one its kind, id
+    // and workspace derive.
+    let founding = collab_types::document::founding::Scope {
+        workspace,
+        kind: want.kind.as_str(),
+        id: want.id.route(),
+    }
+    .founding_actor();
+    let founded = doc.clone().get_changes(&[]).first().is_some_and(|first| {
+        first.actor_id() == &founding && first.deps().is_empty() && first.timestamp() == 0
+    });
+    if want.kind.as_str().is_empty() || !founded {
         return Err(ResourceOpenError::IdentityMismatch);
     }
     Ok(())

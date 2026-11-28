@@ -1,15 +1,11 @@
 //! Branching: a whole workspace forked into a new one, each of its resources forked with it.
-//!
-//! A resource id names a document only inside the workspace whose store holds it
-//! ([`super::workspace_scope`]). A branch is the one place a document crosses into another
-//! workspace with its history: a record moving between workspaces is the store's own `move`,
-//! which founds it afresh in the workspace it goes to.
+//! A record moving between workspaces is the store's own `move`, which founds it afresh and
+//! leaves its history behind. A branch is the one place a record crosses with its history.
 
-use automerge::transaction::{CommitOptions, Transactable};
-use automerge::{AutoCommit, ScalarValue};
+use automerge::{AutoCommit, ObjType};
 use tilo_automerge::ApplyIncoming as _;
 
-use super::{ResourceOpenError, identity, meta_obj, validate_identity};
+use super::{DocumentCheckout, ResourceOpenError, identity, validate_identity};
 
 /// Why a document could not be branched.
 #[derive(Debug, thiserror::Error)]
@@ -22,99 +18,126 @@ pub enum TransferError {
     Automerge(String),
 }
 
-/// A branch's copy of `source`, a document of a workspace branched into `to_workspace`: its whole
-/// history, under a writer of its own, with one more change naming `to_workspace` as the workspace
-/// it is in when it names one at all. Its id stays: a resource id names a document only inside its
-/// workspace ([`super::workspace_scope`]), and a branch is a whole workspace forked, so every
-/// reference one of its resources makes to another still names the same one. Where it was minted
-/// (`home`) stays too, as its provenance, but for a resource any app makes from its kind alone,
-/// which is minted again in the branch ([`minted_again`]). `source` is not changed.
+/// A branch's copy of `source`, the content-only record `checkout` names of `from_workspace`, in
+/// `to_workspace`: its whole history under a writer of its own, its founding derived again for the
+/// workspace it goes to, so the copy and a record an app of the branch makes of the same kind and
+/// id before it arrives meet as one document. Its id stays: a resource id names a document only
+/// inside its workspace ([`super::workspace_scope`]), so every reference one of its resources
+/// makes to another still names the same one.
 ///
 /// # Errors
-/// `to_workspace` is empty, or the document's metadata cannot name it.
-pub fn branch(source: &AutoCommit, to_workspace: &str) -> Result<AutoCommit, TransferError> {
+/// `to_workspace` is empty, `source` is not the record `checkout` names in `from_workspace`, its
+/// document names an identity of its own, or its history cannot be re-founded.
+pub fn branch(
+    source: &AutoCommit,
+    checkout: &DocumentCheckout,
+    from_workspace: &str,
+    to_workspace: &str,
+) -> Result<AutoCommit, TransferError> {
     if to_workspace.is_empty() {
         return Err(TransferError::NotTransferable(
             "a branch is made into a workspace",
         ));
     }
-    // A fork continues the same change graph under a writer of its own, so a change made in the
-    // branch never takes a number a change in the source already has.
-    let mut doc = match minted_again(source, to_workspace)? {
-        Some(mut minted) => minted.fork(),
-        None => source.clone().fork(),
-    };
-    let Some(scoped) = super::workspace_scope(&doc) else {
-        return Ok(doc);
-    };
-    if scoped == to_workspace {
-        return Ok(doc);
+    if identity(source).is_some() {
+        return Err(TransferError::NotTransferable(
+            "a record that names its identity in its own document is founded afresh in a branch",
+        ));
     }
-    let automerge = |error: automerge::AutomergeError| TransferError::Automerge(error.to_string());
-    let step = identity(&doc).ok_or(ResourceOpenError::IdentityMismatch)?;
-    let meta = meta_obj(&mut doc).ok_or(ResourceOpenError::IdentityMismatch)?;
-    doc.put(&meta, super::WORKSPACE, to_workspace)
-        .map_err(automerge)?;
-    // The step that founds the copied history in the branch names the store's branch verb, as
-    // no person's action produced it.
-    let context = collab_types::document::identity::branch_step(
-        step.id.as_str(),
-        step.kind.as_str(),
-        step.kind.as_str(),
-    );
-    let message = context
-        .entry_in(&doc)
-        .ok_or(TransferError::NotTransferable(
-            "the branch's founding step is written as an entry",
-        ))?;
-    doc.commit_with(CommitOptions::default().with_message(message));
-    Ok(doc)
+    validate_identity(source, checkout, from_workspace)?;
+    refounded(source, checkout, from_workspace, to_workspace)
 }
 
-/// `source` minted again in `to_workspace`, when it is a resource any app makes from its kind alone
-/// where it holds none ([`collab_types::workspace_document_id`]: the workspace's emoji, its agents)
-/// and its genesis made it: its whole history, but with the genesis an app of the branch makes
-/// ([`super::genesis`]) as its first change, and every change after it built on that one. An app of
-/// the branch that opens the resource before the branch's copy reached it makes the same genesis, so
-/// the two meet as one resource. `None` for any other document, which keeps where it was minted.
-fn minted_again(
+/// `source` re-founded in `to_workspace` on the chain its kind, id and workspace derive there
+/// ([`tilo_resource::founding::chain`]), with every change after that chain replayed on it.
+fn refounded(
     source: &AutoCommit,
+    checkout: &DocumentCheckout,
+    from_workspace: &str,
     to_workspace: &str,
-) -> Result<Option<AutoCommit>, TransferError> {
+) -> Result<AutoCommit, TransferError> {
     use automerge::legacy::{ElementId, Key, ObjectId, OpId, OpType};
 
-    let Some(checkout) = identity(source) else {
-        return Ok(None);
-    };
-    if checkout.id.as_str() != collab_types::workspace_document_id(checkout.kind.as_str()) {
-        return Ok(None);
-    }
-    let Some(home) = super::home(source).filter(|home| home != to_workspace) else {
-        return Ok(None);
-    };
-    let from = super::genesis_actor_of(&checkout.id, &checkout.kind, &home);
-    let to = super::genesis_actor_of(&checkout.id, &checkout.kind, to_workspace);
+    let kind = checkout.kind.as_str();
+    let id = checkout.id.route();
     let changes = source.clone().get_changes(&[]);
-    // Its genesis made it: the genesis actor's one change comes first and depends on nothing.
-    let made_by_genesis = changes
-        .first()
-        .is_some_and(|first| first.actor_id() == &from && first.deps().is_empty())
-        && changes
-            .iter()
-            .filter(|change| change.actor_id() == &from)
-            .count()
-            == 1;
-    if !made_by_genesis {
-        return Ok(None);
+    let Some(founding) = changes.first() else {
+        return Err(TransferError::NotTransferable(
+            "a record with no history is no branch's",
+        ));
+    };
+    // The containers its founding made, read from it: the branch derives theirs again.
+    let mut containers: Vec<(String, ObjType)> = founding
+        .decode()
+        .operations
+        .iter()
+        .filter_map(|op| match (&op.obj, &op.key, &op.action) {
+            (ObjectId::Root, Key::Map(field), OpType::Make(ty)) => Some((field.to_string(), *ty)),
+            _ => None,
+        })
+        .collect();
+    containers.sort_by(|a, b| a.0.cmp(&b.0));
+    containers.dedup_by(|a, b| a.0 == b.0);
+    // The version steps the source stands on, told by the actor each derives under.
+    let step_actor = |version: u32| {
+        tilo_resource::genesis::actor(id, kind, &format!("version {version} in {from_workspace}"))
+    };
+    let mut version: u32 = 0;
+    while changes
+        .iter()
+        .any(|change| change.actor_id() == &step_actor(version.saturating_add(1)))
+    {
+        version = version.saturating_add(1);
+    }
+    let chain = tilo_resource::founding::chain(
+        tilo_resource::founding::Scope {
+            workspace: to_workspace,
+            kind,
+            id,
+        },
+        version,
+        &containers,
+    )
+    .map_err(|error| TransferError::Automerge(error.to_string()))?;
+    let from_founding = tilo_resource::founding::Scope {
+        workspace: from_workspace,
+        kind,
+        id,
+    }
+    .founding_actor();
+    let mut hashes = std::collections::HashMap::with_capacity(changes.len());
+    let mut actors = std::collections::HashMap::with_capacity(chain.len());
+    for change in &changes {
+        let actor = change.actor_id();
+        let target = if actor == &from_founding {
+            chain.first()
+        } else {
+            (1..=version).find_map(|version| {
+                (actor == &step_actor(version))
+                    .then(|| {
+                        usize::try_from(version)
+                            .ok()
+                            .and_then(|index| chain.get(index))
+                    })
+                    .flatten()
+            })
+        };
+        let Some(target) = target else {
+            continue;
+        };
+        hashes.insert(change.hash(), target.hash());
+        actors.insert(actor.clone(), target.actor_id().clone());
     }
     let rename = |id: &mut OpId| {
-        if id.1 == from {
+        if let Some(to) = actors.get(&id.1) {
             id.1 = to.clone();
         }
     };
-    let mut hashes = std::collections::HashMap::new();
-    let mut minted = Vec::with_capacity(changes.len());
-    for change in changes {
+    let mut replayed = Vec::with_capacity(changes.len());
+    for change in &changes {
+        if actors.contains_key(change.actor_id()) {
+            continue;
+        }
         let was = change.hash();
         let mut expanded = change.decode();
         expanded.hash = None;
@@ -123,11 +146,9 @@ fn minted_again(
             .iter()
             .map(|dep| hashes.get(dep).copied())
             .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| TransferError::Automerge(format!("change {was} before its base")))?;
-        let genesis = expanded.actor_id == from;
-        if genesis {
-            expanded.actor_id = to.clone();
-        }
+            .ok_or_else(|| {
+                TransferError::Automerge(format!("change {was} stands before its base"))
+            })?;
         for op in &mut expanded.operations {
             if let ObjectId::Id(id) = &mut op.obj {
                 rename(id);
@@ -144,29 +165,16 @@ fn minted_again(
                     pred
                 })
                 .collect();
-            // The genesis names the workspace that minted it, and the one it is in.
-            let names_home = match (&op.key, &op.action) {
-                (Key::Map(key), OpType::Put(ScalarValue::Str(named))) => {
-                    genesis
-                        && ["home", super::WORKSPACE].contains(&key.as_str())
-                        && named.as_str() == home
-                }
-                _ => false,
-            };
-            if names_home {
-                op.action = OpType::Put(ScalarValue::from(to_workspace));
-            }
         }
         let change = automerge::Change::from(expanded);
         hashes.insert(was, change.hash());
-        minted.push(change);
+        replayed.push(change);
     }
-    let mut doc = AutoCommit::new();
-    doc.apply_incoming(minted)
+    let mut history = chain;
+    history.extend(replayed);
+    let mut doc = AutoCommit::new().with_actor(source.get_actor().clone());
+    doc.apply_incoming(history)
         .map_err(|error| TransferError::Automerge(error.to_string()))?;
-    if super::genesis_actor(&doc).as_ref() != Some(&to) {
-        return Err(ResourceOpenError::IdentityMismatch.into());
-    }
-    validate_identity(&doc, &checkout, to_workspace)?;
-    Ok(Some(doc))
+    validate_identity(&doc, checkout, to_workspace)?;
+    Ok(doc)
 }
