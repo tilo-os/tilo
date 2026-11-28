@@ -4895,3 +4895,277 @@ fn a_refused_save_stands_in_the_bar_with_try_again_until_one_lands() {
     );
     assert!(shown.actions.is_empty(), "and nothing asks to try again");
 }
+
+/// A press and the release that completes it, with a frame between them, still run the control:
+/// the session draws between the two, as a pointer move asks for a frame, and the click must not
+/// be lost to a widget a frame rebuilt. A control of the window's sidebar and one of a page
+/// inside a scroll are tried the same way.
+#[test]
+fn a_press_with_a_frame_before_its_release_still_runs_the_control() {
+    let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
+    let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    let invoke = |action: &str| crate::Event {
+        invokes: Some(crate::Invocation {
+            resource: "1".to_owned(),
+            action: action.to_owned(),
+        }),
+        ..crate::Event::default()
+    };
+    let button = |key: &str, label: &str, action: &str| {
+        let mut node = UiNode::empty(&kind("Button"), key);
+        node.props.insert("label".to_owned(), Value::text(label));
+        node.events.insert("press".to_owned(), invoke(action));
+        node
+    };
+    let part = |name: &str, children: Vec<UiNode>| {
+        let mut node = UiNode::empty(PART, &format!("shell#{name}"));
+        node.props.insert("name".to_owned(), Value::text(name));
+        node.children = children;
+        node
+    };
+    let mut page = UiNode::empty("page", "shell#page");
+    let mut stack = UiNode::empty("stack", "shell#page-stack");
+    stack.props.insert("gap".to_owned(), Value::text("group"));
+    for at in 0..6 {
+        let mut section = UiNode::empty(&kind("Text"), &format!("shell#section-{at}"));
+        section
+            .props
+            .insert("value".to_owned(), Value::text(format!("Section {at}")));
+        stack.children.push(section);
+    }
+    stack
+        .children
+        .push(button("shell#page-button", "Page control", "page"));
+    page.children.push(stack);
+    let mut scroll = UiNode::empty(&kind("Scroll"), "shell#scroll");
+    scroll.children.push(page);
+    let mut shell = UiNode::empty(&kind("NavShell"), "shell");
+    shell
+        .props
+        .insert("sidebar_title".to_owned(), Value::text("Notes"));
+    shell.children.push(part(
+        "sidebar",
+        vec![button("shell#sidebar-button", "Sidebar control", "sidebar")],
+    ));
+    shell.children.push(part("content", vec![scroll]));
+    let mut target = doc();
+    target.id = "1".to_owned();
+    target.ty = "test.tasks".to_owned();
+    send(
+        &mut app,
+        &[ToUi::Open {
+            level: Level::Root,
+            target,
+            tree: shell,
+            front: None,
+            capture_protected: false,
+        }],
+    );
+    window.receive();
+    let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(window), (1280, 800));
+    harness.present_in_window_bar();
+    harness.relayout();
+    harness.relayout();
+    for (what, name) in [("sidebar", "Sidebar control"), ("page", "Page control")] {
+        let node = named_node(&harness, name);
+        let bounds = harness
+            .a11y_nodes()
+            .into_iter()
+            .find(|(id, _)| *id == node)
+            .and_then(|(_, described)| described.bounds())
+            .unwrap_or_else(|| panic!("the {what} control is described where it stands"));
+        let (x, y) = (
+            f64::midpoint(bounds.x0, bounds.x1),
+            f64::midpoint(bounds.y0, bounds.y1),
+        );
+        // What the open and the last click said is not this click's.
+        let _ = sent(&mut app);
+        harness.send(&tilo_ui_base::synthetic_input::cursor_moved(x, y));
+        let _ = harness.poll_frame();
+        harness.send(&tilo_ui_base::synthetic_input::mouse_press());
+        let _ = harness.poll_frame();
+        harness.send(&tilo_ui_base::synthetic_input::mouse_release());
+        let _ = harness.poll_frame();
+        drawn_window(&mut harness).flush();
+        let heard = sent(&mut app)
+            .into_iter()
+            .any(|message| matches!(message, ToApp::Invoke { .. } | ToApp::Fire { .. }));
+        assert!(
+            heard,
+            "the {what} control runs on a press a frame precedes the release of, at {x},{y}"
+        );
+    }
+}
+
+/// A press and the release that completes it still run the control when the app draws its window
+/// again between them: the person's click is one gesture, whatever the frame in it replaced.
+#[test]
+fn a_press_still_runs_its_control_when_the_window_is_drawn_again_before_the_release() {
+    let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
+    let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    let page = |words: &str| {
+        let mut page = UiNode::empty("page", "shell#page");
+        let mut stack = UiNode::empty("stack", "shell#page-stack");
+        stack.props.insert("gap".to_owned(), Value::text("group"));
+        for at in 0..6 {
+            let mut section = UiNode::empty(&kind("Text"), &format!("shell#section-{at}"));
+            section.props.insert(
+                "value".to_owned(),
+                Value::text(if at == 0 {
+                    words.to_owned()
+                } else {
+                    format!("Section {at}")
+                }),
+            );
+            stack.children.push(section);
+        }
+        let mut button = UiNode::empty(&kind("Button"), "shell#page-button");
+        button
+            .props
+            .insert("label".to_owned(), Value::text("Draft it"));
+        button.events.insert(
+            "press".to_owned(),
+            crate::Event {
+                invokes: Some(crate::Invocation {
+                    resource: "1".to_owned(),
+                    action: "draft".to_owned(),
+                }),
+                ..crate::Event::default()
+            },
+        );
+        stack.children.push(button);
+        page.children.push(stack);
+        let mut scroll = UiNode::empty(&kind("Scroll"), "shell#scroll");
+        scroll.children.push(page);
+        scroll
+    };
+    let open = |words: &str| {
+        let mut target = doc();
+        target.id = "1".to_owned();
+        target.ty = "test.tasks".to_owned();
+        ToUi::Open {
+            level: Level::Root,
+            target,
+            tree: chooser_shell(vec![page(words)]),
+            front: None,
+            capture_protected: false,
+        }
+    };
+    send(&mut app, &[open("Before")]);
+    window.receive();
+    let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(window), (1280, 800));
+    harness.present_in_window_bar();
+    harness.relayout();
+    harness.relayout();
+    let node = named_node(&harness, "Draft it");
+    let bounds = harness
+        .a11y_nodes()
+        .into_iter()
+        .find(|(id, _)| *id == node)
+        .and_then(|(_, described)| described.bounds())
+        .expect("the page's button is described where it stands");
+    let (x, y) = (
+        f64::midpoint(bounds.x0, bounds.x1),
+        f64::midpoint(bounds.y0, bounds.y1),
+    );
+    let _ = sent(&mut app);
+    harness.send(&tilo_ui_base::synthetic_input::cursor_moved(x, y));
+    let _ = harness.poll_frame();
+    harness.send(&tilo_ui_base::synthetic_input::mouse_press());
+    let _ = harness.poll_frame();
+    // The app draws its window again while the button is held.
+    send(&mut app, &[open("After")]);
+    drawn_window(&mut harness).receive();
+    harness.relayout();
+    harness.send(&tilo_ui_base::synthetic_input::mouse_release());
+    let _ = harness.poll_frame();
+    drawn_window(&mut harness).flush();
+    assert!(
+        sent(&mut app)
+            .iter()
+            .any(|message| matches!(message, ToApp::Invoke { .. } | ToApp::Fire { .. })),
+        "the press runs its control although the window was drawn again before the release"
+    );
+}
+
+/// A control the window drew again under a pointer that did not move takes the press that
+/// follows: the control it was built as is gone, and the one that stands in its place learns
+/// where the pointer is before the press, so the person's click is not lost.
+#[test]
+fn a_control_the_window_drew_again_takes_a_press_the_pointer_has_not_moved_for() {
+    let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
+    let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    // The control is drawn as another node each time, as a view that numbers what it shows
+    // does: the widget that stood at the pointer is gone, and a new one stands there.
+    let open = |words: &str, drawn: &str| {
+        let mut stack = UiNode::empty("stack", "shell#page-stack");
+        stack.props.insert("gap".to_owned(), Value::text("group"));
+        let mut section = UiNode::empty(&kind("Text"), "shell#section-0");
+        section.props.insert("value".to_owned(), Value::text(words));
+        stack.children.push(section);
+        let mut button = UiNode::empty(&kind("Button"), drawn);
+        button
+            .props
+            .insert("label".to_owned(), Value::text("Draft it"));
+        button.events.insert(
+            "press".to_owned(),
+            crate::Event {
+                invokes: Some(crate::Invocation {
+                    resource: "1".to_owned(),
+                    action: "draft".to_owned(),
+                }),
+                ..crate::Event::default()
+            },
+        );
+        stack.children.push(button);
+        let mut page = UiNode::empty("page", "shell#page");
+        page.children.push(stack);
+        let mut scroll = UiNode::empty(&kind("Scroll"), "shell#scroll");
+        scroll.children.push(page);
+        let mut target = doc();
+        target.id = "1".to_owned();
+        target.ty = "test.tasks".to_owned();
+        ToUi::Open {
+            level: Level::Root,
+            target,
+            tree: chooser_shell(vec![scroll]),
+            front: None,
+            capture_protected: false,
+        }
+    };
+    send(&mut app, &[open("Before", "shell#page-button~1")]);
+    window.receive();
+    let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(window), (1280, 800));
+    harness.present_in_window_bar();
+    harness.relayout();
+    harness.relayout();
+    let node = named_node(&harness, "Draft it");
+    let bounds = harness
+        .a11y_nodes()
+        .into_iter()
+        .find(|(id, _)| *id == node)
+        .and_then(|(_, described)| described.bounds())
+        .expect("the page's button is described where it stands");
+    let (x, y) = (
+        f64::midpoint(bounds.x0, bounds.x1),
+        f64::midpoint(bounds.y0, bounds.y1),
+    );
+    harness.send(&tilo_ui_base::synthetic_input::cursor_moved(x, y));
+    let _ = harness.poll_frame();
+    // The app draws its window again while the pointer rests where it is. Nothing lays the
+    // window out again around it: what the app sent is what changes under the pointer.
+    send(&mut app, &[open("After", "shell#page-button~2")]);
+    drawn_window(&mut harness).receive();
+    let _ = sent(&mut app);
+    harness.send(&tilo_ui_base::synthetic_input::mouse_press());
+    let _ = harness.poll_frame();
+    harness.send(&tilo_ui_base::synthetic_input::mouse_release());
+    let _ = harness.poll_frame();
+    drawn_window(&mut harness).flush();
+    assert!(
+        sent(&mut app)
+            .iter()
+            .any(|message| matches!(message, ToApp::Invoke { .. } | ToApp::Fire { .. })),
+        "the control built again at the pointer takes the press, at {x},{y}"
+    );
+}

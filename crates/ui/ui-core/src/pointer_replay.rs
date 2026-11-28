@@ -185,7 +185,6 @@ impl<T: Copy + PartialEq> HeldPress<T> {
 }
 
 struct Press {
-    id: String,
     rect: Rect,
 }
 
@@ -199,21 +198,21 @@ thread_local! {
 /// rebuild, so its press is not recorded.
 fn record_press(id: &str, rect: Rect) {
     PRESS.with(|press| {
-        *press.borrow_mut() = (!id.is_empty()).then(|| Press {
-            id: id.to_owned(),
-            rect,
-        });
+        *press.borrow_mut() = (!id.is_empty()).then_some(Press { rect });
     });
 }
 
-/// Whether a control `id` placed at `rect` is the one that took the current press, rebuilt since: the
-/// same id at the same place.
+/// Whether a control `id` placed at `rect` completes the current press, rebuilt since: one drawn
+/// where the pressed control stood, and one the window names. A view that numbers what it shows
+/// draws the control that took the press as another node the next time, so the place it stands at
+/// says it is the same control: two controls never stand at one place. A control whose place moved
+/// since the press is not it.
 fn press_continues(id: &str, rect: Rect) -> bool {
     PRESS.with(|press| {
         press
             .borrow()
             .as_ref()
-            .is_some_and(|press| press.id == id && press.rect == rect)
+            .is_some_and(|press| press.rect == rect && !id.is_empty())
     })
 }
 
@@ -279,7 +278,11 @@ mod tests {
                 "copy",
                 rect + vello::kurbo::Vec2::new(0.0, 40.0)
             ));
-            assert!(!press_continues("delete", rect));
+            assert!(
+                press_continues("delete", rect),
+                "a control the window drew again where the pressed one stood continues its press: \
+                 two controls never stand at one place"
+            );
             assert!(PointerReplay::ends_press(&button(ElementState::Released)));
             PointerReplay::default().end_press();
             assert!(!press_continues("copy", rect));
@@ -288,6 +291,20 @@ mod tests {
             record_press("copy", rect);
             PointerReplay::default().before(&button(ElementState::Pressed));
             assert!(!press_continues("copy", rect));
+        }
+
+        phase a_control_the_window_drew_again_takes_the_press_the_pointer_has_not_moved_for;
+        {
+            let rect = Rect::new(0.0, 0.0, 10.0, 10.0);
+            let mut held: HeldPress<()> = HeldPress::default();
+            held.press(PressAt::one("draft~1", rect));
+            // A view that numbers what it shows draws the control as another node the next time:
+            // the one that stands where the person pressed completes the click.
+            assert_eq!(
+                held.release(Some(PressAt::one("draft~2", rect))),
+                Release::Click(()),
+                "the control drawn again where the pressed one stood runs"
+            );
         }
     }
 }

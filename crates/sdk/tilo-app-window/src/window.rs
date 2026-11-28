@@ -394,6 +394,11 @@ pub struct AppWindow {
     /// the person types meanwhile is that field's, not the one the keyboard is leaving
     /// ([`Self::hold_for_landing`]). In the composed tree.
     landing: Option<String>,
+    /// Where the pointer was and whether what stands under it changed since it moved: a control
+    /// the app drew again under a pointer that did not move has not seen the pointer over it, and
+    /// the press that follows is the person's. The same piece the shell's own windows keep
+    /// ([`ui::pointer_replay::PointerReplay`]).
+    pointer_replay: ui::pointer_replay::PointerReplay,
     /// The item the window's own view shows in place (a tree beside what it shows): what the fields
     /// of its content belong to.
     shown_in_place: Option<ResourceRef>,
@@ -598,6 +603,7 @@ impl AppWindow {
             pointed_after: None,
             focus_request: None,
             landing: None,
+            pointer_replay: ui::pointer_replay::PointerReplay::default(),
             shown_in_place: None,
             page_title: None,
             page_focus: None,
@@ -885,6 +891,9 @@ impl AppWindow {
         }
         if any {
             self.page_title = self.shown_item_title();
+            // What the app sent may have drawn its controls again: the one under the pointer has
+            // not seen it stand there, so the press or release that follows tells it first.
+            self.pointer_replay.mark_unsettled();
         }
         any
     }
@@ -2068,6 +2077,28 @@ impl AppWindow {
         self.fired > self.took
     }
 
+    /// A control the window drew again since the pointer's last move has not seen the pointer
+    /// stand over it: it learns where the pointer is before the press or release that follows, as
+    /// the window a shell draws does, so the person's click is not lost to the rebuild.
+    fn replay_pointer(
+        &mut self,
+        event: &ui::winit::event::WindowEvent,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+    ) {
+        if let Some(moved) = self.pointer_replay.before(event) {
+            let handled = *ctx.handled;
+            self.body.handle_event(&moved, ctx);
+            *ctx.handled = handled;
+        }
+    }
+
+    /// The body took the event, and it is the release that ends the press the window carries.
+    fn end_press_once(&mut self, event: &ui::winit::event::WindowEvent) {
+        if ui::pointer_replay::PointerReplay::ends_press(event) {
+            self.pointer_replay.end_press();
+        }
+    }
+
     /// Send the app what the window holds for it, and take up what the person did and what the
     /// page answered. Whether there was any of it: a flush that found nothing changed nothing,
     /// so a host that flushes every turn owes no frame for it.
@@ -2076,6 +2107,11 @@ impl AppWindow {
         // its controls raised. What they lead to changes the window, as what goes out does.
         let input = std::mem::take(&mut self.keys.input);
         let mut took = input || !self.events.is_empty();
+        if took {
+            // A control this frame draws again is a new control under the pointer: it learns
+            // where the pointer is before the press or release that follows.
+            self.pointer_replay.mark_unsettled();
+        }
         // A save under way that stalled, and a notice whose time ran: the bar says it as this
         // frame goes out, and a save that gave up asks the app for its changes again.
         let now = ui::time::now();
@@ -4326,6 +4362,12 @@ impl tilo_ui_base::widget::Decorator for AppWindow {
         "TilolangWindow"
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one input's stages in the order it reaches them: the landing a press opened, the \
+                  pointer replayed for a control drawn again, the keyboard, and what the window \
+                  declares"
+    )]
     fn handle_event(
         &mut self,
         event: &ui::winit::event::WindowEvent,
@@ -4348,6 +4390,7 @@ impl tilo_ui_base::widget::Decorator for AppWindow {
             // later comes from another app, even the same files.
             ui::widget::drag_bus::forget_offer();
         }
+        self.replay_pointer(event, ctx);
         // What the person typed while the keyboard was on its way to the field a press opened goes
         // there first, before the input this event brings.
         self.release_landing();
@@ -4406,6 +4449,7 @@ impl tilo_ui_base::widget::Decorator for AppWindow {
             && self.declared_shortcut(event, modifiers).is_some();
         if typing && !command {
             self.body.handle_event(event, ctx);
+            self.end_press_once(event);
             if *ctx.handled {
                 return;
             }
@@ -4413,6 +4457,7 @@ impl tilo_ui_base::widget::Decorator for AppWindow {
         let Some(press) = self.declared_shortcut(event, ctx.modifiers.state()) else {
             if !typing {
                 self.body.handle_event(event, ctx);
+                self.end_press_once(event);
             }
             // A file dropped where nothing of the app's own took it is the window's: it is kept,
             // and the app's view hears of it as the `File` its process reads, so a document
