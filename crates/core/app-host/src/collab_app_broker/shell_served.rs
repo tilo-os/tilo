@@ -19,7 +19,7 @@ use tilo_actions::remote::{
     InvocationReceipt, InvocationState, InvokeRequest, MAX_REMOTE_WAIT, Pending, ReceiptStatus,
     RemoteActionFrame, RemoteActionMessage, UpdateMark,
 };
-use tilo_actions::{ActionFailure, InvocationId, InvocationUpdate};
+use tilo_actions::{ActionAddress, ActionFailure, InvocationId, InvocationUpdate};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_remote_actions::asked::AskedStore;
 use tokio::sync::{mpsc, oneshot};
@@ -173,6 +173,31 @@ struct Followed {
 }
 
 impl LinkProvider {
+    /// Whether the shell's catalogue lists an action at `address`: what it may be handed. The
+    /// seat is the one provider whose calls the daemon's own forwarders make, each admitted
+    /// with the facts it was made on, so its calls are never the catalogue's to refuse.
+    fn offers(&self, address: &ActionAddress) -> bool {
+        if self.provider == crate::seat::PROVIDER {
+            return true;
+        }
+        let offered = self.catalogue.read_recover();
+        CataloguePage::from_rows(
+            offered.revision.clone(),
+            offered.rows.clone(),
+            &CatalogueQuery {
+                target: Some(address.clone()),
+                ..CatalogueQuery::default()
+            },
+        )
+        .rows
+        .iter()
+        .any(|row| {
+            row.action
+                .as_ref()
+                .is_some_and(|action| &action.address == address)
+        })
+    }
+
     /// Whether `caller` comes from a program another seat's shell handed over: what this seat's
     /// shell serves is that seat's person's, there, and never the other seat's programs'.
     fn kept_from(&self, caller: &Caller) -> bool {
@@ -381,6 +406,11 @@ impl ActionProvider for LinkProvider {
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if self.kept_from(caller) {
             return Pending::ready(Err(ActionCallError::NotPermitted));
+        }
+        // What the shell does not list is not its to run: a call of it ends refused here, as a
+        // provider refuses what it serves none of, rather than being handed over to run.
+        if !self.offers(&request.target.address) {
+            return Pending::ready(Err(ActionCallError::UnknownAction));
         }
         let (done, answer) = tilo_actions::remote::pending();
         let invocation = request.invocation;
