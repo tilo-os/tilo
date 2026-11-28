@@ -491,6 +491,7 @@ d-cuwdvehn = Quelltextbereich
     .w-write-a-typst-document = Schreibe ein Typst-Dokument
 
 d-rn3rpf4r = Statuszeile
+    .w-document-name = Dokumentname
     .w-typeset-in-ms = gesetzt in { $took_ms } ms
     .w-lines = { $len } Zeilen
     .w-pdf-ready = PDF bereit

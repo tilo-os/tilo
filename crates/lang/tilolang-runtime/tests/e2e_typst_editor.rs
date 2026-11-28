@@ -611,6 +611,94 @@ mod cases {
             );
         }
 
+        phase the_source_typesets_the_page_again_once_it_moves;
+        {
+            let desk = Desk::new();
+            let d = desk.new_document();
+            let compiled = desk.engine.inputs_of("compile").len();
+            desk.call("typeset_if_stale", vec![Value::resource(&d)]);
+            assert_eq!(
+                desk.engine.inputs_of("compile").len(),
+                compiled,
+                "a source that did not move is not typeset again"
+            );
+            let window = desk.window(&d);
+            let source = of_kind(window.tree(), "ui.CodeEditor")
+                .into_iter()
+                .next()
+                .expect("the source is edited in a code editor");
+            window
+                .edit(&source.key, &Value::text("= Rewritten\n\nNew words.\n"))
+                .expect("the source takes the edit");
+            assert_eq!(desk.text(&d, "source"), "= Rewritten\n\nNew words.\n");
+            desk.call("typeset_if_stale", vec![Value::resource(&d)]);
+            let asked = desk.engine.inputs_of("compile");
+            assert_eq!(
+                asked.len(),
+                compiled + 1,
+                "a source the person changed is typeset again"
+            );
+            assert!(
+                asked.last().expect("an ask").contains("Rewritten"),
+                "the typeset reads the words the person wrote: {:?}",
+                asked.last()
+            );
+            assert_eq!(desk.text(&d, "typeset"), desk.text(&d, "source"));
+        }
+
+        phase an_export_typesets_the_live_source_before_the_pdf_is_pulled;
+        {
+            let desk = Desk::new();
+            let d = desk.new_document();
+            let compiled = desk.engine.inputs_of("compile").len();
+            let window = desk.window(&d);
+            let source = of_kind(window.tree(), "ui.CodeEditor")
+                .into_iter()
+                .next()
+                .expect("the source is edited in a code editor");
+            window
+                .edit(&source.key, &Value::text("= Live\n\nExported at once.\n"))
+                .expect("the source takes the edit");
+            let pdf = match desk.call("export_pdf", vec![Value::resource(&d)]) {
+                InvokeOutcome::Done(Value::File(file)) => file,
+                other => panic!("an export answers a file: {other:?}"),
+            };
+            let asked = desk.engine.inputs_of("compile");
+            assert_eq!(
+                asked.len(),
+                compiled + 1,
+                "the export typesets the source the person sees first"
+            );
+            assert!(
+                asked.last().expect("an ask").contains("Exported at once"),
+                "it typesets the live words: {:?}",
+                asked.last()
+            );
+            assert_eq!(pdf.name, "Untitled.pdf");
+            assert_eq!(pdf.url(), pdf_url(), "the PDF the export typeset");
+        }
+
+        phase an_empty_document_says_it_lays_out_no_pages;
+        {
+            let desk = Desk::new();
+            let d = desk.new_document();
+            desk.engine.answer.borrow_mut().pages = Vec::new();
+            desk.call("typeset", vec![Value::resource(&d)]);
+            assert!(desk.records(&d, "pages").is_empty());
+            let window = desk.window(&d);
+            let empties = of_kind(window.tree(), "ui.EmptyState");
+            assert!(
+                empties
+                    .iter()
+                    .any(|node| text_prop(node, "title") == "This document lays out no pages"),
+                "the page column says the document is empty: {:?}",
+                empties
+                    .iter()
+                    .map(|n| text_prop(n, "title"))
+                    .collect::<Vec<_>>()
+            );
+        }
+
         phase the_window_shows_the_source_the_page_and_what_a_person_can_do;
         {
             let desk = Desk::new();
@@ -621,6 +709,13 @@ mod cases {
             let tree = window.tree();
             let sources = of_kind(tree, "ui.CodeEditor");
             assert_eq!(sources.len(), 1, "the source is edited in a code editor");
+            let names = of_kind(tree, "ui.EditableLabel");
+            assert_eq!(names.len(), 1, "the document's name is edited where it stands");
+            assert_eq!(
+                text_prop(names[0], "label"),
+                "Document name",
+                "the name's field says what it is"
+            );
             let pictures = of_kind(tree, "ui.Image");
             assert!(
                 pictures.len() >= 3,

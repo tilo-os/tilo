@@ -228,7 +228,9 @@ view document_row(d: Document) {
         title: d.name,
         secondary: if d.trouble != "" {
             d.trouble
-        } else if d.pages.is_empty() { "Not typeset yet" } else { pages_said(d) },
+        } else if d.pages.is_empty() and d.source != d.typeset {
+            "Not typeset yet"
+        } else { pages_said(d) },
         mark: if d.trouble == "" { .code } else { .triangle_alert },
         tone: if d.trouble == "" { .neutral } else { .warning },
     )
@@ -378,7 +380,7 @@ view source_pane(d: Document) {
 /// What the editor says of the document: its pages, what the typesetter found and how long it took.
 view status_line(d: Document) {
     row(gap: .related, align: .center, wrap: true) {
-        ui.EditableLabel(bind: d.name)
+        ui.EditableLabel(bind: d.name, label: "Document name")
         ui.Text(pages_said(d), role: .caption, secondary: true)
         if d.took_ms > 0 {
             ui.Text("typeset in {d.took_ms} ms", role: .caption, secondary: true)
@@ -429,7 +431,9 @@ view preview_pane(d: Document) {
         }
         if d.pages.is_empty() {
             ui.EmptyState(
-                if d.typeset == "" {
+                if d.source != d.typeset {
+                    // A typeset pending is the source that moved past the last one; a document
+                    // typeset to no pages says so instead of claiming it is still typesetting.
                     "Typesetting the document"
                 } else { "This document lays out no pages" },
                 icon: .file,
@@ -581,7 +585,7 @@ view selection_bar(
 view problems_panel(d: Document) {
     if d.problems.is_empty() {
         ui.EmptyState(
-            if d.typeset == "" { "Typesetting the document" } else { "No problems" },
+            if d.source != d.typeset { "Typesetting the document" } else { "No problems" },
             message: if d.typesets { "The document typesets cleanly." } else { "" },
             icon: .check,
         )
@@ -984,8 +988,10 @@ action save_file(d: Document) -> File (
     File.of_text(d.name, d.source)
 }
 
-/// The PDF the last typeset wrote, as the file a person saves.
+/// The PDF the last typeset wrote, as the file a person saves. A source that moved past the last
+/// typeset is typeset first, so the file holds what the person reads as they export it.
 action export_pdf(d: Document) -> File (icon: .download, label: "Export the PDF") {
+    if d.source != d.typeset { typeset(d) }
     if d.pdf != "" {
         File.at(pdf_name(d), d.pdf)
     } else {
