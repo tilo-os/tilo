@@ -101,6 +101,15 @@ impl MenuButton {
         self.menu.close();
     }
 
+    /// The menu's switch: what a press on the button and a reader's Activate both run.
+    fn switch(&mut self) {
+        if self.menu.is_open() {
+            self.menu.close();
+        } else {
+            self.open(true);
+        }
+    }
+
     fn take_request(&mut self, keyboard: bool) {
         if self.request.replace(false) {
             if self.menu.is_open() {
@@ -202,11 +211,7 @@ impl tilo_ui_base::widget::Decorator for MenuButton {
         if matches!(action, tilo_ui_base::a11y::Action::Activate)
             && Widget::is_enabled(&self.button)
         {
-            if self.menu.is_open() {
-                self.menu.close();
-            } else {
-                self.open(true);
-            }
+            self.switch();
             return true;
         }
         Widget::perform_action(&mut self.button, action, &[], state, root)
@@ -295,6 +300,13 @@ impl tilo_ui_base::widget::Decorator for MenuButton {
 
     fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         let mut node = Widget::accessibility(&self.button)?;
+        // The button's own press is the menu's switch, and its node names it: a reader's
+        // Activate — a window's, or a page's press on the element the page numbers — runs that
+        // action where it stands, as the person's click does, rather than falling back to a
+        // press at a point that a page has no pointer for.
+        if let Some(key) = node.semantic_key.clone() {
+            node.action_target = Some(key);
+        }
         node.state.expanded = Some(self.menu.is_open());
         if self.menu.is_open()
             && let Some(menu) = Widget::accessibility(&self.menu)
@@ -311,6 +323,20 @@ impl tilo_ui_base::widget::Decorator for MenuButton {
         state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
+        // Its own button's Activate is its menu's switch: the action a click runs, run where the
+        // reader aimed it, so a window and a page open the menu the same way.
+        let own = target.is_empty()
+            || Widget::accessibility(&self.button).is_some_and(|node| {
+                node.action_target.as_deref() == Some(target)
+                    || node.semantic_key.as_deref() == Some(target)
+            });
+        if own
+            && matches!(action, tilo_ui_base::a11y::Action::Activate)
+            && Widget::is_enabled(&self.button)
+        {
+            self.switch();
+            return true;
+        }
         self.menu
             .perform_semantic_action(target, action, state, path)
             || Widget::perform_semantic_action(&mut self.button, target, action, state, path)
