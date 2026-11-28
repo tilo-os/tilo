@@ -4374,24 +4374,23 @@ impl Hosted {
             PressOutcome::Asked => PressRan::Done(tilo_actions::ActionOutput::default()),
             PressOutcome::Failed(why) => PressRan::Failed(Refused::new("action_failed", why)),
         };
-        self.press_ran(
+        self.announce_press(
             invocation,
             &address,
             tilo_actions::remote::InvokeArgument::None,
-            ran,
         );
+        self.press_ran(invocation, ran);
     }
 
-    /// The press `invocation` of the app's action at `address`, with `argument`, ran here as far
-    /// as it runs now, to `ran`: it goes through the dispatch as the app's call of its own
-    /// action, admitted as the person whose press it was and kept as its invocation record, and
-    /// is answered with how it came out once the dispatch hands it back.
-    fn press_ran(
+    /// Tell the dispatch the press `invocation` of the app's action at `address`, with `argument`,
+    /// is running: it is admitted as the person whose press it was and kept as its invocation
+    /// record, which what the press writes is read against. A press announces itself before it
+    /// runs, so a copy reading its changes knows the call that made them.
+    fn announce_press(
         &self,
         invocation: tilo_actions::InvocationId,
         address: &ActionAddress,
         argument: tilo_actions::remote::InvokeArgument,
-        ran: PressRan,
     ) {
         let request = tilo_actions::remote::InvokeRequest {
             asks: false,
@@ -4422,6 +4421,11 @@ impl Hosted {
         {
             tracing::warn!(app = self.spec.app, %error, "a press did not reach the dispatch");
         }
+    }
+
+    /// The press `invocation` ran here as far as it runs now, to `ran`: it is answered with how
+    /// it came out once the dispatch hands it back.
+    fn press_ran(&self, invocation: tilo_actions::InvocationId, ran: PressRan) {
         let served = Served::Pressed(invocation);
         match ran {
             PressRan::Done(output) => {
@@ -5060,8 +5064,17 @@ impl Hosted {
         }
         let invoker = ActionInvoker::person(self.spec.person.clone());
         let opens_what_it_made = self.is_primary(&address);
-        // The press is a call of its own: it runs here now, as that call.
+        // The press is a call of its own: it runs here now, as that call, and the dispatch hears
+        // of it first, so the changes it writes are read as the call's they are, by the person
+        // who pressed.
         let call = self.press_line().begin(&address);
+        if let Some(invocation) = call {
+            self.announce_press(
+                invocation,
+                &address,
+                tilo_actions::remote::InvokeArgument::from_slot(argument.as_deref()),
+            );
+        }
         let ran = self.invoke(&address, argument.as_deref(), &invoker, None);
         if let Some(invocation) = call {
             self.press_line().end();
@@ -5074,12 +5087,7 @@ impl Hosted {
                 },
                 Err(refused) => PressRan::Failed(refused.clone()),
             };
-            self.press_ran(
-                invocation,
-                &address,
-                tilo_actions::remote::InvokeArgument::from_slot(argument.as_deref()),
-                outcome,
-            );
+            self.press_ran(invocation, outcome);
         }
         match ran {
             // A press that ran as a call waits as that call, kept with the rest of it.
