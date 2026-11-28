@@ -3569,6 +3569,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             }
             // The process opens the window ([`process_windows`]), not one of
             // its windows.
+            #[cfg(feature = "local-daemons")]
             UserEvent::OpenWindow(_) => return,
             other => other,
         };
@@ -3709,6 +3710,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             | UserEvent::RenderReady(_)
             | UserEvent::DevSessionStop
             | UserEvent::DevSessionReload => {}
+            #[cfg(feature = "local-daemons")]
             UserEvent::OpenWindow(_) => {}
             UserEvent::AccessKit {
                 event: ak_event, ..
@@ -5272,7 +5274,10 @@ impl App {
     where
         F: FnOnce(EventLoopProxy<UserEvent>),
     {
+        #[cfg(feature = "local-daemons")]
         self.run_windows(setup, None);
+        #[cfg(not(feature = "local-daemons"))]
+        self.run_windows(setup);
     }
 
     /// [`Self::run_with_setup`], serving the windows the shell opens in this
@@ -5286,7 +5291,7 @@ impl App {
     pub(crate) fn run_windows<F>(
         mut self,
         setup: F,
-        open: Option<&mut process_windows::OpenWindow<'_>>,
+        #[cfg(feature = "local-daemons")] open: Option<&mut process_windows::OpenWindow<'_>>,
     ) where
         F: FnOnce(EventLoopProxy<UserEvent>),
     {
@@ -5361,11 +5366,15 @@ impl App {
         // The channel is taken before the launch's own window is made: the
         // shell takes a window as it maps as one this process serves, and only
         // a process that said so before that is served more.
+        #[cfg(feature = "local-daemons")]
         let open = open.and_then(|open| process_windows::serve_link(&proxy).map(|()| open));
         let mut handler = self.into_handler(&proxy, native_scenario, setup);
         handler.windowless = crate::process::environment().windowless;
         handler.no_window_idle = crate::process::environment().no_window_idle;
+        #[cfg(feature = "local-daemons")]
         let mut handler = process_windows::ProcessWindows::new(handler, proxy, open);
+        #[cfg(not(feature = "local-daemons"))]
+        let mut handler = process_windows::ProcessWindows::new(handler, proxy);
         // Run on demand, so a window that gives its place to the next one
         // (`hand_over`) keeps the loop for that window to run on. On every
         // target winit's `run_app` is this same loop, consuming it.
@@ -5699,6 +5708,8 @@ fn hand_over(handler: &mut AppHandler, event_loop: EventLoop<UserEvent>) {
         let app_id = primary_window_app_id(handler.app.window.app_id.as_deref());
         EARLY_WINDOW.with(|slot| *slot.borrow_mut() = Some((app_id, window)));
     }
+    // The shell-ui connection goes to the next window over the window link.
+    #[cfg(feature = "local-daemons")]
     if let Some(client) = handler.app.floating.client.take() {
         client.hand_over();
     }

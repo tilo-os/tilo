@@ -248,7 +248,7 @@ pub enum UserEvent {
     #[cfg(feature = "native")]
     SafeAreaChanged,
     /// The shell opens one more window of the app in this process ([`crate::window_link`]).
-    #[cfg(feature = "native")]
+    #[cfg(all(feature = "native", feature = "local-daemons"))]
     OpenWindow(crate::window_link::PendingWindow),
 }
 

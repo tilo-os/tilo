@@ -19,10 +19,12 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::window::WindowId;
 
 /// Builds the window the shell asked for, or says why it cannot.
+#[cfg(feature = "local-daemons")]
 pub(crate) type OpenWindow<'a> = dyn FnMut(crate::window_link::PendingWindow) -> Option<App> + 'a;
 
 /// Read the window link the launcher handed this process, if it was handed
 /// one, waking the loop behind `proxy` with each window the shell asks for.
+#[cfg(feature = "local-daemons")]
 pub(super) fn serve_link(proxy: &EventLoopProxy<UserEvent>) -> Option<()> {
     let link = crate::window_link::take_link()?;
     let proxy = proxy.clone();
@@ -39,6 +41,7 @@ pub(super) struct ProcessWindows<'a, 'b> {
     /// Each window's bar, beside it in `windows`: what its app declares while it runs.
     bars: Vec<crate::hosted_window::HostedWindow>,
     proxy: EventLoopProxy<UserEvent>,
+    #[cfg(feature = "local-daemons")]
     open: Option<&'a mut OpenWindow<'b>>,
     /// The window that last had the keyboard: input of no window goes to it.
     focused: Option<WindowId>,
@@ -48,7 +51,7 @@ impl<'a, 'b> ProcessWindows<'a, 'b> {
     pub(super) fn new(
         first: AppHandler,
         proxy: EventLoopProxy<UserEvent>,
-        open: Option<&'a mut OpenWindow<'b>>,
+        #[cfg(feature = "local-daemons")] open: Option<&'a mut OpenWindow<'b>>,
     ) -> Self {
         // The launch's window declared its bar before the loop ran it: it keeps that bar.
         let bar = crate::hosted_window::HostedWindow::new();
@@ -58,6 +61,7 @@ impl<'a, 'b> ProcessWindows<'a, 'b> {
             windows: vec![first],
             bars: vec![bar],
             proxy,
+            #[cfg(feature = "local-daemons")]
             open,
             focused: None,
         }
@@ -92,6 +96,7 @@ impl<'a, 'b> ProcessWindows<'a, 'b> {
             .position(|handler| handler.closing.get())
         {
             if self.windows.len() == 1 {
+                #[cfg(feature = "local-daemons")]
                 crate::window_link::stop_serving();
                 event_loop.exit();
                 return;
@@ -104,6 +109,7 @@ impl<'a, 'b> ProcessWindows<'a, 'b> {
         }
     }
 
+    #[cfg(feature = "local-daemons")]
     fn open_window(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -141,6 +147,7 @@ impl<'a, 'b> ProcessWindows<'a, 'b> {
 impl ApplicationHandler<UserEvent> for ProcessWindows<'_, '_> {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
+            #[cfg(feature = "local-daemons")]
             UserEvent::OpenWindow(pending) => self.open_window(event_loop, pending),
             // Each app takes the wakes of its own scope and ignores the rest.
             event @ (UserEvent::Wake(_)

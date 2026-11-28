@@ -32,12 +32,14 @@ static TAKING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::
 /// The process's loop starts, with one window taking invocations.
 #[cfg(feature = "native")]
 pub fn process_starts() {
+    #[cfg(feature = "local-daemons")]
     TAKING.store(1, std::sync::atomic::Ordering::Release);
 }
 
 /// The shell asked the process for one more window: it takes invocations too.
 #[cfg(feature = "native")]
 pub fn window_takes_invocations() {
+    #[cfg(feature = "local-daemons")]
     TAKING.fetch_add(1, std::sync::atomic::Ordering::Release);
 }
 
