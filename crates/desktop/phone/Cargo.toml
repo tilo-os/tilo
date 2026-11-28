@@ -79,6 +79,8 @@ tilo-process-services = { version = "0.1.0", path = "../../sdk/tilo-process-serv
 # The Android receiver's JNI entry is type-checked by the unit tests.
 jni = "0.21.1"
 tempfile.workspace = true
+# What the daemon this process runs says while a test drives it, shown when the test fails.
+tracing-subscriber.workspace = true
 # The phone's places, set as its launch sets them and put back after the test.
 tilo-test-env = { path = "../../../tools/test-env" }
 # The person's laptop that prints the phone's ticket, and the server it enters.

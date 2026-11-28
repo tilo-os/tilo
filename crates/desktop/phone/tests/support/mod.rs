@@ -37,6 +37,15 @@ impl Home {
             !MADE.swap(true, std::sync::atomic::Ordering::SeqCst),
             "one phone per test process"
         );
+        // What the daemon says while the test drives it: the words a failure is read by, kept
+        // with the test's own output.
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+            )
+            .with_test_writer()
+            .try_init();
         let dir = tempfile::Builder::new().prefix("phone").tempdir().unwrap();
         let root = dir.path();
         let files = root.join("files");
