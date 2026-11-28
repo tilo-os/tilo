@@ -1,7 +1,6 @@
 {
   "app": "shortcuts",
   "said": "Write a shortcut, review what saving would allow, copy it and put it away",
-  "family": "apps",
   "live": "tl",
   "tl": {
     "id": "so.tilo.shortcuts",
@@ -194,6 +193,5 @@
         }
       ]
     }
-  ],
-  "order": 51
+  ]
 }

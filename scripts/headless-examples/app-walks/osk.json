@@ -1,7 +1,6 @@
 {
   "app": "osk",
   "said": "The keyboard stands, shifts, shows its symbols and emoji, parks and hides",
-  "family": "apps",
   "live": "tl",
   "tl": {
     "id": "so.tilo.osk",
@@ -206,6 +205,5 @@
         }
       ]
     }
-  ],
-  "order": 51
+  ]
 }
