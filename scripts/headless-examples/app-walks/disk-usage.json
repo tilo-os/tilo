@@ -39,7 +39,7 @@
         { "press": "Cancel" },
         { "press": "Go back" },
         { "wait_for": { "shown": "Places" } },
-        { "must": { "see": ["Places", "Recent"] } }
+        { "must": { "see": ["Places", "Home", "File system", "Workspace"] } }
       ],
       "budget_ms": 30000
     }
