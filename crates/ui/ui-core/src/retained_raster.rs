@@ -199,6 +199,26 @@ impl RetainedRaster {
         canvas.rasterize(&frame)
     }
 
+    /// [`Self::rasterize_to_cpu`] for a frame whose scene holds only what its damage needs, as
+    /// [`Self::rasterize_damage_only`] draws one on the GPU: `Err` with [`DAMAGE_ONLY_REFUSED`] when
+    /// it would have to be drawn beyond that damage.
+    pub fn rasterize_to_cpu_damage_only(&mut self, frame: FrameContent<'_>) -> Result<u64, String> {
+        if frame.full_redraw
+            || !frame.backdrop.is_empty()
+            || !repaints_alone(frame.width, frame.height, frame.damage_regions)
+        {
+            return Err(DAMAGE_ONLY_REFUSED.to_owned());
+        }
+        let canvas = self
+            .cpu
+            .as_mut()
+            .ok_or("this rasterizer draws on the GPU")?;
+        canvas.draw_damage_only(true);
+        let rasterized = canvas.rasterize(&frame);
+        canvas.draw_damage_only(false);
+        rasterized
+    }
+
     /// The pixels [`Self::rasterize_to_cpu`] last drew, while this scratch
     /// draws on the CPU.
     #[must_use]

@@ -535,6 +535,10 @@ impl Service {
                 damage,
                 gpu_us: u32::try_from(started.elapsed().as_micros()).unwrap_or(u32::MAX),
             },
+            // A frame drawn for its damage alone that the service would have to draw whole.
+            Ok(Err(error)) if error == ui::retained_raster::DAMAGE_ONLY_REFUSED => {
+                Drawn::Dropped(Refusal::DamageOnly)
+            }
             Ok(Err(error)) => Drawn::Dropped(Refusal::RenderFailed(error)),
             Err(panic) => Drawn::Panicked(tilo_rt::panic_boundary::message(&*panic).to_owned()),
         }

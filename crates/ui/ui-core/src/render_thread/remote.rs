@@ -459,6 +459,9 @@ struct FrameJob<'a> {
     damage: &'a [Rect],
     copies: &'a [tilo_ui_base::scroll_copy::DeviceCopy],
     full: bool,
+    /// The scene holds only what `damage` needs (`tilo_ui_base::draw_cull`): the service refuses it
+    /// rather than draw more of it.
+    partial: bool,
     backdrop: &'a tilo_ui_base::part_paint::backdrop::BackdropFrame,
 }
 
@@ -498,6 +501,7 @@ impl Worker {
                 mut damage_regions,
                 scroll_copies,
                 full_redraw,
+                partial,
                 backdrop,
                 on_present,
                 ..
@@ -514,6 +518,7 @@ impl Worker {
                 damage: &damage_regions,
                 copies: &scroll_copies,
                 full: full_redraw,
+                partial,
                 backdrop: &backdrop,
             };
             let outcome = if let Some(live) = session.as_mut() {
@@ -784,7 +789,9 @@ impl Worker {
 
     fn dropped(&self, why: &Refusal) -> FrameOutcome {
         match why {
-            Refusal::Throttled => {}
+            // A frame drawn for its damage alone that the service would have drawn whole: the
+            // next frame is drawn whole, as a local worker asks for one.
+            Refusal::Throttled | Refusal::DamageOnly => {}
             Refusal::RenderFailed(reason) => {
                 tracing::warn!(%reason, "the render service could not draw a frame");
             }
@@ -822,7 +829,7 @@ fn refused_registration(why: &Refusal) -> ! {
 /// Whether a frame the service dropped is drawn again at once, whole.
 fn wake_after_drop(why: &Refusal) -> bool {
     match why {
-        Refusal::Throttled | Refusal::RenderFailed(_) => true,
+        Refusal::Throttled | Refusal::RenderFailed(_) | Refusal::DamageOnly => true,
         Refusal::Invalid(_) | Refusal::OverLimit(_) => false,
     }
 }
@@ -849,6 +856,9 @@ fn encode(session: &mut Session, job: &FrameJob<'_>, sequence: u64) -> Result<Ve
         job.base_color,
         job.full,
     );
+    if job.partial {
+        writer.damage_only();
+    }
     if !job.full {
         let damage: Vec<WireRect> = job
             .damage

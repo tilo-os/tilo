@@ -17,7 +17,8 @@
 //!
 //! - [`SECTION_DAMAGE`]: rectangles of the surface that changed since the
 //!   previous frame, in pixels. With the header's [`FRAME_FULL`] the whole
-//!   surface did.
+//!   surface did. With its [`FRAME_DAMAGE_ONLY`] the scene holds only what
+//!   that damage needs, and is never drawn beyond it.
 //! - [`SECTION_SCROLL_COPY`]: copies within the retained surface, in order,
 //!   before the damage is repainted (what a scroll keeps).
 //! - [`SECTION_LAYER`]: a layer's new content, transform, opacity and clip;
@@ -40,6 +41,11 @@ const HEADER_BYTES: usize = 48;
 
 /// The whole surface changed: repaint all of it.
 pub const FRAME_FULL: u16 = 1;
+
+/// The scene holds only what the frame's damage needs (an app leaves out what the pixels it
+/// presented last still show): a service that would have to draw more of it than that damage
+/// refuses the frame ([`crate::control::Refusal::DamageOnly`]) and the app sends it whole.
+pub const FRAME_DAMAGE_ONLY: u16 = 2;
 
 /// A reader that does not know this section's kind skips it.
 pub const SECTION_OPTIONAL: u16 = 1;
@@ -173,6 +179,8 @@ pub struct Frame {
     pub height: u32,
     pub base_color: [f32; 4],
     pub full: bool,
+    /// The scene holds only what the damage needs ([`FRAME_DAMAGE_ONLY`]).
+    pub damage_only: bool,
     pub damage: Vec<Rect>,
     pub scroll_copies: Vec<ScrollCopy>,
     pub layers: Vec<LayerUpdate>,
@@ -209,6 +217,18 @@ impl<'a> FrameWriter<'a> {
             w.f32(value);
         }
         Self { out, start }
+    }
+
+    /// The scene holds only what this frame's damage needs ([`FRAME_DAMAGE_ONLY`]).
+    pub fn damage_only(&mut self) {
+        let at = self.start.saturating_add(6);
+        if let Some(flags) = self
+            .out
+            .get_mut(at..at.saturating_add(2))
+            .and_then(|flags| <&mut [u8; 2]>::try_from(flags).ok())
+        {
+            *flags = (u16::from_le_bytes(*flags) | FRAME_DAMAGE_ONLY).to_le_bytes();
+        }
     }
 
     fn section(
@@ -438,7 +458,7 @@ pub fn read(
         return Err(WireError::Malformed("frame version"));
     }
     let flags = r.u16()?;
-    if flags & !FRAME_FULL != 0 {
+    if flags & !(FRAME_FULL | FRAME_DAMAGE_ONLY) != 0 {
         return Err(WireError::Malformed("frame flags"));
     }
     if r.u32()? as usize != bytes.len() {
@@ -451,6 +471,7 @@ pub fn read(
         height: r.u32()?,
         base_color: [r.f32()?, r.f32()?, r.f32()?, r.f32()?],
         full: flags & FRAME_FULL != 0,
+        damage_only: flags & FRAME_DAMAGE_ONLY != 0,
         damage: Vec::new(),
         scroll_copies: Vec::new(),
         layers: Vec::new(),

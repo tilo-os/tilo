@@ -2728,14 +2728,13 @@ impl AppHandler {
         // backdrop under the material before the frame renders.
         let backdrop_recording = tilo_ui_base::part_paint::backdrop::BackdropRecording::begin();
         tilo_ui_base::part_paint::backdrop::layer_scene(&scene, 0);
-        // The local render worker repaints only the damage from each scene,
-        // over the pixels it presented last: a frame that repaints neither
-        // whole nor under layers the widgets' damage does not describe is
-        // drawn only where its damage needs it (`tilo_ui_base::draw_cull`).
-        let culls = !full_redraw_required
-            && !self.top_layer_drawn
-            && app.history_widget().is_none()
-            && !crate::render_thread::remote::requested();
+        // The render worker, local or the workspace's render service, repaints only the damage
+        // from each scene, over the pixels it presented last: a frame that repaints neither whole
+        // nor under layers the widgets' damage does not describe is drawn only where its damage
+        // needs it (`tilo_ui_base::draw_cull`). A worker that would have to draw such a frame
+        // whole refuses it, and the next frame is drawn whole.
+        let culls =
+            !full_redraw_required && !self.top_layer_drawn && app.history_widget().is_none();
         // While a view pans, the frame is drawn as layers instead of culled:
         // its worker copies what the pan keeps of the view and rasterises
         // only what it uncovered, under chrome it keeps too.

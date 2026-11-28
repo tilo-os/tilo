@@ -208,6 +208,15 @@ fn connect(broker: &Channel, connection: u64, app_id: &str) -> App {
 impl App {
     /// Send `scene` as the surface's content and return the sequence.
     fn frame(&mut self, scene: &Scene, damage: Option<Rect>) -> u64 {
+        self.send_frame(scene, damage, false)
+    }
+
+    /// Send `scene`, which holds only what `damage` needs, and return the sequence.
+    fn damage_only(&mut self, scene: &Scene, damage: Rect) -> u64 {
+        self.send_frame(scene, Some(damage), true)
+    }
+
+    fn send_frame(&mut self, scene: &Scene, damage: Option<Rect>, damage_only: bool) -> u64 {
         self.sequence += 1;
         let mut record = Vec::new();
         let mut writer = FrameWriter::new(
@@ -217,6 +226,9 @@ impl App {
             [0.0, 0.0, 0.0, 1.0],
             damage.is_none(),
         );
+        if damage_only {
+            writer.damage_only();
+        }
         if let Some(rect) = damage {
             writer.damage(&[rect]).unwrap();
         }
@@ -531,6 +543,98 @@ fn a_partial_frame_lands_where_the_buffer_shows_it_and_paints_no_black() {
     assert_eq!(pixel(now, 41, 31), [0, 255, 0, 255], "the green square");
     assert_eq!(pixel(now, 57, 5), [0, 255, 255, 255], "the yellow square");
     assert_eq!(pixel(now, 21, 41), [255, 0, 255, 255], "the magenta square");
+}
+
+/// An app that leaves out of its scene what the pixels it presented last still show sends the
+/// frame as damage only: the service draws it over its last frame where the damage says and
+/// nowhere else, so the buffer is pixel for pixel the one a whole scene makes; and where it would
+/// have to draw the frame whole (it holds no frame yet), it refuses it and draws nothing, and the
+/// app sends it whole.
+#[test]
+fn a_frame_drawn_for_its_damage_alone_matches_the_whole_one_or_is_refused() {
+    let broker = start(Limits::default());
+    let red = Color::from_rgba8(255, 0, 0, 255);
+    let blue = Color::from_rgba8(0, 0, 255, 255);
+    let ground = KRect::new(0.0, 0.0, f64::from(W), f64::from(H));
+    let square = KRect::new(8.0, 8.0, 24.0, 20.0);
+    let damage = Rect {
+        x0: square.x0 as f32,
+        y0: square.y0 as f32,
+        x1: square.x1 as f32,
+        y1: square.y1 as f32,
+    };
+    let whole = {
+        let mut scene = filled(red, ground);
+        scene.fill(Fill::NonZero, Affine::IDENTITY, blue, None, &square);
+        scene
+    };
+    // What the damage needs: the square, and the ground under it.
+    let culled = {
+        let mut scene = filled(red, square);
+        scene.fill(Fill::NonZero, Affine::IDENTITY, blue, None, &square);
+        scene
+    };
+    // The buffers a connection's first frame brings, and the one that frame is in.
+    let first_buffers = |app: &App| -> (Vec<Mapping>, u32) {
+        let Received { message, fds } = app.recv();
+        let ServiceMessage::Buffers { .. } = message else {
+            panic!("buffers first, got {message:?}");
+        };
+        let buffers = fds
+            .iter()
+            .map(|fd| {
+                Mapping::map_sealed(fd, false, (W * H * 4) as usize, (W * H * 4) as usize).unwrap()
+            })
+            .collect();
+        let ServiceMessage::FrameReady { buffer, .. } = app.recv().message else {
+            panic!("frame ready");
+        };
+        (buffers, buffer)
+    };
+    let ready = |app: &App| -> u32 {
+        let ServiceMessage::FrameReady { buffer, .. } = app.recv().message else {
+            panic!("frame ready");
+        };
+        buffer
+    };
+
+    // The culled frame.
+    let mut culling = connect(&broker, 1, "so.tilo.notes");
+    let refused = culling.damage_only(&culled, damage);
+    let ServiceMessage::FrameDropped { sequence, why } = culling.recv().message else {
+        panic!("a frame drawn for its damage with no frame under it is refused");
+    };
+    assert_eq!(
+        (sequence, why),
+        (refused, Refusal::DamageOnly),
+        "with no frame under it, a damage-only frame would be drawn whole: it is refused"
+    );
+    culling.frame(&filled(red, ground), None);
+    let (culled_buffers, _) = first_buffers(&culling);
+    culling.damage_only(&culled, damage);
+    let culled_buffer = &culled_buffers[ready(&culling) as usize];
+
+    // Its twin, drawn whole.
+    let mut whole_app = connect(&broker, 2, "so.tilo.notes");
+    whole_app.frame(&filled(red, ground), None);
+    let (whole_buffers, _) = first_buffers(&whole_app);
+    whole_app.frame(&whole, Some(damage));
+    let whole_buffer = &whole_buffers[ready(&whole_app) as usize];
+
+    assert_eq!(pixel(culled_buffer, 12, 12), [255, 0, 0, 255], "the square");
+    assert_eq!(
+        pixel(culled_buffer, 40, 40),
+        [0, 0, 255, 255],
+        "the ground it left out"
+    );
+    let differing = (0..H)
+        .flat_map(|y| (0..W).map(move |x| (x, y)))
+        .filter(|&(x, y)| pixel(culled_buffer, x, y) != pixel(whole_buffer, x, y))
+        .count();
+    assert_eq!(
+        differing, 0,
+        "the culled frame shows what the whole one does"
+    );
 }
 
 /// Every face of the catalog files a line of CJK text with emoji is set in, each file read once

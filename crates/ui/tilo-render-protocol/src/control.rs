@@ -140,6 +140,10 @@ pub enum Refusal {
     /// been waited out, never refused. A service that still sends this drew
     /// nothing; the app sends a full frame again.
     Throttled,
+    /// The frame's scene held only what its damage needs and the service would have had to draw
+    /// more of it (its target was lost, a backdrop, a damage it repaints whole); nothing was
+    /// drawn, and the app sends the frame whole.
+    DamageOnly,
 }
 
 impl From<WireError> for Refusal {

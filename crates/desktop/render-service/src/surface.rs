@@ -182,19 +182,14 @@ impl Surface {
         let backdrop = backdrop_frame(frame, resources).map_err(|error| error.to_string())?;
         let full_redraw =
             frame.full || !self.target_valid || !backdrop.is_empty() || self.had_backdrop;
+        // A scene that holds only what its damage needs cannot be drawn whole: the target keeps
+        // the last frame, and the app sends this one whole.
+        if frame.damage_only && full_redraw {
+            return Err(ui::retained_raster::DAMAGE_ONLY_REFUSED.to_owned());
+        }
+        let damage_only = frame.damage_only;
         let damage_rects: Vec<Rect> = frame.damage.iter().map(|rect| kurbo_rect(*rect)).collect();
-        let scroll_copies: Vec<tilo_ui_base::scroll_copy::DeviceCopy> = frame
-            .scroll_copies
-            .iter()
-            .map(|copy| tilo_ui_base::scroll_copy::DeviceCopy {
-                x: copy.x,
-                y: copy.y,
-                width: copy.width,
-                height: copy.height,
-                dx: copy.dx,
-                dy: copy.dy,
-            })
-            .collect();
+        let scroll_copies = device_copies(frame);
         let Self {
             layers,
             order,
@@ -223,19 +218,24 @@ impl Surface {
                     gpu.renderer.trim_pooled_buffers();
                 }
                 let target = target.get_or_insert_with(|| new_target(&gpu.device, width, height));
-                raster
-                    .rasterize(
-                        (&gpu.device, &gpu.queue),
-                        Some(&mut gpu.renderer),
-                        RetainedTarget {
-                            texture: &target.texture,
-                            view: &target.view,
-                        },
-                        content,
-                    )
-                    .0
-                    .map(|_| ())
+                let target = RetainedTarget {
+                    texture: &target.texture,
+                    view: &target.view,
+                };
+                let device = (&gpu.device, &gpu.queue);
+                if damage_only {
+                    raster
+                        .rasterize_damage_only(device, &mut gpu.renderer, target, content)
+                        .0
+                        .map(|_| ())
+                } else {
+                    raster
+                        .rasterize(device, Some(&mut gpu.renderer), target, content)
+                        .0
+                        .map(|_| ())
+                }
             }
+            None if damage_only => raster.rasterize_to_cpu_damage_only(content).map(|_| ()),
             None => raster.rasterize_to_cpu(content).map(|_| ()),
         };
         self.had_backdrop = !backdrop.is_empty();
@@ -620,4 +620,20 @@ fn backdrop_frame(
         })
         .collect::<Result<_, WireError>>()?;
     Ok(tilo_ui_base::part_paint::backdrop::BackdropFrame { regions })
+}
+
+/// The pixels `frame` moves within the target, as the rasterizer copies them.
+fn device_copies(frame: &Frame) -> Vec<tilo_ui_base::scroll_copy::DeviceCopy> {
+    frame
+        .scroll_copies
+        .iter()
+        .map(|copy| tilo_ui_base::scroll_copy::DeviceCopy {
+            x: copy.x,
+            y: copy.y,
+            width: copy.width,
+            height: copy.height,
+            dx: copy.dx,
+            dy: copy.dy,
+        })
+        .collect()
 }
