@@ -118,6 +118,19 @@ d-24ilmj72 = Vor-Zeile
     .w-nothing-now = Jetzt nichts
     .w-was = War { $before }
 
+d-j7eah2gc = Vor
+    .w-just-now = Gerade eben
+    .w-1-minute-ago = Vor 1 Minute
+    .w-minutes-ago = Vor { $minutes } Minuten
+    .w-1-hour-ago = Vor 1 Stunde
+    .w-hours-ago = Vor { $hours } Stunden
+    .w-yesterday = Gestern
+    .w-1-day-ago = Vor 1 Tag
+    .w-days-ago = Vor { $days } Tagen
+
+d-o6yuvcjn = Was dieses Gerät getan hat
+    .w-what-this-device-did = Was dieses Gerät getan hat
+
 d-iwboeiq3 = Fensterkarte
     .w-empty-window = Leeres Fenster
     .w-one-tab-of-the-width = Ein Tab, { $share } % der Breite

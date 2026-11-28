@@ -6,6 +6,7 @@ app so.tilo.activity "Activity" (
 )
 
 use so.tilo.history as history
+use so.tilo.device as device
 
 /// The workspace's activity as this window shows it. The history itself is the session's,
 /// read through `so.tilo.history`: this app keeps no copy of it, and every change it shows
@@ -359,6 +360,7 @@ view changes(
                         on press: set(limit, page_limit + 200)
                     }
                 }
+                what_this_device_did()
             }
             // The range the person selected, beside the list as the window's inspector: its
             // detail is the session's reading of that one range, so another window showing
@@ -380,6 +382,41 @@ view changes(
     } else {
         ui.Text("Loading changes", role: .caption, secondary: true)
     }
+}
+
+/// What this device did beside the workspace's changes: the notifications the session itself
+/// posted, which need no decision — a backup it kept, an app it installed, a job it finished.
+/// A notice an app sent is the app's own business and stands in Notifications.
+view what_this_device_did() {
+    let ours = device.notifications.notices.filter(one -> one.from == "")
+    if not ours.is_empty() {
+        ui.Section("What this device did") {
+            for notice in ours {
+                ui.ListRow(
+                    title: notice.title,
+                    secondary: notice.body,
+                    meta: ago(notice.age_seconds),
+                    icon: .bell,
+                )
+            }
+        }
+    }
+}
+
+/// How long ago a notice reached this device, in the words a person reads.
+fn ago(seconds: Int) -> Text {
+    let minutes = seconds / 60
+    let hours = seconds / 3600
+    let days = seconds / 86400
+    if seconds < 60 {
+        std.say("Just now")
+    } else if seconds < 3600 {
+        if minutes == 1 { std.say("1 minute ago") } else { std.say("{minutes} minutes ago") }
+    } else if seconds < 86400 {
+        if hours == 1 { std.say("1 hour ago") } else { std.say("{hours} hours ago") }
+    } else if seconds < 172800 {
+        std.say("Yesterday")
+    } else if days == 1 { std.say("1 day ago") } else { std.say("{days} days ago") }
 }
 
 /// One change: what it was, who made it, where it landed, and which of the person's devices

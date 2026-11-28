@@ -1012,3 +1012,76 @@ fn command_of(value: Value) -> String {
         other => panic!("a command is an enum value, not {other:?}"),
     }
 }
+
+/// This device's notifications, as the notifications service publishes them.
+fn notifications() -> ResourceRef {
+    ResourceRef::parse_id("session:notifications", "so.tilo.device#Notifications")
+        .expect("the notifications' address")
+}
+
+/// One notice the notifications service holds, `age` seconds old.
+fn a_notice(number: u64, title: &str, body: &str, from: &str, age: u64) -> Json {
+    json!({
+        "number": number,
+        "title": title,
+        "body": body,
+        "from": from,
+        "kind": "info",
+        "seen": false,
+        "actions": [],
+        "age_seconds": age,
+        "preview": false,
+    })
+}
+
+#[test]
+fn what_this_device_did_reads_the_sessions_own_notices() {
+    let app = installed("{}");
+    app.device_says(&feed(0), &page(changes(1), 1));
+    app.device_says(
+        &notifications(),
+        &json!({
+            "count": 2,
+            "quiet": null,
+            "notices": [
+                a_notice(1, "Backed up your home folder", "18.4 GB kept", "", 125),
+                a_notice(2, "New message", "Ada: lunch?", "Messages", 40),
+            ],
+            "banners": [],
+            "banner": null,
+            "undo": false,
+            "focused": null,
+        })
+        .to_string(),
+    );
+    let window = open_history(&app);
+    let words = shown(&window);
+    assert!(
+        words.iter().any(|text| text == "What this device did"),
+        "{words:?}"
+    );
+    assert!(
+        words
+            .iter()
+            .any(|text| text == "Backed up your home folder"),
+        "{words:?}"
+    );
+    let notice = of_kind(window.tree(), "ui.ListRow")
+        .into_iter()
+        .find(|node| node.props.get("title") == Some(&Value::text("Backed up your home folder")))
+        .unwrap_or_else(|| panic!("the notice is a row: {words:?}"));
+    assert_eq!(
+        notice.props.get("secondary"),
+        Some(&Value::text("18.4 GB kept")),
+        "the notice says what it did"
+    );
+    assert_eq!(
+        notice.props.get("meta"),
+        Some(&Value::text("2 minutes ago")),
+        "the notice says how long ago it reached this device"
+    );
+    assert!(
+        !words.iter().any(|text| text == "New message"),
+        "an app's notice is the app's, not what this device did: {words:?}"
+    );
+}
