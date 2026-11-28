@@ -1000,6 +1000,66 @@ fn wheel(dy: f32) -> WindowEvent {
     tilo_ui_base::synthetic_input::mouse_wheel(0.0, dy)
 }
 
+/// A footer action is a target of the input it is used with: a finger presses its whole grown
+/// button, not a 32-pixel strip inside it.
+#[test]
+fn a_touch_presses_each_footer_action_within_its_target() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let theme = Theme::dark();
+    let (_, cancel) = counter();
+    let (_, connect) = counter();
+    let mut dialog = ModalDialog::new("Connection", Text::new("Body"))
+        .primary_action("Connect", connect)
+        .secondary_action("Cancel", cancel)
+        .open(true);
+    Widget::set_interaction_environment(
+        &mut dialog,
+        tilo_ui_base::interaction::InteractionEnvironment::TOUCH,
+    );
+    lay_out(&mut dialog, WINDOW, &theme);
+    let side = f64::from(tilo_ui_base::interaction::InteractionEnvironment::TOUCH.minimum_target());
+    for (name, rect) in [
+        ("primary", dialog.primary_rect()),
+        ("secondary", dialog.secondary_rect()),
+    ] {
+        assert!(
+            rect.width() >= side - 0.5 && rect.height() >= side - 0.5,
+            "a finger presses the {name} answer: {rect:?}"
+        );
+    }
+}
+
+/// A modal a view declares is the sheet the person reads: the input the window is reached with
+/// reaches the dialog, not only the content it holds, so its answer stands a finger high.
+#[test]
+fn a_declared_modal_takes_the_input_its_window_is_reached_with() {
+    use tilo_ui_app::widget::primitives::{DeclaredModal, ModalProps};
+    use tilo_ui_base::component::Described;
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let theme = Theme::dark();
+    let mut declared = <DeclaredModal as Described>::from_props(
+        "about",
+        ModalProps {
+            title: "About".to_owned(),
+            open: true,
+            primary: Some("Close".to_owned()),
+            ..ModalProps::default()
+        },
+    );
+    Widget::set_interaction_environment(
+        &mut declared,
+        tilo_ui_base::interaction::InteractionEnvironment::TOUCH,
+    );
+    let dialog = declared.dialog();
+    lay_out(dialog, WINDOW, &theme);
+    let side = f64::from(tilo_ui_base::interaction::InteractionEnvironment::TOUCH.minimum_target());
+    let rect = dialog.primary_rect();
+    assert!(
+        rect.width() >= side - 0.5 && rect.height() >= side - 0.5,
+        "a finger presses the declared answer: {rect:?}"
+    );
+}
+
 fn footer_buttons<C: Widget + 'static>(d: &ModalDialog<C>) -> Vec<tilo_ui_base::a11y::AccessNode> {
     Widget::children(d)
         .into_iter()

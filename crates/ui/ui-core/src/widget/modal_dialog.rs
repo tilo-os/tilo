@@ -2414,7 +2414,7 @@ impl Widget for ModalDialog<dyn Widget> {
                             .with_name(widget_text(&action.label))
                             .with_key(index)
                             .with_state(state)
-                            .with_bounds(bounds)
+                            .with_bounds(self.environment.minimum_target_rect(bounds))
                             .with_action_target(format!("dialog:{}:{key}", self.action_identity)),
                     );
                 }
@@ -2429,7 +2429,10 @@ impl Widget for ModalDialog<dyn Widget> {
                     ))
                     .with_key(3)
                     .with_state(AccessState::new().focusable(true))
-                    .with_bounds(self.close_rect().unwrap_or(Rect::ZERO))
+                    .with_bounds(
+                        self.environment
+                            .minimum_target_rect(self.close_rect().unwrap_or(Rect::ZERO)),
+                    )
                     .with_action_target(self.close_target()),
             );
         }

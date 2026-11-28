@@ -189,6 +189,15 @@ impl Widget for DeclaredModal {
         self.dialog.children()
     }
 
+    /// The input the window is reached with reaches the sheet, not only the content it holds:
+    /// its answers grow to a finger's target as a dialog laid out by hand does.
+    fn set_interaction_environment(
+        &mut self,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
+    ) {
+        self.dialog.set_interaction_environment(environment);
+    }
+
     /// The dialog's content is laid out in the top layer even while the wrapper's children
     /// hide it: the walk follows the dialog's own.
     fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
