@@ -3093,16 +3093,24 @@ fn a_system_daemons_services_are_the_accounts_and_its_native_endpoint_is_everyon
         );
     }
 
-    // One account's own daemon keeps its services beside its native endpoint, and a daemon of the
-    // computer's that serves no account yet keeps them there too.
+    // One account's own daemon keeps its services beside its native endpoint. A daemon of the
+    // computer's that serves a person no account of it made — a computer joined with a ticket —
+    // keeps them below it too, in the device's own directory, never in the one every account
+    // reaches: a broker refuses that one.
     assert_eq!(
         super::service_sockets_at(&shared, false, Some(1000)).unwrap(),
         shared
     );
+    let device = super::service_sockets_at(&shared, true, None).unwrap();
+    assert_eq!(device, shared.join("accounts/device"));
+    let metadata = std::fs::symlink_metadata(&device).unwrap();
     assert_eq!(
-        super::service_sockets_at(&shared, true, None).unwrap(),
-        shared
+        metadata.mode() & 0o777,
+        0o700,
+        "the joined person's services are the daemon's alone: {:o}",
+        metadata.mode() & 0o777
     );
+    assert_eq!(metadata.uid(), rustix::process::geteuid().as_raw());
 }
 
 /// A connection whose session cannot be made is told so within seconds: a daemon whose person's

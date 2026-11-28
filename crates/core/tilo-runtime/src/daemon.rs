@@ -137,9 +137,10 @@ pub(crate) fn sockets_served(profile: &Path) -> io::Result<Sockets> {
 
 /// The directory the profile's services bind `collab.sock`, `identity.sock` and `blobs.sock` in:
 /// the daemon's own [`sockets_dir`], or, for a daemon of the computer's that serves every account,
-/// the account's own below it, which only the daemon may enter. A broker socket refuses a
-/// directory other accounts can reach, while the native endpoint every account calls must stay in
-/// one they reach: the two are kept apart here.
+/// its own below it, which only the daemon may enter: the account's when one of its made the
+/// person, the device's otherwise. A broker socket refuses a directory other accounts can reach,
+/// while the native endpoint every account calls must stay in one they reach: the two are kept
+/// apart here.
 ///
 /// # Errors
 /// The directory cannot be made, or a socket's path is longer than a socket's address holds.
@@ -158,11 +159,17 @@ fn serves_the_computer(profile: &Path) -> bool {
 
 /// [`service_sockets`] for a daemon that is the computer's (`system`) or one account's, serving
 /// the person of `account`.
+///
+/// The computer's daemon keeps its services where only it may enter, named for the account the
+/// person is. A computer joined with a ticket serves that person from its device key without any
+/// account of it having made them: there is no account to name, and the directory of the device's
+/// own is what it binds in rather than the one every account reaches, which a broker refuses.
 fn service_sockets_at(own: &Path, system: bool, account: Option<u32>) -> io::Result<PathBuf> {
-    let Some(account) = account.filter(|_| system) else {
+    if !system {
         return Ok(own.to_owned());
-    };
-    let dir = own.join("accounts").join(account.to_string());
+    }
+    let name = account.map_or_else(|| "device".to_owned(), |uid| uid.to_string());
+    let dir = own.join("accounts").join(name);
     for name in [COLLAB_SOCKET, IDENTITY_SOCKET, BLOB_SOCKET] {
         tilo_api::daemon::socket_fits(&dir.join(name)).map_err(io::Error::other)?;
     }
