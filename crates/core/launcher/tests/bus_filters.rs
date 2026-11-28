@@ -388,156 +388,28 @@ fn a_launched_app_reaches_only_the_portals_its_manifest_allows() {
         0,
         "the denied portal never sees the call"
     );
-}
 
-/// The Secret portal's frontend under test: it hands every app the same master secret, as the
-/// session's portal hands one app its own, and counts the requests that reach it.
-struct SecretPortal {
-    asked: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-}
-
-#[zbus::interface(name = "org.freedesktop.portal.Secret")]
-impl SecretPortal {
-    #[zbus(property, name = "version")]
-    fn version(&self) -> u32 {
-        1
-    }
-
-    async fn retrieve_secret(
-        &self,
-        #[zbus(header)] header: zbus::message::Header<'_>,
-        #[zbus(connection)] connection: &zbus::Connection,
-        fd: zbus::zvariant::OwnedFd,
-        options: std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
-    ) -> zbus::zvariant::OwnedObjectPath {
-        use std::io::Write as _;
-        self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        std::fs::File::from(std::os::fd::OwnedFd::from(fd))
-            .write_all(&[7; 32])
-            .unwrap();
-        let sender = header
-            .sender()
-            .unwrap()
-            .trim_start_matches(':')
-            .replace('.', "_");
-        let token =
-            String::try_from(options.get("handle_token").unwrap().try_clone().unwrap()).unwrap();
-        let handle = format!("/org/freedesktop/portal/desktop/request/{sender}/{token}");
-        connection
-            .emit_signal(
-                None::<&str>,
-                handle.as_str(),
-                "org.freedesktop.portal.Request",
-                "Response",
-                &(
-                    0_u32,
-                    std::collections::HashMap::<String, zbus::zvariant::OwnedValue>::new(),
-                ),
-            )
-            .await
-            .unwrap();
-        zbus::zvariant::OwnedObjectPath::try_from(handle).unwrap()
-    }
-}
-
-/// The app `a_sandboxed_app_keeps_its_secrets_across_launches` starts in the sandbox: the
-/// command its launch names (`put`, `get`) is the step it takes. Started any other way, it does
-/// nothing.
-#[test]
-fn sandboxed_secret_step() {
-    let Ok(step) = std::env::var("TILO_CLI_COMMAND") else {
-        return;
-    };
-    let store = tilo_secrets::SecretStore::for_app("so.tilo.secrettest");
-    let outcome = match step.as_str() {
-        "put" => store
-            .put_blocking(
-                "token",
-                b"kept across launches",
-                tilo_secrets::PutOptions::default(),
-            )
-            .map(|()| {
-                // Sealed in the app's directory, with no key beside it.
-                let dir = std::env::var("XDG_DATA_HOME").unwrap() + "/tilo-secrets";
-                let files: Vec<_> = std::fs::read_dir(dir)
-                    .unwrap()
-                    .map(|entry| std::fs::read(entry.unwrap().path()).unwrap())
-                    .collect();
-                let sealed = files.len() == 1 && !files[0].windows(8).any(|w| w == b"kept acr");
-                format!("stored, sealed: {sealed}")
-            }),
-        "get" => store.get_blocking("token").map(|secret| {
-            secret.map_or_else(
-                || "missing".to_owned(),
-                |secret| String::from_utf8_lossy(secret.expose()).into_owned(),
-            )
-        }),
-        _ => return,
-    };
-    match outcome {
-        Ok(text) => println!("SECRET {text}"),
-        Err(error) => println!("SECRET ERROR {error}"),
-    }
-}
-
-/// A real sandboxed launch of an app granted the Secret portal stores a secret, and a second
-/// launch reads it back: sealed in the app's own directory under the key the portal hands it,
-/// with no key file beside it. An app not granted the portal is refused by the bus proxy and
-/// stores nothing.
-#[test]
-fn a_sandboxed_app_keeps_its_secrets_across_launches() {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    // This test binary is the app: `sandboxed_secret_step` is its body.
-    let dir = tempfile::tempdir().unwrap();
-    let payload = dir.path().join("payload");
-    std::fs::create_dir_all(payload.join("bin")).unwrap();
-    std::fs::copy(std::env::current_exe().unwrap(), payload.join("bin/app")).unwrap();
-    let session = PrivateBus::start_at(&dir.path().join("session"));
-    let asked = Arc::new(AtomicUsize::new(0));
-    let _portal = connect(session.address())
-        .name("org.freedesktop.portal.Desktop")
-        .unwrap()
-        .serve_at(
-            "/org/freedesktop/portal/desktop",
-            SecretPortal {
-                asked: asked.clone(),
-            },
-        )
-        .unwrap()
-        .build()
-        .unwrap();
-    let runtime = dir.path().join("runtime");
-    std::fs::create_dir(&runtime).unwrap();
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("DBUS_SESSION_BUS_ADDRESS", session.address())
-        .set("XDG_RUNTIME_DIR", &runtime);
-
-    let data = tempfile::tempdir().unwrap();
-    let step = |portal: &str, step: &str| {
-        let mut manifest = crate::support::manifest("so.tilo.secrettest", "bin/app", "off");
-        manifest.sandbox.portals = portals(&[portal], &[]);
-        let argv = [
-            "--exact",
-            "bus_filters::sandboxed_secret_step",
-            "--nocapture",
-        ];
-        let out = launched(&manifest, &payload, data.path(), None, step, &argv);
-        out.lines()
-            .find_map(|line| line.strip_prefix("SECRET "))
-            .unwrap_or_else(|| panic!("the app took its step: {out}"))
-            .to_owned()
-    };
-
-    let refused = step("file-chooser", "put");
-    assert!(
-        refused.starts_with("ERROR") && refused.contains("AccessDenied"),
-        "an app without the Secret portal is refused: {refused}"
+    // An app's secrets are the workspace's vault, never the session bus's Secret Service: a
+    // name no grant opens is refused by the proxy.
+    let secret = launched(
+        &manifest,
+        &payload,
+        data.path(),
+        Some(&display),
+        "workspacetest",
+        &[
+            "exec",
+            "dbus-send",
+            "--session",
+            "--print-reply",
+            "--dest=org.freedesktop.secrets",
+            "/org/freedesktop/secrets",
+            "org.freedesktop.DBus.Peer.Ping",
+        ],
     );
-    assert_eq!(asked.load(Ordering::SeqCst), 0, "the portal never saw it");
-
-    assert_eq!(step("secrets", "put"), "stored, sealed: true");
-    assert_eq!(step("secrets", "get"), "kept across launches");
-    assert_eq!(asked.load(Ordering::SeqCst), 2, "each launch asks once");
+    assert!(
+        secret.starts_with("EXIT 1")
+            && secret.contains("org.freedesktop.DBus.Error.ServiceUnknown"),
+        "the proxy refuses a name the manifest does not open: {secret}"
+    );
 }

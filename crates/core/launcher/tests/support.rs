@@ -105,10 +105,11 @@ pub fn manifest(package_id: &str, bin: &str, net: &str) -> ManifestView {
 }
 
 /// Launch options that touch nothing of the invoking user's: the per-workspace app directories
-/// live under `data_home`.
+/// live under `data_home`, in the one workspace a launch of a test names.
 pub fn isolated_options(data_home: &Path) -> LaunchOptions {
     LaunchOptions {
         data_home: Some(data_home.to_path_buf()),
+        workspace_id: Some("workspace-a".to_owned()),
         ..LaunchOptions::default()
     }
 }

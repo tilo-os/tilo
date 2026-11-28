@@ -136,10 +136,6 @@ ed25519-dalek.workspace = true
 # Kernel probes proving the resolved seccomp profile is what the kernel enforces.
 tilo-sandbox-core = { path = "../../platform/sandbox-core", features = ["test-support"] }
 
-[target.'cfg(target_os = "linux")'.dev-dependencies]
-# A sandboxed app's secrets, kept through the Secret portal (`tests/bus_filters.rs`).
-tilo-secrets = { path = "../../platform/tilo-secrets" }
-
 [[test]]
 name = "it"
 path = "tests/it.rs"

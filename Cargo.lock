@@ -7370,7 +7370,6 @@ dependencies = [
  "tilo-runtime-interface",
  "tilo-runtime-portal",
  "tilo-sandbox-core",
- "tilo-secrets",
  "tilo-settings-store",
  "tilo-socket",
  "tilo-startup-metrics",
