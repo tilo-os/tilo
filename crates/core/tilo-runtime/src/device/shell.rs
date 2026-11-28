@@ -487,6 +487,19 @@ impl ActionProvider for Shell {
         }
     }
 
+    /// What this device says of the actions a window shows, decided in the workspace the shell's
+    /// call names: the same dispatch the person's calls reach.
+    fn shown_actions(
+        &self,
+        caller: &Caller,
+        ask: tilo_actions::shown::ShownAsk,
+    ) -> Pending<Result<Vec<tilo_actions::shown::ActionDecision>, ActionCallError>> {
+        match self.reaching(caller) {
+            Ok(dispatch) => dispatch.shown_actions(caller, ask),
+            Err(refused) => Pending::ready(Err(refused)),
+        }
+    }
+
     fn run(
         &self,
         caller: &Caller,

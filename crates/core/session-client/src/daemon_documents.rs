@@ -533,13 +533,15 @@ impl DaemonShell {
         self.dispatch(None, &read_message(read)).await
     }
 
-    /// What the device says the person may do of `ask`'s actions: now, or, once `ask` names the
-    /// verdicts shown and a wait, when the grants change or the wait passes.
+    /// What the device says the person may do of `ask`'s actions, in `workspace`, which keeps
+    /// them: now, or, once `ask` names the verdicts shown and a wait, when the grants change or
+    /// the wait passes.
     ///
     /// # Errors
     /// As [`Self::dispatch`].
     pub async fn shown(
         &self,
+        workspace: &str,
         ask: tilo_actions::shown::ShownAsk,
     ) -> Result<Vec<tilo_actions::shown::ActionDecision>, String> {
         let message = RemoteActionMessage::ShownActionsRequest {
@@ -548,7 +550,7 @@ impl DaemonShell {
             after: ask.after,
             wait_ms: ask.wait_ms,
         };
-        serde_json::from_value(self.dispatch(None, &message).await?)
+        serde_json::from_value(self.dispatch(Some(workspace), &message).await?)
             .map_err(|error| format!("the device's verdicts do not read: {error}"))
     }
 

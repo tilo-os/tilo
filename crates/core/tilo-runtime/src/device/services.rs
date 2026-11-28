@@ -7766,6 +7766,19 @@ impl ActionProvider for RuntimeActionProvider {
         });
     }
 
+    /// What this device says of the actions a window shows, for `caller`: the workspace's grants
+    /// at each action's own node, answered by the device's provider for them.
+    fn shown_actions(
+        &self,
+        caller: &Caller,
+        ask: tilo_actions::shown::ShownAsk,
+    ) -> Pending<Result<Vec<tilo_actions::shown::ActionDecision>, ActionCallError>> {
+        self.workspaces
+            .copies()
+            .providers()
+            .shown_actions(caller, ask)
+    }
+
     fn query(
         &self,
         caller: &Caller,

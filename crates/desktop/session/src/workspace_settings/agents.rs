@@ -147,6 +147,8 @@ struct Open {
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Seen {
     revision: u64,
+    /// What the device said of the list's actions when it was drawn.
+    answered: u64,
 }
 
 /// What the person may change on the tab: the workspace's agents, and what each may do here.
@@ -216,6 +218,7 @@ impl Agents {
         };
         *self.shown.borrow_mut() = Some(Seen {
             revision: record.revision(),
+            answered: record.answered(),
         });
         let may = May {
             manage: {
@@ -237,7 +240,10 @@ impl Agents {
     /// The tab with nothing to show here: no workspace in front, or the agents could not be opened
     /// on this device.
     fn not_available(&self) -> sheet::Agents {
-        *self.shown.borrow_mut() = Some(Seen { revision: 0 });
+        *self.shown.borrow_mut() = Some(Seen {
+            revision: 0,
+            answered: 0,
+        });
         sheet::Agents {
             intro: sheet::Intro {
                 title: t_args("workspace-settings-agents-count", &[("count", 0.into())]),
@@ -507,6 +513,7 @@ impl Agents {
         self.shown.borrow().as_ref()
             != Some(&Seen {
                 revision: record.revision(),
+                answered: record.answered(),
             })
     }
 
@@ -574,7 +581,7 @@ impl Agents {
             return;
         }
         let config = agent_provider_config::ProviderConfig::load();
-        self.record_admitted(workspace, person, &record, &config);
+        self.record_admitted(workspace, &record, &config);
         *self.settled.borrow_mut() = Some((workspace_id, record.revision()));
     }
 
@@ -591,7 +598,6 @@ impl Agents {
     fn record_admitted(
         &self,
         workspace: &Workspace,
-        person: &str,
         record: &FollowedResource<Record>,
         config: &agent_provider_config::ProviderConfig,
     ) {
@@ -599,12 +605,9 @@ impl Agents {
         let mut taken: Vec<String> = state.active().map(|agent| agent.name.clone()).collect();
         let mut number: u64 = 0;
         for (member, _) in workspace.policy.agent_members_at(tilo_clock::unix_now()) {
-            // The record this person asks for is of their own agents: one admitted for another
-            // person is theirs to record.
-            let Some((agent, _)) = member
-                .as_agent()
-                .filter(|(_, of)| of.as_str().eq_ignore_ascii_case(person))
-            else {
+            // The record is the workspace's, not one person's: an agent admitted for anyone who
+            // works here is named on it, so every member reads one list.
+            let Some((agent, _)) = member.as_agent() else {
                 continue;
             };
             if state.get(&Id::from_raw(agent.to_owned())).is_some() {

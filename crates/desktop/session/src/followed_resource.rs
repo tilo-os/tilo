@@ -117,6 +117,9 @@ struct Shared<P: Resource> {
     /// What the device says the person may do with each of its actions, as it last said: none is
     /// allowed until it answers.
     verdicts: Arc<Mutex<ShownVerdicts>>,
+    /// A number that moves each time what the device says of them changes: what a pane drawn
+    /// from the verdicts reads again.
+    answered: Arc<std::sync::atomic::AtomicU64>,
     /// The read that keeps them, asked again whenever the grants change.
     verdicts_follow: tokio::task::AbortHandle,
     /// Its state as of the reading it was made from.
@@ -308,11 +311,14 @@ impl<P: Resource> FollowedResource<P> {
             .filter_map(|declared| question::<P>(app, id, declared.id))
             .collect();
         let verdicts = Arc::new(Mutex::new(ShownVerdicts::default().asking(asked.clone())));
+        let answered = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let verdicts_follow = {
-            let (daemon, verdicts, wake) = (
+            let (daemon, verdicts, wake, workspace, answered) = (
                 daemon.clone(),
                 Arc::clone(&verdicts),
                 Arc::clone(&readings.wake),
+                workspace.to_owned(),
+                Arc::clone(&answered),
             );
             daemon.runtime().clone().spawn(async move {
                 let mut after = None;
@@ -322,11 +328,12 @@ impl<P: Resource> FollowedResource<P> {
                         wait_ms: after.is_some().then_some(tilo_actions::remote::MAX_REMOTE_WAIT_MS),
                         after: after.clone(),
                     };
-                    match daemon.shown(ask).await {
+                    match daemon.shown(&workspace, ask).await {
                         Ok(decisions) => {
                             let revision = decisions_revision(&decisions);
                             if after.as_ref() != Some(&revision) {
                                 verdicts.lock_recover().decide(&decisions);
+                                answered.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                 wake();
                             }
                             after = Some(revision);
@@ -355,6 +362,7 @@ impl<P: Resource> FollowedResource<P> {
                 }),
                 me: tilo_resource::MemberId::person(person.to_owned()),
                 verdicts,
+                answered,
                 verdicts_follow: verdicts_follow.abort_handle(),
                 state: RefCell::default(),
             }),
@@ -380,6 +388,13 @@ impl<P: Resource> FollowedResource<P> {
     /// A number that moves each time the reading does.
     pub(crate) fn revision(&self) -> u64 {
         self.shared.core.readings.revision()
+    }
+
+    /// A number that moves each time what the device says of its actions does.
+    pub(crate) fn answered(&self) -> u64 {
+        self.shared
+            .answered
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Who the session reads and acts as.

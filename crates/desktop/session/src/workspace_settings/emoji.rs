@@ -80,6 +80,8 @@ struct Open {
 struct Seen {
     revision: u64,
     version: u64,
+    /// What the device said of the list's actions when it was drawn.
+    answered: u64,
 }
 
 impl Emoji {
@@ -147,6 +149,7 @@ impl Emoji {
         *self.shown.borrow_mut() = Some(Seen {
             revision,
             version: self.version.get(),
+            answered: record.answered(),
         });
         sheet::EmojiPane {
             count: t_args("workspace-settings-emoji-count", &[("count", count.into())]),
@@ -173,6 +176,7 @@ impl Emoji {
         *self.shown.borrow_mut() = Some(Seen {
             revision: 0,
             version: self.version.get(),
+            answered: 0,
         });
         sheet::EmojiPane {
             count: t_args("workspace-settings-emoji-count", &[("count", 0.into())]),
@@ -205,6 +209,7 @@ impl Emoji {
         let now = Seen {
             revision,
             version: self.version.get(),
+            answered: open.record.answered(),
         };
         self.shown.borrow().as_ref() != Some(&now)
     }

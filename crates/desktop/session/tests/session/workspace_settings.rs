@@ -31,14 +31,17 @@ fn own_workspace(session: &Session, members: &[&str]) {
 }
 
 /// The sheet as a person presses it: the app the session hosts, lent the state the session lends its
-/// own, so a press arrives as the person's own.
+/// own, so a press arrives as the person's own — the person the session acts as, read from its
+/// device's certificate as the session reads it at start (`identity::own`), never a name of the
+/// test's.
 fn sheet(session: &Session) -> TestApp<WorkspaceSettingsApp> {
+    let person = tilo_session::identity::own_person(&Options::default());
     let state = session
         .workspace_settings()
         .expect("workspace settings")
         .clone();
     let mut app =
-        TestApp::<WorkspaceSettingsApp>::for_person_with_lent(PERSON, state).expect("the sheet");
+        TestApp::<WorkspaceSettingsApp>::for_person_with_lent(&person, state).expect("the sheet");
     app.harness().resize((1280, 900)).expect("a screen");
     app.settle();
     app
@@ -1063,6 +1066,18 @@ fn workspace_settings_adds_and_removes_the_workspaces_emoji() {
             tab: "emoji".to_owned(),
         },
     );
+
+    // The device answers what the tab offers before the person presses it: the tab offers
+    // adding once it said they may add one.
+    pump(&mut session, &mut [], |session, _| {
+        session
+            .workspace_settings()
+            .expect("workspace settings")
+            .settings()
+            .emoji
+            .can_add
+    });
+    app.settle();
 
     // Add emoji asks the person for a picture: the file chooser's question, answered with the
     // picture the test made, as the person choosing it in their own picker answers.
