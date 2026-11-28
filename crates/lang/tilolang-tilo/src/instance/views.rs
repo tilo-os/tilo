@@ -79,11 +79,6 @@ impl Instance {
         {
             self.windowless = false;
             self.open_root(&host);
-            // What opening the root did is written before a caller reads the view: the views
-            // are run again over it, as a window's next frame would, so the lines read hold the
-            // state the opening made (a person's session, a folder read) and not what stood
-            // before it.
-            self.poll_views();
         }
     }
 
@@ -94,7 +89,18 @@ impl Instance {
     }
 
     /// Open the package's root view.
+    ///
+    /// What opening the root does (a Terminal window's session, Files' folder listing) runs
+    /// before the view of it is drawn, so the window's first frame and a caller reading it hold
+    /// the state the opening made, never what stood before it.
     pub(super) fn open_root(&mut self, host: &Host) {
+        if !self.windowless
+            && self.mode == Mode::Live
+            && let Ok(target) = host.root_of_layer(&self.app, &self.root_view)
+        {
+            self.run_opened(&target, 0);
+            self.commit_planned();
+        }
         match host.open_layer_at(&self.app, &self.root_view) {
             Ok((target, view)) => {
                 self.root = Some(Shown::new(target.clone(), self.spaced(Level::Root, view)));
@@ -104,14 +110,6 @@ impl Instance {
                     self.out.push(ToUi::Close);
                 }
                 self.send_open(Level::Root, None);
-                // The window opening on its root is an opening too: a Terminal window's session
-                // opens its shell, as a session opened from a list does. An instance with no
-                // window is opened by nobody, until a caller reads it
-                // ([`Self::open_to_read`]): that read is its opening, and runs what one does.
-                if !self.windowless {
-                    self.run_opened(&target, 0);
-                }
-                self.commit_planned();
             }
             Err(error) => {
                 tracing::warn!(app = self.app, %error, "the app did not open");

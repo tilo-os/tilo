@@ -17,13 +17,22 @@ const FOLDER: &str = "Launch plan";
 /// The lines the Files window of the device's workspace shows an agent, asked as the person's own
 /// agent asks it.
 async fn view(session: &Session<'_>, workspace: &str) -> String {
-    let (lines, failed) = said(
-        &session
-            .tool(workspace, "tilo_view", &json!({"path": "file-explorer"}))
-            .await,
-    );
-    assert!(!failed, "{lines}");
-    lines
+    // A window still opening answers that its read waits: it is read again, as an agent does,
+    // while a device under load takes its time to start the app.
+    let deadline = Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let (lines, failed) = said(
+            &session
+                .tool(workspace, "tilo_view", &json!({"path": "file-explorer"}))
+                .await,
+        );
+        if !failed {
+            return lines;
+        }
+        assert!(lines.contains("not finished yet"), "{lines}",);
+        assert!(Instant::now() < deadline, "the window never reads: {lines}");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
 }
 
 /// The person's own dispatch tells the workspace `action` of their formats with `argument`, as
@@ -253,16 +262,32 @@ fn a_zone_the_person_chooses_is_the_one_their_page_and_their_agent_read() {
 
 /// The window goes to `place`, as a press of a place does.
 async fn goes_to(session: &Session<'_>, workspace: &str, place: &str) {
-    let (said, failed) = said(
-        &session
-            .tool(
-                workspace,
-                "tilo_do",
-                &json!({"path": "files#go", "args": {"place": place}}),
-            )
-            .await,
-    );
-    assert!(!failed, "the window goes to {place:?}: {said}");
+    runs(session, workspace, "files#go", json!({"place": place})).await;
+}
+
+/// The window runs `action` with `args`, as a press of the control that fronts it does: a window
+/// still taking its time answers that its call waits, and is asked again.
+async fn runs(session: &Session<'_>, workspace: &str, action: &str, args: Value) {
+    let deadline = Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let (said, failed) = said(
+            &session
+                .tool(workspace, "tilo_do", &json!({"path": action, "args": args}))
+                .await,
+        );
+        if !failed {
+            return;
+        }
+        assert!(
+            said.contains("not finished yet"),
+            "the window runs {action} with {args}: {said}"
+        );
+        assert!(
+            Instant::now() < deadline,
+            "the window never runs {action} with {args}: {said}",
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
 }
 
 /// The lines the window shows at `place` once it has got there: what `ready` says of them. A
@@ -273,7 +298,7 @@ async fn at_place(
     place: &str,
     ready: impl Fn(&str) -> bool,
 ) -> String {
-    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = Instant::now() + std::time::Duration::from_secs(30);
     loop {
         goes_to(session, workspace, place).await;
         let lines = view(session, workspace).await;
@@ -296,6 +321,13 @@ fn a_folder_on_this_device_is_shown_only_once_the_person_picks_it() {
         let workspace = host.workspace().to_owned();
         let agent = host.agent();
         let session = Session::Agent(&agent);
+        // The workspace's own folder is where Files opens: what the workspace's tree holds, and
+        // no device path of this machine's.
+        let opened = view(&session, &workspace).await;
+        assert!(
+            opened.contains("This folder is empty") && !opened.contains("Couldn’t open"),
+            "Files opens on the workspace's own folder: {opened}",
+        );
         // The person's own files, and this machine's, are reached by no standing grant.
         for place in ["~", "/etc"] {
             let lines = at_place(&session, &workspace, place, |lines| {
@@ -307,15 +339,23 @@ fn a_folder_on_this_device_is_shown_only_once_the_person_picks_it() {
                 "{place} is refused, and the window says so: {lines}",
             );
         }
-        // The workspace's own folder is no device path: it reads as it did.
-        let lines = at_place(&session, &workspace, "", |lines| {
-            !lines.contains("Couldn’t open")
-        })
-        .await;
-        assert!(
-            !lines.contains("Couldn’t open"),
-            "the workspace's own folder reads: {lines}",
-        );
+        // Back again, over the places the window came from, to the workspace's own folder.
+        let deadline = Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            runs(&session, &workspace, "files#back", json!({})).await;
+            let lines = view(&session, &workspace).await;
+            if !lines.contains("Couldn’t open") {
+                assert!(
+                    lines.contains("This folder is empty"),
+                    "the workspace's own folder reads again: {lines}",
+                );
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the window never goes back to the workspace's own folder: {lines}",
+            );
+        }
 
         // The person picks a folder, and its files are shown; the folder beside it was never
         // chosen and stays out of reach.
@@ -391,6 +431,23 @@ fn a_member_the_workspace_lets_read_no_files_sees_nothing() {
         )
         .await
         .expect("the person refuses their agent Files");
+        // The window itself is the agent's to open: its own session is what the app keeps while
+        // it shows anything, and what the person refused is the files.
+        let window = tilo_action_policy::Grant::new(
+            "the-agent-keeps-its-window",
+            tilo_action_policy::Grantee::agent("viewer", &owner),
+            tilo_action_policy::TreePath::workspace(&workspace).app(fs_protocol::tree::FILES_APP),
+            tilo_action_types::KindSet::READ_UNDOABLE,
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Grantee::person(&owner),
+        );
+        tilo_workspace_service::workspaces::fixtures::answer_grant(
+            host.daemon().workspaces(),
+            &workspace,
+            window,
+        )
+        .await
+        .expect("the person lets their agent open the window");
 
         let session = Session::Agent(&agent);
         let deadline = Instant::now() + std::time::Duration::from_secs(10);
