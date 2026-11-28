@@ -180,6 +180,7 @@ async fn a_host_answers_its_people_and_admits_one_it_invited() {
         trust_policy: tilo_server_protocol::policy::TrustPolicy::AllowList {
             users: vec![hex::encode(bob.user_pk)],
         },
+        founding_registries: tilo_workspace_service::service::RegistriesFile::default(),
         ..ServiceConfig::new(state.path().to_path_buf(), WorkSetting::none())
     };
     let hosted = serve_configured(&alice, &laptop, (config, state), None).await;

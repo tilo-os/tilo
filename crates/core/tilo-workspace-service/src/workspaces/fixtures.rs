@@ -1110,6 +1110,9 @@ async fn host_on_with(
         // process, and a surface one of them names must not change what another's stores
         // admit.
         surfaces: Arc::default(),
+        // A test's host founds with no registry: its workspaces start from what its cache or
+        // its own fixtures hold, and no test reaches the real catalogue.
+        founding_registries: crate::service::RegistriesFile::default(),
         // A server of other people's workspaces takes their work in them.
         ..ServiceConfig::new(
             state_root.to_owned(),

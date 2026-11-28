@@ -72,7 +72,7 @@ async fn main() {
         state_root: state.path().to_path_buf(),
         ..Default::default()
     };
-    let server = KeptServer::start(
+    let server = KeptServer::start_founding(
         cfg,
         ServerIdentity {
             user_public_key: user,
@@ -80,6 +80,7 @@ async fn main() {
             device_cert: server_cert,
             revocations: RevocationList::new(),
         },
+        tilo_workspace_service::service::RegistriesFile::seeded(),
     )
     .await
     .expect("start the server");

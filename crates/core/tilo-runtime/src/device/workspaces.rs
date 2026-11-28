@@ -1205,6 +1205,7 @@ impl ServiceWorkspaces {
                 reaching: tilo_workspace_service::Reaching::OnItsOwn,
                 tilolang: super::capabilities::tilolang(),
                 registers: vec![tilo_person_services::register],
+                founding_registries: tilo_workspace_service::service::RegistriesFile::default(),
                 ..config
             },
         )
@@ -1309,7 +1310,12 @@ impl ServiceWorkspaces {
             seal_checks: Arc::new(tilo_workspace_keys::NoSealChecks),
             apps: Some(Arc::clone(&sessions)
                 as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>),
-            configure: None,
+            configure: Some(Box::new(|config| {
+                tilo_workspace_service::service::ServiceConfig {
+                    founding_registries: tilo_workspace_service::service::RegistriesFile::default(),
+                    ..config
+                }
+            })),
             itself: None,
         })
         .await
@@ -1364,7 +1370,14 @@ impl ServiceWorkspaces {
             endpoint,
             seal_checks: Arc::new(tilo_workspace_keys::NoSealChecks),
             apps: None,
-            configure: None,
+            // A test's device founds with no registry: its workspaces start from what its own
+            // fixtures hold, and no test reaches the real catalogue.
+            configure: Some(Box::new(|config| {
+                tilo_workspace_service::service::ServiceConfig {
+                    founding_registries: tilo_workspace_service::service::RegistriesFile::default(),
+                    ..config
+                }
+            })),
             itself,
         })
         .await

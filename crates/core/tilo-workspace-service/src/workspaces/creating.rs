@@ -220,7 +220,7 @@ impl super::Workspaces {
         // Made here so the lookup runs once, on the device that makes the workspace.
         // The registries come first: the default apps are the releases they offer.
         let (registries, defaults) = if seed_defaults {
-            let registries = super::default_apps::registries();
+            let registries = self.founding_registries();
             let defaults = super::default_apps::on_this_device_awaited(&registries).await;
             (super::default_apps::registry_rows(&registries), defaults)
         } else {

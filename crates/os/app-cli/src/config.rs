@@ -40,10 +40,6 @@ pub const DEFAULT_REGISTRY_BASE_URL: &str = "https://apps.tilo.so";
 /// Names the official registry owner key file instead of the image's.
 pub const OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV: &str = "TILO_OFFICIAL_REGISTRY_OWNER_KEY_PATH";
 
-/// Names the registries a test or a development build founds a workspace with, in place of the
-/// official one: the workspace reading's JSON, `{"registries": [...]}`.
-pub const WORKSPACE_REGISTRIES_ENV: &str = "TILO_WORKSPACE_REGISTRIES";
-
 /// The Tilo main registry's owner public key: the trust root every catalogue `apps.tilo.so`
 /// serves verifies against.
 ///
@@ -137,12 +133,8 @@ pub struct RegistriesFile {
 
 impl RegistriesFile {
     /// The default list: one hosted registry pinned to [`MAIN_REGISTRY_OWNER_PUBKEY_HEX`] (or
-    /// the image's override). [`WORKSPACE_REGISTRIES_ENV`], read in a build that honours
-    /// developer overrides, names the list instead.
+    /// the image's override). A workspace made on this device starts with it.
     pub fn seeded() -> Self {
-        if let Some(named) = fixture_registries() {
-            return named;
-        }
         Self {
             registries: official_owner_pubkey().map_or_else(Vec::new, |owner_pubkey_hex| {
                 vec![RegistryConfig {
@@ -154,22 +146,6 @@ impl RegistriesFile {
                 }]
             }),
         }
-    }
-
-    /// The list a workspace made on this device starts with.
-    ///
-    /// A release build is a device and founds with [`Self::seeded`]. A debug build is a
-    /// developer's: it founds with the official registry only where an image or a test named
-    /// its trust input, and with none otherwise, so no test or development run reaches the real
-    /// catalogue on its own. A test that wants a catalogue names its own registry.
-    pub fn founded_with() -> Self {
-        if cfg!(debug_assertions)
-            && image_owner_pubkey().is_none()
-            && fixture_registries().is_none()
-        {
-            return Self::default();
-        }
-        Self::seeded()
     }
 
     pub fn enabled(&self) -> impl Iterator<Item = &RegistryConfig> {
@@ -239,23 +215,6 @@ pub fn load_registries() -> RegistriesFile {
             })
             .collect(),
     }
-}
-
-/// The list [`WORKSPACE_REGISTRIES_ENV`] names, in a build that honours developer overrides.
-///
-/// A value that does not parse is an empty list, not the official registry: a fixture a test
-/// mistyped must not send that test to the real catalogue.
-fn fixture_registries() -> Option<RegistriesFile> {
-    let value = package_store::dev_env::dev_override(WORKSPACE_REGISTRIES_ENV)?;
-    let named = value
-        .to_str()
-        .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok());
-    Some(
-        named
-            .as_ref()
-            .and_then(registries_from_rows)
-            .unwrap_or_default(),
-    )
 }
 
 fn channel(channel: &str) -> tilo_app_package::version::ReleaseChannel {
@@ -376,15 +335,14 @@ pub fn registries_from_rows(value: &serde_json::Value) -> Option<RegistriesFile>
 mod tests {
     use super::*;
 
-    /// A directory no key or fixture file was written to, and the environment scoped to it.
+    /// A directory no key file was written to, and the environment scoped to it.
     fn no_trust_input() -> (tempfile::TempDir, tilo_test_env::ScopedEnv) {
         let dir = tempfile::tempdir().unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(
             OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV,
             dir.path().join("missing.pub"),
-        )
-        .remove(WORKSPACE_REGISTRIES_ENV);
+        );
         (dir, env)
     }
 
@@ -431,8 +389,7 @@ mod tests {
         let image_key = "cd".repeat(32);
         fs::write(&path, format!("{image_key}\n")).unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV, &path)
-            .remove(WORKSPACE_REGISTRIES_ENV);
+        env.set(OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV, &path);
         assert_eq!(official_owner_pubkey().as_deref(), Some(image_key.as_str()));
         assert_eq!(
             RegistriesFile::seeded().registries[0].owner_pubkey_hex,
@@ -448,8 +405,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("owner.pub");
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV, &path)
-            .remove(WORKSPACE_REGISTRIES_ENV);
+        env.set(OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV, &path);
         let placeholder = placeholder_owner_pubkey();
         for (shipped, written) in [
             ("no file", None),
@@ -467,56 +423,6 @@ mod tests {
                 Some(MAIN_REGISTRY_OWNER_PUBKEY_HEX),
                 "an image that ships {shipped} does not replace the trust root"
             );
-        }
-    }
-
-    #[test]
-    fn a_named_fixture_list_is_what_a_workspace_founds_with() {
-        if !package_store::dev_env::DEV_ENV_OVERRIDES {
-            return;
-        }
-        let dir = tempfile::tempdir().unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(
-            OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV,
-            dir.path().join("missing.pub"),
-        )
-        .set(
-            WORKSPACE_REGISTRIES_ENV,
-            r#"{"registries":[{"name":"fixture","base_url":"http://127.0.0.1:8081","owner_pubkey_hex":"abababababababababababababababababababababababababababababababab","enabled":true}]}"#,
-        );
-        let founded = RegistriesFile::founded_with();
-        assert_eq!(founded.registries.len(), 1);
-        assert_eq!(founded.registries[0].name, "fixture");
-        assert_eq!(founded.registries[0].base_url, "http://127.0.0.1:8081");
-    }
-
-    #[test]
-    fn a_fixture_list_that_does_not_parse_founds_with_no_registry() {
-        if !package_store::dev_env::DEV_ENV_OVERRIDES {
-            return;
-        }
-        let dir = tempfile::tempdir().unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(
-            OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV,
-            dir.path().join("missing.pub"),
-        )
-        .set(WORKSPACE_REGISTRIES_ENV, "not json");
-        assert!(RegistriesFile::founded_with().registries.is_empty());
-    }
-
-    #[test]
-    fn a_developer_build_with_no_trust_input_founds_with_no_registry() {
-        if !package_store::dev_env::DEV_ENV_OVERRIDES {
-            return;
-        }
-        let (_dir, _env) = no_trust_input();
-        let founded = RegistriesFile::founded_with();
-        if cfg!(debug_assertions) {
-            assert!(founded.registries.is_empty());
-        } else {
-            assert_eq!(founded.registries.len(), 1, "a release build is a device");
         }
     }
 

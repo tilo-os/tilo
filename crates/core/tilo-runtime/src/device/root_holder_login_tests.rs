@@ -73,6 +73,7 @@ async fn site_server(
         WorkspaceService::open(
             ServiceConfig {
                 reaching: tilo_workspace_service::Reaching::OnItsOwn,
+                founding_registries: tilo_workspace_service::service::RegistriesFile::default(),
                 ..ServiceConfig::new(state.path().join("server"), work)
             },
             ServiceIdentity {

@@ -206,6 +206,7 @@ pub fn workspace_founded_on_this_device_then(
                 // reachable, as the session's own service does: nothing here waits for a
                 // server to name it.
                 reaching: tilo_endpoint_reachability::Reaching::WhenNeeded,
+                founding_registries: tilo_workspace_service::service::RegistriesFile::default(),
                 ..config
             },
         )

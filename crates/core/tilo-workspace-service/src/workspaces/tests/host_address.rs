@@ -156,6 +156,7 @@ async fn a_keeper_names_itself_and_its_rented_machine_in_the_address_it_signs() 
             label: "tilo.sh".to_owned(),
             rented: true,
             origin: Some("https://eu1.tilo.sh".to_owned()),
+            founding_registries: crate::service::RegistriesFile::default(),
             ..ServiceConfig::new(
                 dir.path().to_owned(),
                 tilo_server_protocol::WorkSetting::none(),

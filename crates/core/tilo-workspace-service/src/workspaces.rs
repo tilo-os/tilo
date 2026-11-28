@@ -995,6 +995,9 @@ pub(crate) struct WorkspaceServices {
     /// The device this embedder's member copies act as, when it keeps any:
     /// what the copies kept from an earlier run sync as, from the open on.
     pub(crate) member: Option<Arc<member::MemberDevice>>,
+    /// The registries a workspace made here starts with
+    /// ([`crate::service::ServiceConfig::founding_registries`]).
+    pub(crate) founding_registries: crate::service::RegistriesFile,
     /// The app surfaces this device knows, which its workspaces' stores judge resource writes
     /// by ([`crate::service::ServiceConfig::surfaces`]).
     pub(crate) surfaces: Arc<collab_types::app_surface::Surfaces>,
@@ -1105,6 +1108,9 @@ struct WorkspacesInner {
     /// ([`Workspaces::on_device_revoked`]).
     revoked: std::sync::RwLock<Vec<DeviceRevoked>>,
     host: WorkspaceServices,
+    /// The registries a workspace made here starts with
+    /// ([`crate::service::ServiceConfig::founding_registries`]).
+    founding_registries: crate::service::RegistriesFile,
     /// Where the workspaces' live resources are shown, once the session asks for them
     /// ([`Workspaces::show_live`]).
     live: std::sync::OnceLock<crate::live::LiveRows>,
@@ -1694,6 +1700,12 @@ impl Workspaces {
         Some(peer.records())
     }
 
+    /// The registries a workspace made here starts with
+    /// ([`crate::service::ServiceConfig::founding_registries`]).
+    pub(crate) fn founding_registries(&self) -> crate::service::RegistriesFile {
+        self.inner.founding_registries.clone()
+    }
+
     /// Open every workspace recorded under `dir` and bind each to the server, pinned.
     #[expect(
         clippy::too_many_lines,
@@ -1757,6 +1769,7 @@ impl Workspaces {
             inner: Arc::new(WorkspacesInner {
                 kept: std::sync::Mutex::default(),
                 revoked: std::sync::RwLock::default(),
+                founding_registries: host.founding_registries.clone(),
                 live: std::sync::OnceLock::new(),
                 frames_arriving: std::sync::Mutex::default(),
                 followers: std::sync::Mutex::default(),

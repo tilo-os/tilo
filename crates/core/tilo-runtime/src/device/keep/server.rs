@@ -264,7 +264,38 @@ impl KeptServer {
     /// # Errors
     /// What [`Server::on_device`] refuses, and an identity or endpoint the daemon would refuse.
     pub async fn start(cfg: ServerConfig, identity: ServerIdentity) -> Result<Self, ServerError> {
-        Box::pin(Self::compose(cfg, identity, None, None, Vec::new(), None)).await
+        Box::pin(Self::compose(
+            cfg,
+            identity,
+            None,
+            None,
+            Vec::new(),
+            None,
+            Some(tilo_workspace_service::service::RegistriesFile::default()),
+        ))
+        .await
+    }
+
+    /// [`Self::start`] on a host that founds the workspaces it makes with `registries` in place
+    /// of the none a test's host starts with: a catalogue a development host serves.
+    ///
+    /// # Errors
+    /// As [`Self::start`].
+    pub async fn start_founding(
+        cfg: ServerConfig,
+        identity: ServerIdentity,
+        registries: tilo_workspace_service::service::RegistriesFile,
+    ) -> Result<Self, ServerError> {
+        Box::pin(Self::compose(
+            cfg,
+            identity,
+            None,
+            None,
+            Vec::new(),
+            None,
+            Some(registries),
+        ))
+        .await
     }
 
     /// [`Self::start`], on the relays `relay_mode` names instead of the configuration's: a relay
@@ -284,6 +315,31 @@ impl KeptServer {
             Some(relay_mode),
             Vec::new(),
             None,
+            Some(tilo_workspace_service::service::RegistriesFile::default()),
+        ))
+        .await
+    }
+
+    /// [`Self::with_relay_mode`] on a host that founds the workspaces it makes with
+    /// `registries` in place of the official ones: a test's own catalogue, so no test reaches
+    /// the real registry.
+    ///
+    /// # Errors
+    /// As [`Self::start`].
+    pub async fn with_relay_mode_founding(
+        cfg: ServerConfig,
+        identity: ServerIdentity,
+        relay_mode: iroh::RelayMode,
+        registries: tilo_workspace_service::service::RegistriesFile,
+    ) -> Result<Self, ServerError> {
+        Box::pin(Self::compose(
+            cfg,
+            identity,
+            None,
+            Some(relay_mode),
+            Vec::new(),
+            None,
+            Some(registries),
         ))
         .await
     }
@@ -305,6 +361,7 @@ impl KeptServer {
             Some(relay_mode),
             Vec::new(),
             app_serving,
+            Some(tilo_workspace_service::service::RegistriesFile::default()),
         ))
         .await
     }
@@ -328,6 +385,7 @@ impl KeptServer {
             None,
             extra,
             None,
+            Some(tilo_workspace_service::service::RegistriesFile::default()),
         ))
         .await
     }
@@ -360,6 +418,7 @@ impl KeptServer {
         relay_mode: Option<iroh::RelayMode>,
         extra: Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>,
         app_serving: Option<Arc<dyn tilo_workspace_service::app_serving::AppActionServer>>,
+        founding_registries: Option<tilo_workspace_service::service::RegistriesFile>,
     ) -> Result<Self, ServerError> {
         validate_server_identity(&identity)?;
         std::fs::create_dir_all(&cfg.state_root)?;
@@ -391,9 +450,16 @@ impl KeptServer {
                 seal_checks: Arc::new(tilo_workspace_keys::NoSealChecks),
                 apps: app_serving.clone(),
                 configure: Some(Box::new(move |config| {
-                    tilo_workspace_service::service::ServiceConfig {
+                    let config = tilo_workspace_service::service::ServiceConfig {
                         reaching,
                         ..Server::keeping(&keep, config, apps)
+                    };
+                    match founding_registries {
+                        Some(registries) => tilo_workspace_service::service::ServiceConfig {
+                            founding_registries: registries,
+                            ..config
+                        },
+                        None => config,
                     }
                 })),
                 itself: Some(identity.clone()),

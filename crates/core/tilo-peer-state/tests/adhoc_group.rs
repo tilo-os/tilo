@@ -95,6 +95,7 @@ impl Desktop {
                 // The group's endpoints reach each other on this machine alone: no other
                 // machine names where they are reached.
                 reaching: Reaching::OnItsOwn,
+                founding_registries: tilo_workspace_service::service::RegistriesFile::default(),
                 ..config
             },
         )

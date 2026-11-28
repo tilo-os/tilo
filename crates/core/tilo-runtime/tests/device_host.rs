@@ -137,6 +137,7 @@ async fn as_its_device(
         |config| ServiceConfig {
             apps: Some(apps),
             reaching: tilo_workspace_service::Reaching::OnItsOwn,
+            founding_registries: tilo_workspace_service::service::RegistriesFile::default(),
             ..config
         },
     )

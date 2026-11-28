@@ -1693,7 +1693,7 @@ impl Workspaces {
     /// lost the pin reads as that, never as trust in nobody. The row stays the workspace's to
     /// change; only the reading is whole.
     fn repair_official_pin(rows: &mut [tilo_peer_state::PackageRegistry]) {
-        let seeded = super::default_apps::registries();
+        let seeded = crate::service::RegistriesFile::seeded();
         let Some(official) = seeded.registries.first() else {
             return;
         };

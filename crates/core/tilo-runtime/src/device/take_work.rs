@@ -525,6 +525,7 @@ fn open_member_service(
             // What the member keeps for its people, as any device of theirs does.
             |config| tilo_workspace_service::service::ServiceConfig {
                 registers: vec![tilo_person_services::register],
+                founding_registries: tilo_workspace_service::service::RegistriesFile::default(),
                 ..config
             },
         )

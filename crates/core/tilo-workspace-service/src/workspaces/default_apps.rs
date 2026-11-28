@@ -23,13 +23,6 @@ use tilo_peer_state::workspace_membership::{AppPayload, AppRelease};
 /// One accepted registry entry, the registry it came from and that registry's channel.
 type Offered = (app_cli::VerifiedEntry, String, ReleaseChannel);
 
-/// The registries a new workspace fetches apps from: the official one, pinned to the owner key
-/// compiled into this build (`app_cli::config::MAIN_REGISTRY_OWNER_PUBKEY_HEX`) or to the key an
-/// image ships in its place. No key is ever guessed.
-pub(super) fn registries() -> RegistriesFile {
-    RegistriesFile::founded_with()
-}
-
 /// `registries` as the rows `workspace/registries` keeps.
 pub(super) fn registry_rows(registries: &RegistriesFile) -> Vec<PackageRegistry> {
     registries

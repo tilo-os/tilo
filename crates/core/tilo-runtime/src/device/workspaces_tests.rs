@@ -1016,6 +1016,7 @@ async fn desktop_founds_its_persons_workspace(
         desktop_keys.groups(),
         |config| tilo_workspace_service::service::ServiceConfig {
             reaching: tilo_workspace_service::Reaching::OnItsOwn,
+            founding_registries: tilo_workspace_service::service::RegistriesFile::default(),
             ..config
         },
     )

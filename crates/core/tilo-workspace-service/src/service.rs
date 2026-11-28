@@ -22,6 +22,8 @@ use tilo_user_identity::{DeviceCert, RevocationList, verify_device_cert_at};
 use tilo_endpoint_reachability::Reachability;
 use tokio::sync::Mutex as AsyncMutex;
 
+pub use app_cli::config::RegistriesFile;
+
 use crate::Reaching;
 use crate::app_serving::AppActionServer;
 use crate::handshake::{EndpointTrust, HandshakeError, LiveIdentity};
@@ -80,6 +82,10 @@ pub struct ServiceConfig {
     /// runs on, which keeps a workspace of its person's that another device
     /// serves as a member copy. `None` for a service that joins none.
     pub member: Option<Arc<crate::workspaces::MemberDevice>>,
+    /// The registries a workspace made on this service starts with: the official registry under
+    /// the compiled owner key ([`RegistriesFile::seeded`]) unless the embedder names another
+    /// list of its own, as a test's fixture host does.
+    pub founding_registries: RegistriesFile,
     /// The app surfaces the device knows, which the stores of its workspaces declare the
     /// resource types and verbs of: the process's own ([`collab_types::app_surface::Surfaces::process`]),
     /// or, for a test that runs several devices in one process, each device's own.
@@ -119,6 +125,7 @@ impl ServiceConfig {
             reaching: Reaching::ByRelay,
             reachability: Reachability::default(),
             member: None,
+            founding_registries: RegistriesFile::seeded(),
             surfaces: Arc::clone(collab_types::app_surface::Surfaces::process()),
             app_files: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -454,6 +461,7 @@ impl ServiceSessions {
                 origin: cfg.origin.clone(),
             })),
             member: cfg.member.clone(),
+            founding_registries: cfg.founding_registries.clone(),
             surfaces: {
                 Self::declare_start_surfaces(&cfg.surfaces)?;
                 Arc::clone(&cfg.surfaces)

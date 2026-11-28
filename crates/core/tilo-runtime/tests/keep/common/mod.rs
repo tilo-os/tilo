@@ -569,7 +569,10 @@ pub async fn serve_with_keys(
     state: TempDir,
     channels: Option<tilo_workspace_service::workspaces::DeviceKeyGroups>,
 ) -> Hosted {
-    let config = ServiceConfig::new(state.path().to_path_buf(), work);
+    let config = ServiceConfig {
+        founding_registries: tilo_workspace_service::service::RegistriesFile::default(),
+        ..ServiceConfig::new(state.path().to_path_buf(), work)
+    };
     serve_configured(user, device, (config, state), channels).await
 }
 
