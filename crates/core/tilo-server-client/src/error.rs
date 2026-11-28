@@ -12,6 +12,10 @@ pub enum LinkError {
     /// on (a route's `401`/`403` text).
     #[error("the server refused: {0}")]
     Refused(String),
+    /// The server refused this device, typed: its code, which is what whoever acts on it reads,
+    /// and what it said, in its own words for a person.
+    #[error("the server refused: {1}")]
+    RefusedTyped(&'static str, String),
     /// Another server answers here than the one this device pinned: the server
     /// was set up again.
     #[error("the server is not the one this computer knew: it was set up again")]

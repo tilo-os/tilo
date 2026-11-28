@@ -1504,16 +1504,18 @@ impl Task {
                 host: Some(host), ..
             } => host,
             // The entry said why the workspace does not have this device: asking again with the
-            // same certificate answers the same. What the entry itself said is kept in its words,
-            // which are what a person reads and what the session last answered for the workspace;
-            // a workspace that refused the device the entry let in keeps its code, which the
+            // same certificate answers the same. Both are kept in the host's own words, which are
+            // what a person reads and what the session last answered for the workspace; a
+            // workspace that refused the device the entry let in keeps its code too, which the
             // session stops on.
             tilo_server_protocol::entering::Entered::Refused(refusal) => {
                 use tilo_server_protocol::entering::EnterRefusal;
-                return Err(LinkError::Refused(match &refusal {
-                    EnterRefusal::Entry { .. } => refusal.reason().to_owned(),
-                    EnterRefusal::Workspace(_) => refusal_code(&refusal).to_owned(),
-                }));
+                return Err(match &refusal {
+                    EnterRefusal::Entry { .. } => LinkError::Refused(refusal.reason().to_owned()),
+                    EnterRefusal::Workspace(reason) => {
+                        LinkError::RefusedTyped(NOT_ADMITTED.0, reason.clone())
+                    }
+                });
             }
             // An admission with no address is a host that keeps no signed address for the
             // workspace: there is nowhere to take it in from.
@@ -2957,6 +2959,8 @@ fn refusal(error: &LinkError) -> Refusal {
             "certificate-rejected",
             "This workspace’s server refused this browser’s certificate.".to_owned(),
         ),
+        // A typed refusal keeps its code, for the session to stop on, and its words, to read.
+        LinkError::RefusedTyped(code, message) => Refusal::Final(code, message.clone()),
         LinkError::Refused(_) => Refusal::Unexplained,
         LinkError::PeerVersion { theirs }
             if tilo_server_protocol::auth::this_device_is_behind(*theirs) =>
@@ -5469,6 +5473,10 @@ mod tests {
         );
         assert_eq!(code(LinkError::Sign("locked".into())), "reachability");
         assert_eq!(code(LinkError::Refused("io: closed".into())), "unexplained");
+        // A workspace's refusal keeps its code for the session to stop on, and its words.
+        let said = LinkError::RefusedTyped(NOT_ADMITTED.0, "gone".into());
+        assert!(matches!(refusal(&said), Refusal::Final("not-admitted", words) if words == "gone"));
+        assert_eq!(said.to_string(), "the server refused: gone");
     }
 
     /// A dial the host ends with a key its person's root retired is the one refusal it says
