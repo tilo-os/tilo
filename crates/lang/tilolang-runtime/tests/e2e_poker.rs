@@ -656,3 +656,205 @@ mod cases {
         }
     }
 }
+
+/// The hands the table compares, called the way another package calls them: the rules are the
+/// package's own functions, so a package beside it reads the same answers a deal does.
+#[cfg(test)]
+mod hand_rules {
+    use crate::common::*;
+    use tilolang_runtime::{AmStore, Runtime, Value};
+
+    const PROBE: &str = r#"
+app so.tilo.poker-probe "Poker probe"
+
+use so.tilo.poker as poker
+
+/// The category a five-card hand is, as its place in the order.
+action rank_of_hand(cards: List<Int>) -> Int {
+    poker.category_index(poker.category(cards))
+}
+
+/// What a five-card hand is worth to compare.
+action score(cards: List<Int>) -> Int {
+    poker.five(cards)
+}
+
+/// The category of the best five cards among five to seven, by its place in the order.
+action best_category(cards: List<Int>) -> Int {
+    let score = poker.best(cards) ?? 0
+    score / 371293
+}
+
+/// A fresh deck as the table shuffles it.
+action shuffled_deck() -> List<Int> uses random {
+    random.shuffle(poker.fresh_deck())
+}
+"#;
+
+    struct Rules {
+        rt: Runtime,
+        probe: App,
+    }
+
+    impl Rules {
+        fn new() -> Self {
+            let poker = app("poker");
+            let probe = App::compile(PROBE, &[poker.meta().clone()]);
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
+            poker.load(&rt);
+            probe.load(&rt);
+            Self { rt, probe }
+        }
+
+        fn call(&self, action: &str, args: Vec<Value>) -> Value {
+            let id = self.probe.action(action);
+            match self.rt.invoke_action(&me(), (id.as_str(), args)) {
+                Ok(tilolang_runtime::InvokeOutcome::Done(value)) => value,
+                other => panic!("{action}: {other:?}"),
+            }
+        }
+
+        fn int(&self, action: &str, cards: &[i64]) -> i64 {
+            let cards = cards.iter().copied().map(Value::Int).collect();
+            match self.call(action, vec![Value::List(cards)]) {
+                Value::Int(n) => n,
+                other => panic!("{action}: {other:?}"),
+            }
+        }
+    }
+
+    /// A card is `suit * 13 + rank`, rank 0 a two and 12 an ace.
+    fn card(suit: i64, rank: i64) -> i64 {
+        suit.checked_mul(13)
+            .and_then(|n| n.checked_add(rank))
+            .expect("a card of the deck")
+    }
+
+    #[test]
+    fn the_hand_rules_rank_their_hands_from_a_high_card_to_a_straight_flush() {
+        let r = Rules::new();
+        let hands = [
+            // A high card.
+            [card(0, 0), card(0, 5), card(0, 10), card(1, 3), card(1, 8)],
+            // A pair.
+            [card(0, 2), card(1, 2), card(0, 5), card(2, 9), card(3, 11)],
+            // Two pair.
+            [card(0, 2), card(1, 2), card(0, 5), card(1, 5), card(2, 9)],
+            // Three of a kind.
+            [card(0, 2), card(1, 2), card(2, 2), card(0, 5), card(1, 9)],
+            // A straight.
+            [card(0, 4), card(1, 5), card(2, 6), card(3, 7), card(0, 8)],
+            // A flush.
+            [card(0, 0), card(0, 2), card(0, 4), card(0, 6), card(0, 9)],
+            // A full house.
+            [card(0, 2), card(1, 2), card(2, 2), card(0, 5), card(1, 5)],
+            // Four of a kind.
+            [card(0, 2), card(1, 2), card(2, 2), card(3, 2), card(0, 5)],
+            // A straight flush.
+            [card(0, 4), card(0, 5), card(0, 6), card(0, 7), card(0, 8)],
+        ];
+        for (place, hand) in hands.iter().enumerate() {
+            assert_eq!(
+                r.int("rank_of_hand", hand),
+                i64::try_from(place).expect("a small place"),
+                "hand {place} is read as its place in the order: {hand:?}"
+            );
+            let scored = r.int("score", hand);
+            if place > 0 {
+                assert!(
+                    scored > r.int("score", &hands[place - 1]),
+                    "hand {place} beats the one below it"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_wheel_loses_to_a_six_high_straight() {
+        let r = Rules::new();
+        let wheel = [card(0, 12), card(1, 0), card(2, 1), card(3, 2), card(0, 3)];
+        let six_high = [card(0, 1), card(1, 2), card(2, 3), card(3, 4), card(0, 5)];
+        assert_eq!(r.int("rank_of_hand", &wheel), 4, "A-2-3-4-5 is a straight");
+        assert!(
+            r.int("score", &wheel) < r.int("score", &six_high),
+            "the wheel is the lowest straight"
+        );
+    }
+
+    #[test]
+    fn kickers_break_ties_and_equal_hands_split() {
+        let r = Rules::new();
+        let with_king = [
+            card(0, 12),
+            card(1, 12),
+            card(0, 11),
+            card(0, 10),
+            card(0, 0),
+        ];
+        let with_queen = [
+            card(0, 12),
+            card(1, 12),
+            card(0, 11),
+            card(0, 9),
+            card(0, 0),
+        ];
+        assert!(
+            r.int("score", &with_king) > r.int("score", &with_queen),
+            "a king kicks above a jack"
+        );
+        let suited = [
+            card(2, 12),
+            card(3, 12),
+            card(1, 11),
+            card(1, 10),
+            card(1, 0),
+        ];
+        assert_eq!(
+            r.int("score", &with_king),
+            r.int("score", &suited),
+            "the same ranks split whatever their suits"
+        );
+    }
+
+    #[test]
+    fn best_of_seven_finds_the_flush() {
+        let r = Rules::new();
+        // Five hearts among seven: the best five are the flush, not the pair of twos.
+        let seven = [
+            card(1, 0),
+            card(1, 2),
+            card(1, 4),
+            card(1, 6),
+            card(1, 9),
+            card(0, 0),
+            card(0, 1),
+        ];
+        assert_eq!(
+            r.int("best_category", &seven),
+            5,
+            "seven cards are read as their best five"
+        );
+    }
+
+    #[test]
+    fn a_shuffle_is_a_permutation_of_the_deck() {
+        let r = Rules::new();
+        let shuffled = match r.call("shuffled_deck", vec![]) {
+            Value::List(cards) => cards
+                .into_iter()
+                .map(|card| match card {
+                    Value::Int(n) => n,
+                    other => panic!("a card is an int: {other:?}"),
+                })
+                .collect::<Vec<i64>>(),
+            other => panic!("the deck reads {other:?}"),
+        };
+        let mut sorted = shuffled;
+        sorted.sort_unstable();
+        assert_eq!(
+            sorted,
+            (0..52).collect::<Vec<i64>>(),
+            "every card of the deck is dealt exactly once"
+        );
+    }
+}
