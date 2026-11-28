@@ -7,6 +7,7 @@ app so.tilo.notes "Notes" (
 )
 
 use so.tilo.lang.discussion as discussion
+use so.tilo.session as session
 
 /// A note: a title, a body, the note it stands under, the tags people gave it and the
 /// reactions they left on it.
@@ -249,6 +250,17 @@ action sort_children(nb: Notebook, n: Note) (icon: .a_arrow_down, label: "Sort b
         let over = if at == 0 { n } else { kids.at(at - 1) ?? n }
         nb.notes.move(k, after: over)
     }
+}
+
+/// Opens the system's keyboard reference: every key the desktop answers, with the chords the
+/// person's settings give them. A window of this app answers it on Ctrl+/ (or F1, wherever the
+/// desktop keeps that), and the command palette lists it.
+action keyboard_shortcuts(nb: Notebook) (
+    icon: .command,
+    label: "Keyboard shortcuts",
+    key: "Ctrl+/",
+) {
+    session.shortcut(action: "shortcut-help")
 }
 
 /// Deletes a note and every note under it, as one change a person takes back at once.

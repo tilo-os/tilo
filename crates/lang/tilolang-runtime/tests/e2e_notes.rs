@@ -7,6 +7,7 @@ mod cases {
 
     use crate::common::*;
     use tilolang_runtime::blob::FileValue;
+    use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
     use tilolang_runtime::rich::RichValue;
     use tilolang_runtime::{
         AmStore, EditOutcome, InvokeOutcome, ResourceRef, Runtime, UiNode, Value, ViewInstance,
@@ -1822,5 +1823,62 @@ mod cases {
                 files.iter().map(|(name, _)| name).collect::<Vec<_>>()
             );
         }
+    }
+
+    /// Ctrl+/ opens the system's keyboard reference: the command runs the session's `shortcut`
+    /// with the reference's own id, so the sheet is the desktop's own, listing the keys as the
+    /// person's settings give them, rather than a second sheet of this app's.
+    #[test]
+    fn ctrl_slash_opens_the_systems_keyboard_reference() {
+        /// What the window sends on, kept as it goes: a host runs each and answers.
+        #[derive(Clone, Default)]
+        struct Sends(std::rc::Rc<std::cell::RefCell<Vec<Invocation>>>);
+
+        impl Invoker for Sends {
+            fn invoke(&self, invocation: &Invocation) -> Invoked {
+                self.0.borrow_mut().push(invocation.clone());
+                Invoked::Done(Value::Unit)
+            }
+        }
+
+        let notes = Notes::new();
+        let sends = Sends::default();
+        notes.rt.set_foreign_invoker(sends.clone());
+        let action = notes
+            .app
+            .meta()
+            .action_named("keyboard_shortcuts")
+            .expect("the app offers the reference");
+        assert_eq!(
+            action.key.as_deref(),
+            Some("Ctrl+/"),
+            "the chord the window answers"
+        );
+        // What the command asks the session for is the desktop's own guide, by its id. It
+        // reaches the system, so it runs as the person's own step, admitted.
+        let run = vec![Value::resource(&notes.nb)];
+        let outcome =
+            notes
+                .rt
+                .invoke_approved_through(&me(), None, (action.id.as_str(), run), None);
+        assert!(
+            matches!(outcome, Ok(InvokeOutcome::Done(_))),
+            "the command runs: {outcome:?}"
+        );
+        let sent = sends
+            .0
+            .borrow()
+            .last()
+            .cloned()
+            .expect("the session is asked");
+        let Invocation::Action { name, args, .. } = sent else {
+            panic!("the shortcut is an action of the session");
+        };
+        assert_eq!(name, "shortcut", "the session's shortcut verb");
+        assert_eq!(
+            args,
+            vec![("action".to_owned(), Value::text("shortcut-help"))],
+            "the reference's own id"
+        );
     }
 }
