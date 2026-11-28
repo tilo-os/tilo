@@ -249,26 +249,16 @@ impl LocalPort {
         Ok(true)
     }
 
-    /// The ids of this port's app's records, in order: what a caller carrying them elsewhere
-    /// reads each of with [`Self::record`].
+    /// This port's app's records, each by the id it names and a copy of what it holds, in order:
+    /// what a caller carries elsewhere.
     #[must_use]
-    pub fn records(&self) -> Vec<String> {
+    pub fn records(&self) -> Vec<(String, automerge::Automerge)> {
         self.documents
             .borrow()
             .range((self.app.clone(), String::new())..)
             .take_while(|((of, _), _)| *of == self.app)
-            .map(|((_, id), _)| id.clone())
+            .map(|((_, id), record)| (id.clone(), record.clone()))
             .collect()
-    }
-
-    /// A copy of this port's record `id`: what it holds, for a caller that carries it elsewhere.
-    /// `None` for a record this port holds nothing of, or one of another app's.
-    #[must_use]
-    pub fn record(&self, id: &str) -> Option<automerge::Automerge> {
-        self.documents
-            .borrow()
-            .get(&(self.app.clone(), id.to_owned()))
-            .cloned()
     }
 
     /// Each resource the store holds, as the store placed it: its kind and id, and the readers,

@@ -5406,8 +5406,12 @@ mod records {
         }
 
         let port = LocalPort::at(dir.clone()).unwrap().named("so.tilo.notes");
+        let records = port.records();
         assert_eq!(
-            port.records(),
+            records
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
             ["doc-1"],
             "the port lists the record it kept"
         );

@@ -211,15 +211,22 @@ fn install(
     .map(drop)
 }
 
-#[test]
-fn the_runtime_the_program_carries_is_recorded_and_an_app_naming_it_installs() {
-    let fixture = fixture();
-    super::install_carried_runtimes_in(
+/// What a first start does with the folder Tilo.app carries its runtimes in.
+fn install_runtimes(fixture: &Fixture) {
+    super::install_carried_in(
         &fixture.catalog,
         &fixture.store,
         &fixture.carried,
         "Tilo.app",
+        false,
+        |_, _| {},
     );
+}
+
+#[test]
+fn the_runtime_the_program_carries_is_recorded_and_an_app_naming_it_installs() {
+    let fixture = fixture();
+    install_runtimes(&fixture);
     assert!(
         package_store::runtime_installed(&format!("tilo-runtime/{RELEASE}")),
         "the runtime Tilo.app is is installed in the store the installer reads"
@@ -254,12 +261,7 @@ fn the_runtime_the_program_carries_is_recorded_and_an_app_naming_it_installs() {
 #[test]
 fn an_app_naming_another_release_is_refused_by_name() {
     let fixture = fixture();
-    super::install_carried_runtimes_in(
-        &fixture.catalog,
-        &fixture.store,
-        &fixture.carried,
-        "Tilo.app",
-    );
+    install_runtimes(&fixture);
     let publisher = SigningKey::from_bytes(&[10; 32]);
     let app = app_tapp(
         fixture.dir.path(),
@@ -283,12 +285,7 @@ fn an_app_naming_another_release_is_refused_by_name() {
 #[test]
 fn a_carried_runtime_is_installed_once() {
     let fixture = fixture();
-    super::install_carried_runtimes_in(
-        &fixture.catalog,
-        &fixture.store,
-        &fixture.carried,
-        "Tilo.app",
-    );
+    install_runtimes(&fixture);
     let before = fixture
         .catalog
         .list()
@@ -296,12 +293,7 @@ fn a_carried_runtime_is_installed_once() {
         .into_iter()
         .map(|package| package.package_id_hex)
         .collect::<Vec<_>>();
-    super::install_carried_runtimes_in(
-        &fixture.catalog,
-        &fixture.store,
-        &fixture.carried,
-        "Tilo.app",
-    );
+    install_runtimes(&fixture);
     let after = fixture
         .catalog
         .list()

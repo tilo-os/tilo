@@ -36,5 +36,8 @@ pub(super) fn install_carried_runtimes(catalog: &package_store::Catalog) {
             return;
         }
     };
-    super::carried_install::install_carried_runtimes_in(catalog, &store, &carried, CARRIER);
+    let warn = |root: &str, why: String| {
+        tracing::warn!(error = %why, package = %root, "a runtime this program carries did not install");
+    };
+    super::carried_install::install_carried_in(catalog, &store, &carried, CARRIER, false, warn);
 }

@@ -249,16 +249,13 @@ fn carry_app(
     }
 
     // The records the app kept of its own, each by the id it named.
-    for id in local.records() {
+    for (id, record) in local.records() {
         if names_me(&id) {
             return Err(format!(
                 "{app}: the record `{id}` names the person the device was before sign-in \
                  (`{ME}`), and the carry cannot rename it to the person it is"
             ));
         }
-        let record = local
-            .record(&id)
-            .ok_or_else(|| format!("{app}: the record `{id}` reads nothing"))?;
         let bytes = record.save();
         let changes = restamp(&bytes, &caller, &person, &format!("{app}'s record `{id}`"))?;
         write_record(&port, &id, &changes)
