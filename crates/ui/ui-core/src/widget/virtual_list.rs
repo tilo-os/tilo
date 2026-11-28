@@ -2050,10 +2050,10 @@ impl Widget for VirtualRows {
             Style {
                 size: Size {
                     width: percent(1.0_f32),
-                    height: if self.fill_height {
-                        percent(1.0_f32)
-                    } else if self.fit_rows {
+                    height: if self.fit_rows {
                         Dimension::length(px(self.viewport.content_extent()))
+                    } else if self.fill_height {
+                        Dimension::auto()
                     } else {
                         Dimension::length(px(self.viewport.viewport()))
                     },
@@ -2063,19 +2063,25 @@ impl Widget for VirtualRows {
                 // height to offer, never a least height it holds a pane open to.
                 min_size: Size {
                     width: Dimension::auto(),
-                    height: if self.fill_height {
-                        Dimension::length(0.0)
-                    } else {
-                        Dimension::auto()
-                    },
+                    height: Dimension::auto(),
                 },
-                // A list that hugs its rows keeps them all in its height, but never takes more
-                // room than the place it stands in was allowed: past that it scrolls.
+                // A list that fills its place takes at most the height the place gives it (a
+                // percent height, which resolves only where the place has one: a bare `height`
+                // would leave the box taller than the place when the place sizes itself from the
+                // list). A list that hugs its rows keeps them all in its height, but never takes
+                // more room than the place it stands in was allowed: past that it scrolls.
                 max_size: Size {
                     width: Dimension::auto(),
-                    height: self
-                        .most
-                        .map_or(Dimension::auto(), |most| Dimension::length(px(most))),
+                    height: self.most.map_or_else(
+                        || {
+                            if self.fill_height {
+                                percent(1.0_f32)
+                            } else {
+                                Dimension::auto()
+                            }
+                        },
+                        |most| Dimension::length(px(most)),
+                    ),
                 },
                 overflow: taffy::Point {
                     x: taffy::Overflow::Clip,
