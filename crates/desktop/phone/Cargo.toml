@@ -13,7 +13,7 @@ path = "src/lib.rs"
 # The tilolang apps the APK carries: `tilolang build --platform android` compiles each and packs
 # its bundle into `assets/tilo/apps`.
 [package.metadata.tilo-app]
-tilolang = ["../../../apps/tl/notes", "../../../apps/tl/chat"]
+tilolang = ["../../../apps/tl/notes", "../../../apps/tl/chat", "../../../apps/tl/files"]
 # The APK serves the person's workspace files to Android's own picker: its manifest carries the
 # documents provider whose native side this library exports.
 workspace-files = true
