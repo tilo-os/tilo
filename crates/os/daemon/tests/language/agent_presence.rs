@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use tilo_actions::remote::ActionProvider as _;
 
-use crate::language::agent_fixture::{act, events, ls, watch};
+use crate::language::agent_fixture::{act, events, ls, said, watch};
 use crate::language::host;
 
 /// The longest a page may still list an agent after its session ended.
@@ -325,23 +325,22 @@ fn a_stopped_agent_is_cancelled_refused_and_goes_on() {
         let agent = std::sync::Arc::new(host.agent());
         let (_, failed) = ls(&agent, None).await;
         assert!(!failed, "the agent lists the workspace");
-        // A watch with no cursor answers what holds now, which a page draws; one that waits for
-        // news holds a cursor. Read once, then wait from it: what the stop moves is the news.
-        let (holds, failed) = watch(&agent, json!({"wait_ms": 0})).await;
-        assert!(!failed, "the agent reads who is here: {holds}");
-        let cursor = serde_json::from_str::<Value>(&holds)
+        // A read of a record past its revision waits until the record moves, and is one of the
+        // agent's runs while it waits (a watch is a read of what moved, never a run of its own).
+        // The workspace's people do not change here: what ends the read is the stop.
+        let members = json!({"path": "record:tilo.workspace:workspace/members"});
+        let read = agent.tool("tilo_read", &members).await;
+        let (holds, failed) = said(&read);
+        assert!(!failed, "the agent reads the workspace's people: {holds}");
+        let revision = serde_json::from_str::<Value>(&holds)
             .ok()
-            .and_then(|answered| {
-                answered
-                    .get("cursor")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-            })
-            .expect("the watch answers the cursor to wait from");
+            .and_then(|answered| answered["revision"].as_str().map(str::to_owned))
+            .expect("the read answers the revision to wait past");
         let running = {
             let agent = std::sync::Arc::clone(&agent);
             tokio::spawn(async move {
-                watch(&agent, json!({"wait_ms": 60_000, "cursor": cursor})).await
+                let past = json!({"path": members["path"], "after": revision});
+                said(&agent.tool("tilo_read", &past).await)
             })
         };
         let started = Instant::now();
