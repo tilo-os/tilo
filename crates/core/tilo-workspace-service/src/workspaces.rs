@@ -105,8 +105,6 @@ pub use member::{AdmittedWrite, CONFINED_HOLDS_NONE, MemberDevice, MemberMateria
 mod run_admission;
 pub use run_admission::{Refusal, SessionAdmission};
 mod carried;
-mod moving_in;
-pub use moving_in::{MovedIn, MovingService, MovingWorkspace, moved_out, moving_out};
 mod host_invitations;
 mod hosts;
 mod installed_apps;

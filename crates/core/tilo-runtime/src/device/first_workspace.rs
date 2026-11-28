@@ -259,20 +259,6 @@ impl FirstWorkspace {
         self.here_blocking().map(drop)
     }
 
-    /// The workspaces `moved` came in from the person's desktop: the person's own among them is
-    /// their workspace here, when they have none yet, and every one's files are shown.
-    pub(crate) fn moved_in(&self, moved: &[WorkspaceId]) {
-        if self.login {
-            return;
-        }
-        let person = own_workspace(&self.workspaces.device_cert().user_public_key);
-        if moved.contains(&person) && self.id.set(person.to_string()).is_ok() {
-            self.workspaces.entered().notify_waiters();
-        }
-        // The import that hands them over runs on the runtime; they show once started.
-        drop(self.show(moved));
-    }
-
     /// Show the files of `workspaces` that are held here, on a thread of its own: starting a
     /// workspace's files reads its tree through the hydrator's synchronous bridge, which a task of
     /// the runtime (founding runs on one) must not wait on. Answers once they are shown.

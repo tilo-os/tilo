@@ -22,9 +22,6 @@ use tilo_peer_state::owner::DeviceWorkspaces;
 
 use crate::engine::Engine;
 
-pub mod vault;
-pub use vault::MlsVault;
-
 /// The workspace's access policy as this device's own workspaces hold it: which devices the
 /// workspace lets read each group.
 pub struct OwnerDirectory {

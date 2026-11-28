@@ -10,7 +10,6 @@ tilo-account-workspaces-enter = Keep a workspace of yours on this device, synced
 tilo-account-workspaces-leave = Leave a workspace: it goes from every device of yours
 tilo-account-workspaces-join = Join a workspace, by the invitation that brings you in or through its open entry, and keep it on this device
 tilo-account-workspaces-unattended = Let keys made for one workspace alone run commands in its machine without asking each time (asks you first), or ask again
-tilo-account-workspaces-import = Take in, once, the workspaces and keys this computer's desktop kept itself
 tilo-account-keys-create = Ask the person for a new key; it waits for them
 tilo-account-keys-mint = A key for one workspace, for an agent there
 tilo-account-keys-key-revoke = Revoke this key and every key it minted

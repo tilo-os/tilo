@@ -5244,14 +5244,6 @@ impl tilo_api::session::Here for DaemonHere {
         tilo_api::session::Here::invocations(&*self.daemon().ok()?)
     }
 
-    fn import(&self, by: &Caller, carried: serde_json::Value) -> tilo_api::session::Imported {
-        let (daemon, by) = (self.daemon(), by.clone());
-        Box::pin(async move {
-            let daemon = daemon?;
-            tilo_api::session::Here::import(&*daemon, &by, carried).await
-        })
-    }
-
     /// The account this device serves for its person, when it keeps their workspaces itself: the
     /// daemon that founded their workspace answers their list, never a read of the copy a
     /// restarted daemon is still taking in.
@@ -5441,29 +5433,6 @@ impl tilo_api::session::Here for Daemon {
 
     fn invocations(&self) -> Option<Arc<Invocations>> {
         Some(Arc::clone(&self.invocations))
-    }
-
-    /// Only this device's own person, on this device, hands it what its desktop kept: never an
-    /// agent of theirs, another device, or anyone else.
-    fn import(&self, by: &Caller, carried: serde_json::Value) -> tilo_api::session::Imported {
-        let own = by.user_public_key() == Some(&self.cert.user_public_key)
-            && by.device_public_key() == Some(&self.cert.device_public_key)
-            && by.agent_name().is_none()
-            && !by.is_session_delegated();
-        let workspaces = Arc::clone(&self.workspaces);
-        let first = Arc::clone(&self.first);
-        Box::pin(async move {
-            if !own {
-                return Err(
-                    "only this device's own person takes its desktop's workspaces in".into(),
-                );
-            }
-            let carried = serde_json::from_value::<super::workspaces::Carried>(carried)
-                .map_err(|error| format!("what the desktop handed over does not read: {error}"))?;
-            let (imported, moved) = workspaces.import(carried).await?;
-            first.moved_in(&moved);
-            Ok(imported)
-        })
     }
 
     /// Asked of the person's device that founds their workspaces, in their own workspace, which

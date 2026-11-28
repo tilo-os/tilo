@@ -10,7 +10,6 @@ tilo-account-workspaces-enter = Einen Arbeitsbereich von dir auf diesem Gerät b
 tilo-account-workspaces-leave = Einen Arbeitsbereich verlassen: er verschwindet von jedem deiner Geräte
 tilo-account-workspaces-join = Einem Arbeitsbereich beitreten, über die Einladung, die dich hineinbringt, oder über seinen offenen Eintritt, und ihn auf diesem Gerät behalten
 tilo-account-workspaces-unattended = Schlüssel, die nur für einen Arbeitsbereich gelten, Befehle in seiner Maschine ohne Rückfrage ausführen lassen (fragt dich zuerst) oder wieder fragen
-tilo-account-workspaces-import = Einmal die Arbeitsbereiche und Schlüssel übernehmen, die der Desktop dieses Computers selbst behalten hat
 tilo-account-keys-create = Die Person um einen neuen Schlüssel bitten; er wartet auf sie
 tilo-account-keys-mint = Ein Schlüssel für einen Arbeitsbereich, für einen Agenten dort
 tilo-account-keys-key-revoke = Diesen Schlüssel und jeden Schlüssel widerrufen, den er ausgestellt hat

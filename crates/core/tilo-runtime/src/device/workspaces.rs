@@ -32,27 +32,6 @@ use tilo_workspace_service::own_device::{self, KeyService};
 use tilo_workspace_service::service::{ServiceConfig, WorkspaceService};
 use tilo_workspace_service::workspaces::{SessionAdmission, Workspaces};
 
-/// Where the key service keeps its sealed group state, below the device's directory.
-const GROUPS: &str = "groups";
-/// The file of the groups' directory naming which group reads each workspace's documents.
-const READER_GROUPS: &str = "reader-groups.json";
-
-/// What a desktop of this device kept itself before this service kept its person's workspaces,
-/// as it hands it over once ([`ServiceWorkspaces::import`]).
-#[derive(Debug, Default, serde::Deserialize)]
-pub(crate) struct Carried {
-    /// The key its key groups were sealed with, in hex.
-    #[serde(default)]
-    pub(crate) sealed_with: Option<String>,
-    /// Each file of its key groups' directory by name, its bytes in hex.
-    #[serde(default)]
-    pub(crate) groups: std::collections::BTreeMap<String, String>,
-    /// What its own workspace service kept, as [`tilo_workspace_service::workspaces::MovingService::to_hex`]
-    /// hands it over.
-    #[serde(default)]
-    pub(crate) service: Option<String>,
-}
-
 /// What the device's workspace service is opened with.
 pub(crate) struct Opening<'a> {
     /// The device's directory: the service's store and the key service's state are below it.
@@ -86,9 +65,6 @@ pub(crate) struct ServiceWorkspaces {
     bound: Arc<OnceLock<iroh::Endpoint>>,
     /// The device's key service, which settles the keys of every group the device takes part in.
     keys: Option<KeyService>,
-    /// Where that key service keeps its groups' state, and the vault it seals them under: what a
-    /// desktop's groups are taken into ([`Self::import`]).
-    groups: Option<(std::path::PathBuf, key_group::VaultKey)>,
     /// The session this device entered with, once a holder ran: what the device's own actions are
     /// asked of its host through.
     session: std::sync::OnceLock<Entered>,
@@ -198,7 +174,6 @@ impl ServiceWorkspaces {
         .map_err(|error| format!("this device's workspace service: {error}"))?;
         let mut opened = Self::unopened(Arc::new(service), identity, endpoint);
         opened.keys = Some(keys);
-        opened.groups = Some((dir.join(GROUPS), own_device::vault_key(key)));
         Ok(Arc::new(opened))
     }
 
@@ -225,7 +200,6 @@ impl ServiceWorkspaces {
             endpoint,
             bound,
             keys: None,
-            groups: None,
             session: std::sync::OnceLock::new(),
             answers: std::sync::OnceLock::new(),
             takes_work: std::sync::atomic::AtomicBool::new(false),
@@ -351,117 +325,6 @@ impl ServiceWorkspaces {
                 .map_err(|error| error.to_string())?;
         }
         Ok(made)
-    }
-
-    /// Take in, once, what a desktop of this device kept itself before this service kept its
-    /// person's workspaces (`account/workspaces#import`): each key group the desktop sealed, opened
-    /// with the key it was sealed with and sealed again under this device's vault beside the groups
-    /// the key service keeps, which opens it once the service takes part in its workspace; and each
-    /// workspace the desktop took part in, entered here as a member at the address its host
-    /// signed. A group the key service keeps already stays as it is: the device keeps the one leaf
-    /// it has in each group, and no group is founded again beside one the desktop had. The
-    /// workspaces the desktop's own service hosted move here, after the groups
-    /// ([`tilo_workspace_service::workspaces::Workspaces::move_in`]), and are answered beside
-    /// the answer. The person's own workspace is never founded here: it was founded where their
-    /// root was made, and comes in with the desktop's service or from a device that has it.
-    ///
-    /// # Errors
-    /// The device keeps no key service, or a group cannot be read, opened or written.
-    pub(crate) async fn import(
-        &self,
-        carried: Carried,
-    ) -> Result<(serde_json::Value, Vec<WorkspaceId>), String> {
-        let groups = match &carried.sealed_with {
-            Some(sealed_with) => self.take_in_groups(sealed_with, &carried.groups)?,
-            None => Vec::new(),
-        };
-        // The key service reads the groups, their readers and the routes of document groups as
-        // it opens: those just written are read now, before the workspaces sealed with them move.
-        if let Some(keys) = self.keys().get() {
-            keys.take_in_kept();
-        }
-        let moved = match &carried.service {
-            Some(service) => {
-                let service = tilo_workspace_service::workspaces::MovingService::from_hex(service)?;
-                self.copies().move_in(service).await?
-            }
-            None => tilo_workspace_service::workspaces::MovedIn::default(),
-        };
-        let answer = serde_json::json!({
-            "groups": groups.iter().map(ToString::to_string).collect::<Vec<_>>(),
-            "moved": moved.moved.iter().map(ToString::to_string).collect::<Vec<_>>(),
-            "refused": moved
-                .refused
-                .iter()
-                .map(|(workspace, error)| serde_json::json!({"workspace": workspace.to_string(), "error": error}))
-                .collect::<Vec<_>>(),
-        });
-        Ok((answer, moved.moved))
-    }
-
-    /// Seal `groups`, the files of a desktop's key groups sealed under `sealed_with`, again under
-    /// this device's vault beside the key service's own: the workspaces whose groups were taken.
-    fn take_in_groups(
-        &self,
-        sealed_with: &str,
-        groups: &std::collections::BTreeMap<String, String>,
-    ) -> Result<Vec<WorkspaceId>, String> {
-        let (dir, vault) = self
-            .groups
-            .as_ref()
-            .ok_or("this device keeps no key groups to take a desktop's into")?;
-        let from: [u8; 32] = hex::decode(sealed_with)
-            .ok()
-            .and_then(|bytes| bytes.try_into().ok())
-            .ok_or("the key the desktop's groups were sealed with is not 32 bytes in hex")?;
-        let from = key_group::VaultKey::new(from);
-        tilo_files::native::atomic::create_private_directory(dir)
-            .map_err(|error| format!("{}: {error}", dir.display()))?;
-        let mut taken = Vec::new();
-        for (name, bytes) in groups {
-            // A plain file name only: what a desktop hands names nothing outside the groups.
-            if Path::new(name)
-                .file_name()
-                .and_then(std::ffi::OsStr::to_str)
-                != Some(name.as_str())
-                || name.starts_with('.')
-            {
-                return Err(format!("a desktop's key group file is named {name:?}"));
-            }
-            let bytes =
-                hex::decode(bytes).map_err(|_| format!("the desktop's {name} is not hex"))?;
-            let path = dir.join(name);
-            let written = match name.strip_suffix(".peer") {
-                Some(_) if path.exists() => continue,
-                Some(workspace) => {
-                    let workspace = WorkspaceId::parse(workspace)
-                        .ok_or_else(|| format!("the desktop's {name} names no workspace"))?;
-                    let signer: Box<dyn key_group::DeviceSigner> =
-                        Box::new(Arc::clone(&self.identity.signer));
-                    let peer = match key_group::GroupPeer::restore(workspace, signer, &bytes, &from)
-                    {
-                        Ok(peer) => peer,
-                        // A machine copied from another keeps state its source made, which no
-                        // device but that one acts in: this device joins as itself.
-                        Err(key_group::Error::OtherDevice) => continue,
-                        Err(error) => {
-                            return Err(format!("the desktop's group of {workspace}: {error}"));
-                        }
-                    };
-                    let sealed = peer
-                        .export_sealed(vault)
-                        .map_err(|error| format!("the group of {workspace}: {error}"))?;
-                    taken.push(workspace);
-                    sealed
-                }
-                None if name == READER_GROUPS => readers_with(&path, &bytes)?,
-                None if path.exists() => continue,
-                None => bytes,
-            };
-            tilo_files::native::atomic::write_private(&path, &written)
-                .map_err(|error| format!("{}: {error}", path.display()))?;
-        }
-        Ok(taken)
     }
 
     /// The device's key service.
@@ -1058,21 +921,6 @@ async fn copy_of(
         Some(copy) => Some(copy),
         None => workspaces.hosted_copy(workspace).await,
     }
-}
-
-/// The reader groups kept at `path` and those a desktop kept (`carried`, as the file was), as one
-/// list: what the key service reads as it takes in the groups.
-fn readers_with(path: &Path, carried: &[u8]) -> Result<Vec<u8>, String> {
-    let mut readers: Vec<(String, String)> =
-        tilo_files::native::atomic::json::load_or_default(path);
-    let carried: Vec<(String, String)> = serde_json::from_slice(carried)
-        .map_err(|error| format!("the desktop's {READER_GROUPS}: {error}"))?;
-    for reader in carried {
-        if !readers.contains(&reader) {
-            readers.push(reader);
-        }
-    }
-    serde_json::to_vec(&readers).map_err(|error| error.to_string())
 }
 
 impl crate::apps::LaunchGrantsSource for ServiceWorkspaces {

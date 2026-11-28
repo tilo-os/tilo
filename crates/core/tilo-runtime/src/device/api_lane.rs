@@ -186,10 +186,6 @@ impl Here for HandedHere {
         self.account.workspaces_changed()
     }
 
-    fn import(&self, by: &Caller, carried: serde_json::Value) -> tilo_api::session::Imported {
-        self.account.import(by, carried)
-    }
-
     fn invocations(&self) -> Option<Arc<tilo_invocations::Invocations>> {
         self.account.invocations()
     }
@@ -389,10 +385,6 @@ impl Here for ConnectionHere {
 
     fn workspaces_changed(&self) -> Option<tilo_actions::remote::Pending<()>> {
         self.account.workspaces_changed()
-    }
-
-    fn import(&self, by: &Caller, carried: serde_json::Value) -> tilo_api::session::Imported {
-        self.account.import(by, carried)
     }
 
     fn invocations(&self) -> Option<Arc<tilo_invocations::Invocations>> {

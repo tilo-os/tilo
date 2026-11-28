@@ -6,8 +6,7 @@
 //!
 //! - `account/workspaces#list {labels?}`, `#create {name, labels?, id?}`,
 //!   `#branch {workspace, name, labels?, id?}`, `#rename {workspace, name}`,
-//!   `#delete {workspace}`, `#unattended {workspace, on}`, and on a computer's own Tilo service
-//!   `#import {sealed_with?, groups?}`, which takes in once what its desktop kept;
+//!   `#delete {workspace}`, `#unattended {workspace, on}`;
 //! - `account/keys#create {name, workspace?, expires_in?}`,
 //!   `#mint {workspace, name?, expires_in?}`, and one resource per key,
 //!   `account/keys/<grant>#revoke`. The keys are each workspace's own grants, each a record
@@ -412,7 +411,7 @@ impl Account {
         };
         let address = &request.target.address;
         let outcome = match Asked::decode(&address.resource, &address.action, &args) {
-            Some(Ok(asked)) => self.answer(&asked, id, &Value::Object(args)).await,
+            Some(Ok(asked)) => self.answer(&asked, id).await,
             Some(Err(error)) => failed(
                 "invalid_arguments",
                 error.to_string(),
@@ -495,7 +494,7 @@ impl Account {
         clippy::too_many_lines,
         reason = "one match over the account's actions, each a few lines of an answer"
     )]
-    async fn answer(&self, asked: &Asked, id: InvocationId, args: &Value) -> Outcome {
+    async fn answer(&self, asked: &Asked, id: InvocationId) -> Outcome {
         let Some(server) = self.0.server.upgrade() else {
             return failed("unavailable", "the server is stopping", "try again shortly");
         };
@@ -529,19 +528,6 @@ impl Account {
         }
         let key = match &self.0.reach {
             Reach::Forwarded(key) => Arc::clone(key),
-            // What a desktop kept itself is taken in by the device it is on, never by a server.
-            Reach::Here(here, _)
-                if matches!(asked, Asked::Workspaces(WorkspaceAction::Import { .. })) =>
-            {
-                return match here.import(&self.0.caller, args.clone()).await {
-                    Ok(imported) => Outcome::Ok(imported),
-                    Err(error) => failed(
-                        "refused",
-                        error,
-                        "the desktop keeps its workspaces and asks again on its next start",
-                    ),
-                };
-            }
             Reach::Here(here, key) => {
                 // A device that serves the person's account itself answers their calls here, as
                 // the key they were made with.
@@ -581,11 +567,6 @@ impl Account {
             Asked::Workspaces(WorkspaceAction::Unattended { workspace, .. }) => {
                 self.unattended(&key, id, workspace, asked).await
             }
-            Asked::Workspaces(WorkspaceAction::Import { .. }) => failed(
-                "unavailable",
-                "a server takes in no desktop's workspaces",
-                "run this on the computer whose desktop kept them",
-            ),
             Asked::Keys(KeyAction::Create {
                 name,
                 workspace,
@@ -635,7 +616,6 @@ impl Account {
                 WorkspaceAction::Enter { .. }
                     | WorkspaceAction::Leave { .. }
                     | WorkspaceAction::Join { .. }
-                    | WorkspaceAction::Import { .. }
             )
         ) {
             return None;
@@ -675,8 +655,7 @@ impl Account {
             Asked::Workspaces(
                 WorkspaceAction::Enter { .. }
                 | WorkspaceAction::Leave { .. }
-                | WorkspaceAction::Join { .. }
-                | WorkspaceAction::Import { .. },
+                | WorkspaceAction::Join { .. },
             ) => failed(
                 "unavailable",
                 "the desktop that keeps the workspace answers this",

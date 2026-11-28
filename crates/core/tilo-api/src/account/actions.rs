@@ -97,19 +97,6 @@ pub enum WorkspaceAction {
         #[param("true asks the person to allow it; false asks again from the next command.")]
         on: bool,
     },
-    /// Take in a desktop's workspaces
-    #[effect(kind = "outside")]
-    Import {
-        #[param(secret, "The key the desktop's key groups were sealed with, in hex.")]
-        sealed_with: Option<String>,
-        #[param("Each file of the desktop's key groups by name, its bytes in hex.")]
-        groups: Option<Map<String, Value>>,
-        #[param(
-            secret,
-            "What its own workspace service administered, with the key it wrote under."
-        )]
-        service: Option<Map<String, Value>>,
-    },
 }
 
 /// The account's keys: one asked for, and one minted for an agent of a workspace.

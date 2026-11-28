@@ -276,16 +276,6 @@ pub trait Here: Send + Sync {
         None
     }
 
-    /// Take in, once, what a desktop of this device kept of its person's workspaces itself
-    /// (`account/workspaces#import`), asked by `by`: what was taken in. A host that keeps no
-    /// device's workspaces refuses it.
-    fn import(&self, by: &tilo_actions::remote::Caller, carried: Value) -> Imported {
-        let _ = (by, carried);
-        Box::pin(std::future::ready(Err(
-            "only this computer's own Tilo service takes in a desktop's workspaces".to_owned(),
-        )))
-    }
-
     /// The device's record of every invocation it was asked for, shared with the account: `None`
     /// for a host that keeps none, whose account keeps its own.
     fn invocations(&self) -> Option<Arc<tilo_invocations::Invocations>> {
@@ -407,10 +397,6 @@ pub trait AccountServer: Send + Sync {
         Box::pin(async { Ok(tilo_server_protocol::workspaces::PersonWorkspaces::default()) })
     }
 }
-
-/// What [`Here::import`] answers once it took in a desktop's workspaces.
-pub type Imported =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, String>> + Send>>;
 
 /// A workspace a desktop keeps, as the account lists it: the person's `role` there names it own.
 #[must_use]
