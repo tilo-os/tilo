@@ -185,6 +185,11 @@ type App (title: name) {
     runtime_registry: Text = ""
     /// The change running for it, by the engine's job id.
     job: Text = ""
+    /// What the running change is doing, in the window's words; empty when nothing runs.
+    progress: Text = ""
+    /// What the last change of it on this computer came to, as the engine said; empty once
+    /// another change begins.
+    notice: Text = ""
     /// Whether its page read what its source says about it.
     details_read: Bool = false
     /// Whether a source offers a newer version than this computer runs.
@@ -205,6 +210,8 @@ type App (title: name) {
         hide fetched
         hide featured
         hide job
+        hide progress
+        hide notice
         hide updated
         hide publisher
         hide digest
@@ -723,10 +730,12 @@ action reading_done(s: Store, j: host.Job) uses web {
 /// what it made is read once it ends.
 action change_done(s: Store, a: App, j: host.Job) {
     a.job = ""
+    a.progress = ""
     if j.state == .done {
         match json.decode<JobWords>(j.detail) {
             .ok(words) => {
                 a.failed = ""
+                a.notice = words.status
                 s.status = words.status
                 read_app(s, a)
             }
@@ -797,11 +806,26 @@ action begin_reading(s: Store, job: CatalogueJob, ask: Text) -> Bool {
     }
 }
 
+/// What a job does to `a`, as the window words the wait.
+fn progress_word(job: AppJob, a: App) -> Text {
+    match job {
+        .install => "Getting {a.name}…",
+        .update => "Updating {a.name}…",
+        .install_runtime => "Downloading the runtime {a.name} needs…",
+        .uninstall => "Removing {a.name}…",
+        .pin => "Keeping {a.name} at this version…",
+        .unpin => "Allowing updates of {a.name}…",
+        .add_bot => "Adding {a.name} to this workspace…",
+    }
+}
+
 /// A job the engine started for `a`, or why it did not start.
 action begin(s: Store, a: App, job: AppJob, ask: Text) {
     if a.job != "" {
         return
     }
+    let said = progress_word(job, a)
+    a.notice = ""
     let started = match job {
         .install => engine.start("install", ask, done: j -> change_done(s, a, j)),
         .update => engine.start("update", ask, done: j -> change_done(s, a, j)),
@@ -812,11 +836,13 @@ action begin(s: Store, a: App, job: AppJob, ask: Text) {
         .add_bot => engine.start("add-bot", ask, done: j -> change_done(s, a, j)),
     }
     match started {
-        .ok(job) => {
-            a.job = job
+        .ok(id) => {
+            a.job = id
+            a.progress = said
             a.failed = ""
         }
         .err(why) => {
+            a.progress = ""
             a.failed = why
         }
     }
@@ -1649,11 +1675,15 @@ action unpin(a: App) (label: "Allow updates", icon: .pin_off) {
     begin(st, a, .unpin, json.encode(change_of(a, "unpin")))
 }
 
-/// Stops the change running for an app, keeping what it did until then.
+/// Stops the change running for an app, keeping what it did until then. A change this computer
+/// cannot stop keeps running and says so; closing the window does not end it either.
 action cancel_change(a: App) (label: "Stop", icon: .square) {
     if a.job != "" {
-        engine.cancel(a.job)
-        a.job = ""
+        if engine.cancel(a.job) {
+            a.progress = "Cancelling…"
+        } else {
+            a.failed = "This change can't be stopped here. It finishes even if you close the window."
+        }
     }
 }
 

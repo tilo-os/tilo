@@ -72,6 +72,14 @@ view catalogue(s: Store) {
                         )
                     }
                     sources_missing(s)
+                    if chosen == App.on_this_device.query and not by_place.is_empty() {
+                        ui.Text(
+                            installed_total(by_place),
+                            role: .caption,
+                            secondary: true,
+                            numeric: true,
+                        )
+                    }
                     if chosen == "" and searched == "" {
                         discover(s)
                     } else if found.is_empty() {
@@ -364,8 +372,11 @@ view app_page(a: App) {
             if a.failed != "" {
                 ui.Banner("Could not finish", message: a.failed, kind: .error)
             }
+            if a.notice != "" {
+                ui.Text(a.notice, role: .caption, secondary: true)
+            }
             if a.job != "" {
-                ui.ProgressBar(label: "Working…")
+                ui.ProgressBar(label: if a.progress != "" { a.progress } else { "Working…" })
             }
             if s.reviewed_app == a.identity {
                 ui.Banner(
@@ -821,6 +832,14 @@ fn places_of() -> List<Filter<App>> {
     [App.discover, App.updates, App.on_this_device, App.bots]
 }
 
+/// How many apps this workspace runs here, and what they take in all.
+fn installed_total(apps: List<App>) -> Text {
+    let bytes = apps.map(a -> a.installed_size).sum()
+    if bytes > 0 {
+        "{apps.len()} installed, {size_words(bytes)} in all"
+    } else { "{apps.len()} installed" }
+}
+
 /// What a category of apps is called in the reader's language. A source offers its apps under
 /// the desktop's own category words, which are its names for them, not the reader's: the Store
 /// says each in the words its catalogue has for it, and an app's own word for one it does not
@@ -829,11 +848,15 @@ fn category_words(category: Text) -> Text {
     if category == "Office" {
         "Office"
     } else if category == "Development" {
-        "Development"
+        "Developer tools"
     } else if category == "Graphics" {
-        "Graphics"
-    } else if category == "AudioVideo" {
-        "Sound & video"
+        "Graphics and design"
+    } else if category == "AudioVideo" or category == "Multimedia" {
+        "Audio and video"
+    } else if category == "Accessibility" {
+        "Accessibility"
+    } else if category == "Productivity" {
+        "Productivity"
     } else if category == "Network" {
         "Network"
     } else if category == "Education" {

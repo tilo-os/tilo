@@ -142,7 +142,7 @@ action open_app(app_name: Text) {
             "description": "Notes you write alone or together.",
             "developer": "Tilo", "license": "MIT", "homepage": "https://tilo.sh",
             "source_code": "https://code.tilo.so/tilo/tilo", "size": 44_040_192,
-            "installed_size": 0,
+            "installed_size": 12_582_912,
             "screenshots": ["https://artwork.invalid/one.png"],
             "permissions": [r#"{"what":"network","broad":false}"#],
             "releases": [r#"{"version":"0.2.0","notes":"Faster search"}"#],
@@ -194,6 +194,8 @@ action open_app(app_name: Text) {
         unreachable: Rc<RefCell<bool>>,
         /// The registries that did not answer the catalogue's read, by name.
         missing: Rc<RefCell<Vec<String>>>,
+        /// Whether this computer refuses to stop the job once it is under way.
+        unstoppable: Rc<RefCell<bool>>,
     }
 
     impl Engine {
@@ -281,7 +283,7 @@ action open_app(app_name: Text) {
         }
 
         fn cancel(&self, job: &str) -> bool {
-            job == "job-1"
+            job == "job-1" && !*self.unstoppable.borrow()
         }
     }
 
@@ -677,6 +679,16 @@ action open_app(app_name: Text) {
             let notes = m.app("so.tilo.notes");
             m.call("update", vec![Value::resource(&notes)]);
             assert_eq!(m.text(&notes, "job"), "job-1");
+            assert_eq!(
+                m.text(&notes, "progress"),
+                "Updating Notes…",
+                "the page says what the change is doing"
+            );
+            let page = dump(m.page(&notes).tree());
+            assert!(
+                page.contains("Updating Notes…"),
+                "the wait names the app it is about: {page}"
+            );
             let asked: serde_json::Value =
                 serde_json::from_str(&m.engine.input_of("update")).unwrap();
             assert_eq!(asked["identity"], "so.tilo.notes");
@@ -687,11 +699,47 @@ action open_app(app_name: Text) {
             // What the sources were asked is one read, then the change the workspace follows.
             m.ended("done", &done_words());
             assert_eq!(m.text(&notes, "job"), "", "the change ended");
+            assert_eq!(m.text(&notes, "progress"), "", "the wait is over");
+            assert_eq!(
+                m.text(&notes, "notice"),
+                "Done.",
+                "the page says what the change came to, as the engine said it"
+            );
+            let page = dump(m.page(&notes).tree());
+            assert!(
+                page.contains("Done."),
+                "the ending stands on the app's page: {page}"
+            );
             assert!(
                 m.engine.ops().contains(&"call:one".to_owned()),
                 "the app's row is read again: {:?}",
                 m.engine.ops()
             );
+        }
+
+        phase a_change_this_computer_cannot_stop_says_so;
+        {
+            let m = Market::new();
+            m.read();
+            let notes = m.app("so.tilo.notes");
+            m.call("update", vec![Value::resource(&notes)]);
+            *m.engine.unstoppable.borrow_mut() = true;
+            m.call("cancel_change", vec![Value::resource(&notes)]);
+            assert_eq!(m.text(&notes, "job"), "job-1", "the change keeps running");
+            assert!(
+                m.text(&notes, "failed")
+                    .contains("can't be stopped here"),
+                "the window says the change finishes anyway: {}",
+                m.text(&notes, "failed")
+            );
+
+            // One this computer can stop says it is stopping, and ends when the device says.
+            *m.engine.unstoppable.borrow_mut() = false;
+            m.call("cancel_change", vec![Value::resource(&notes)]);
+            assert_eq!(m.text(&notes, "progress"), "Cancelling…");
+            m.ended("cancelled", &done_words());
+            assert_eq!(m.text(&notes, "job"), "", "the change ended");
+            assert_eq!(m.text(&notes, "progress"), "");
         }
 
         phase an_app_this_computer_cannot_run_is_refused_before_anything_starts;
@@ -952,6 +1000,30 @@ action open_app(app_name: Text) {
             );
             let titles = rows(window.tree());
             assert_eq!(titles, ["Notes"], "only that category's apps: {titles:?}");
+        }
+
+        phase the_installed_place_names_how_many_and_what_they_take;
+        {
+            let m = Market::new();
+            m.read();
+            let notes = m.app("so.tilo.notes");
+            m.call("show_details", vec![Value::resource(&m.root), Value::resource(&notes)]);
+            let mut window = m.window();
+            let place = of_kind(window.tree(), "ui.NavItem")
+                .into_iter()
+                .find(|item| {
+                    item.props.get("label").and_then(Value::as_text) == Some("On this device")
+                })
+                .expect("the sidebar lists the apps on this device")
+                .key
+                .clone();
+            window.fire(&place, "select").unwrap();
+            window.poll_patches().unwrap();
+            let words = dump(window.tree());
+            assert!(
+                words.contains("1 installed, 12 MB in all"),
+                "the place names its apps and what they take: {words}"
+            );
         }
 
         phase updating_everything_asks_for_each_app_s_own_offer;

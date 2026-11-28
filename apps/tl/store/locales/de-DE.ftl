@@ -1169,9 +1169,11 @@ d-g4gc5vkw = Herkunft kurz
 
 d-r6lfeprr = Kategorieworte
     .w-office = Büro
-    .w-development = Entwicklung
-    .w-graphics = Grafik
-    .w-sound-video = Ton und Video
+    .w-developer-tools = Entwicklerwerkzeuge
+    .w-graphics-and-design = Grafik und Design
+    .w-audio-and-video = Ton und Video
+    .w-accessibility = Barrierefreiheit
+    .w-productivity = Produktivität
     .w-network = Netzwerk
     .w-education = Bildung
     .w-science = Wissenschaft
@@ -1378,3 +1380,13 @@ d-6udr6hps = Befehlsproblem
 d-enms3not = Fehlende Quellen
     .w-did-not-answer-apps-it-lists = { $name } hat nicht geantwortet. Die Apps, die es listet, fehlen, bis es das tut.
     .w-the-app-catalogue-from-has-expired = Der App-Katalog von { $name } ist abgelaufen. Apps, die du hast, funktionieren weiter.
+
+d-qh6h44ko = Fortschritt
+    .doc = Was die laufende Änderung tut, in den Worten des Fensters; leer, wenn nichts läuft.
+
+d-h5t6oagr = Installierte gesamt
+    .w-installed-in-all = { $len } installiert, { $size_words } insgesamt
+    .w-installed = { $len } installiert
+
+d-idxiwrfq = Hinweis
+    .doc = Was die letzte Änderung an ihr auf diesem Computer ergeben hat, wie die Engine es sagte; leer, sobald eine andere Änderung beginnt.
