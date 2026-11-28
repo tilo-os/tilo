@@ -180,8 +180,11 @@ mark('the page showed the workspace');
 
 // 3. Notes: a note is made, its title typed, and it is the workspace's.
 await tab.navigate(`${site}/w/${report.workspace}/notes`);
-await until(`document.querySelector('#tilo-page [data-a=activate][aria-label="New note"]')`, 'Notes showing');
-await press(`b.getAttribute('aria-label') === 'New note'`);
+// The control is found by the name a person reads on it, as the page reads names.
+const newNote = `[...document.querySelectorAll('#tilo-page [data-a=activate]')].find(b =>
+  (b.getAttribute('aria-label') || b.innerText.split('\\n')[0]).trim() === 'New note')`;
+await until(newNote, 'Notes showing');
+await tab.evaluate(`${newNote}.click()`);
 const title = `document.querySelector('#tilo-page textarea')`;
 await until(`document.activeElement === ${title}`, 'the caret in the new note\'s title');
 await type('Booted from the page');
