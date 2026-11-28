@@ -462,8 +462,8 @@ impl Running {
     /// start on a thread of the daemon's.
     ///
     /// # Errors
-    /// The profile is not a private absolute directory, another daemon has this device, or the
-    /// native endpoint cannot be bound.
+    /// The profile is not a private absolute directory, another daemon has this device, the owner
+    /// root a deployment hands it cannot be kept, or the native endpoint cannot be bound.
     pub fn start(profile: &Path) -> io::Result<Self> {
         Self::start_serving(profile, false, crate::device::serve::Stop::default())
     }
@@ -491,6 +491,11 @@ impl Running {
         // this computer's device key says no other way of itself.
         let profile_lock = crate::profile::lock(profile)?;
         let device = crate::device::unclaimed::ThisDevice::lock(profile.to_path_buf())?;
+        // A deployment may hand this daemon its owner's root instead of a ticket: the root is kept
+        // here as on any of its person's own devices, which certifies this device's key and makes
+        // this computer one its person's services start as, founding the workspaces it keeps. It
+        // is kept before the endpoint answers anyone, so no caller meets this device as nobody's.
+        crate::device::services::adopt_owner_root(profile)?;
         // Who each connection is: root and this daemon's own account act as the device, and
         // under the system unit the account that made the device's person, kept in the profile,
         // and the people signed in act as themselves.
@@ -847,10 +852,6 @@ fn serve_device(
     // start once founding, a login or that ticket makes the identity, from `devices#found`. A
     // certificate that no identity names, or one this device cannot act as, leaves the daemon
     // answering its own actions rather than ending.
-    // A deployment may hand this daemon its owner's root instead of a ticket: the root is kept
-    // here as on any of its person's own devices, which certifies this device's key and makes
-    // this computer one its person's services start as, founding the workspaces it keeps.
-    crate::device::services::adopt_owner_root(profile)?;
     if !device.claimed() {
         let handed = device.spend_handed_ticket();
         // A server image installs without a person, so one that came up with no plan has nobody
