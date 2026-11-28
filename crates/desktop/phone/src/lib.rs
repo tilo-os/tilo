@@ -59,10 +59,7 @@ fn worker() -> Result<&'static worker::Worker, String> {
     static WORKER: OnceLock<Result<worker::Worker, String>> = OnceLock::new();
     WORKER
         .get_or_init(|| {
-            let runs_apps = declare_carried_runtimes().inspect_err(|why| {
-                tracing::error!(why, "this phone runs no workspace apps");
-            });
-            install_carried_packages();
+            let runs_apps = runs_apps();
             worker::Worker::start(&profile(), notifier(), runs_apps, || {
                 window_wake()
                     .lock()
@@ -348,24 +345,35 @@ fn notifier() -> std::sync::Arc<dyn tilo_process_services::notify::Notifier> {
 /// The phone app's package id, as the platform knows it.
 const TILO_PHONE: &str = "so.tilo.phone";
 
+/// Why no app can run on this phone, in the words the Apps page shows, each with the package.
+fn runs_apps() -> Result<(), String> {
+    let refused: Vec<String> = [
+        declare_carried_runtimes().err(),
+        install_carried_packages().err(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    (!refused.is_empty())
+        .then(|| refused.join("; "))
+        .map_or(Ok(()), Err)
+}
+
 /// Install the signed packages the APK carries into this device's store, as any cached install
-/// is: what a workspace it founds runs, and what its windows open. Say for each the store refused
-/// why in words; it is not cached.
-fn install_carried_packages() {
+/// is: what a workspace it founds runs, and what its windows open. Answers each the store refused,
+/// with the package and why; a refused one is not cached.
+fn install_carried_packages() -> Result<(), String> {
     let Some(data) = tilo_paths::data_dir() else {
-        return;
+        return Ok(());
     };
-    match bundles::installed(&data) {
-        Ok(refused) => {
-            for (package, why) in refused {
-                tracing::error!(
-                    package,
-                    why,
-                    "the package this phone carried is not installed"
-                );
-            }
-        }
-        Err(why) => tracing::error!(why, "the packages this phone carries are not installed"),
+    let picked: Vec<String> = bundles::installed(&data)?
+        .into_iter()
+        .map(|(package, why)| format!("{package}: {why}"))
+        .collect();
+    if picked.is_empty() {
+        Ok(())
+    } else {
+        Err(picked.join("; "))
     }
 }
 

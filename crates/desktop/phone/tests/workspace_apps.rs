@@ -517,4 +517,14 @@ fn a_tampered_package_the_apk_carries_is_refused_at_seeding() {
         tilo_runtime::device::package_runs::verified_payload(server::NOTES).is_err(),
         "a refused package is not cached"
     );
+
+    let words = format!("{package}: {why}");
+    let worker = tilo_phone::worker::Worker::start(
+        &support::profile(),
+        tilo_process_services::notify::system(Some("so.tilo.phone")),
+        Err(words.clone()),
+        || {},
+    )
+    .expect("the phone's device starts");
+    assert_eq!(worker.seen().apps_refused.as_deref(), Some(words.as_str()));
 }
