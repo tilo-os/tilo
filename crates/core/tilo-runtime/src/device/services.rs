@@ -1626,9 +1626,26 @@ impl Daemon {
         self.workspaces.search_index_services()
     }
 
+    /// What the person's own shell reaches in `workspace`, and the caller it is there: where Tilo
+    /// asks them, so its answer to what waits for them is theirs.
+    ///
+    /// # Errors
+    /// The workspace cannot be admitted to now.
+    #[cfg(feature = "test-support")]
+    pub fn own_shell_in(
+        self: &Arc<Self>,
+        workspace: &str,
+    ) -> io::Result<(tilo_api::session::Provider, Caller)> {
+        let person = self.person()?;
+        Ok((
+            Arc::new(person.provider_pressed(workspace, None)?),
+            person.caller(workspace),
+        ))
+    }
+
     /// What a plain connection from the person's own account reaches in `workspace`, and the
-    /// caller it is there ([`Self::connection_tree_in`]): what `tilo do`'s own prompt answers a
-    /// question that waits for the person on, for a test that has no socket to connect to.
+    /// caller it is there ([`Self::connection_tree_in`]): any program of theirs, for a test that
+    /// has no socket to connect to.
     ///
     /// # Errors
     /// The workspace cannot be admitted to now.
@@ -6989,15 +7006,15 @@ impl RuntimeActionProvider {
     }
     /// A person's answer to a question that waits for them, as the run admitted them: an agent
     /// answers nobody's, its own least. Only the system confirms for them: their own shell's
-    /// confirm view, or the CLI's own prompt on a connection the kernel says is theirs. A
-    /// program, an app and an agent are asked, never answer.
+    /// confirm view. A connection of theirs is any program they run, so it is asked, never
+    /// answers, as an app and an agent are.
     fn resolve_asked(
         &self,
         caller: &Caller,
         request: &InvokeRequest,
         session: &AdmittedRuntimeSession,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        if session.agent.is_some() || !(session.own_shell || caller.is_own_connection()) {
+        if session.agent.is_some() || !session.own_shell {
             return Pending::ready(Err(ActionCallError::Refused {
                 reason: tilo_actions::remote::asked::CONFIRMED_BY_THE_SYSTEM.to_owned(),
             }));

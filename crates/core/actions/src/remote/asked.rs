@@ -59,9 +59,9 @@ pub fn admit_frame(
 }
 
 /// What a resolve from anything but the system's own confirmation is refused with: the
-/// person's shell asks them, and the CLI asks them at its own prompt.
+/// person's shell asks them.
 pub const CONFIRMED_BY_THE_SYSTEM: &str =
-    "Only you answer this, where Tilo asks you: on your screen, or at tilo's own prompt";
+    "Only you answer this, where Tilo asks you on your screen";
 
 /// Answer an asked record: `<record>#resolve` with a [`Resolve`], on the
 /// [`super::WORKSPACE_INVOCATIONS_PROVIDER`] provider.

@@ -3206,8 +3206,8 @@ impl AppBrokerState {
                 return Err(ActionCallError::NotPermitted);
             }
             // An ask is answered only by the person's approve of the asked record this call was
-            // kept as, which the dispatch admitted it again with: the system's confirm view or
-            // the CLI's own prompt gives it. Making the call is not the answer, on any
+            // kept as, which the dispatch admitted it again with: the system's confirm view
+            // gives it. Making the call is not the answer, on any
             // connection, and a confirmation the caller wrote itself is none.
             tilo_action_policy::Answer::Ask => matches!(confirmation, Some(Confirmation::Asked(_))),
         };

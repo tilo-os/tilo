@@ -433,7 +433,7 @@ impl Workspaces {
             // call of what the rules ask them first: only the confirmation the
             // call carries answers it, the person's approve of the asked record
             // it was kept as ([`InvokeRequest::approval`]). The system's confirm
-            // view or the CLI's own prompt gives it, and a frame carrying one
+            // view gives it, and a frame carrying one
             // its record did not hand back is refused where it enters
             // ([`tilo_actions::remote::asked::admit_frame`]), so an app or an
             // agent cannot set it, and it answers this one call only.

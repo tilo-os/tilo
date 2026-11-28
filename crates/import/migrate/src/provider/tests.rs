@@ -472,7 +472,7 @@ fn a_step_naming_a_workspace_lands_there_only_when_the_device_is_a_member() {
 /// not in is refused by the device, naming the command that joins it.
 #[test]
 fn the_terminals_steps_land_in_the_workspace_it_names() {
-    use super::caller::{Answering, Asks, Steps};
+    use super::caller::{Answering, Steps};
 
     let (device, migrations) = device();
     let migrations: Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync> =
@@ -491,16 +491,8 @@ fn the_terminals_steps_land_in_the_workspace_it_names() {
         let Value::Object(args) = args else {
             panic!("arguments are an object")
         };
-        tilo_rt::block_on(steps.step(
-            action,
-            args,
-            &mut Answering {
-                asks: Asks::Leave,
-                prompt: &mut |_| panic!("nothing is asked"),
-                say: &mut |_| {},
-            },
-        ))
-        .expect("the runtime runs the step")
+        tilo_rt::block_on(steps.step(action, args, &mut Answering { say: &mut |_| {} }))
+            .expect("the runtime runs the step")
     };
 
     let into_lab = steps_in(LAB).expect("a workspace id is taken");

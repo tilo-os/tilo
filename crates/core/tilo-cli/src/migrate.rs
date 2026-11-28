@@ -26,10 +26,8 @@
 //! here at a hidden prompt (or names a file holding it), after which the step runs again with it.
 //!
 //! Connecting a mail account is a decision the person makes, so the action that keeps the account
-//! asks them first, as its asked invocation record. This command answers that record where it
-//! runs, as their terminal: `--yes` says yes beforehand, and with nobody to ask the account is
-//! left unconnected and the run says so. The same question shows in their shell and to an agent's
-//! caller.
+//! asks them first, as its asked invocation record. Only they answer it, where Tilo asks them on
+//! their screen: this command is a program, so it says the question and waits for their answer.
 //!
 //! `-w` names the workspace the migration lands in: the device's own by its id or name, or by its
 //! id another the device is a member of, where the run lands as the migration's agent through the
@@ -47,10 +45,9 @@ use serde_json::{Map, Value, json};
 use tilo_action_line::LineClient;
 use tilo_actions::ActionFailure;
 use tilo_actions::remote::Caller;
-use tilo_actions::remote::asked::Asked;
 use tilo_migrate::engine;
 use tilo_migrate::provider::SECRET_NEEDED;
-use tilo_migrate::provider::caller::{Answering, Asks, Steps, question_said};
+use tilo_migrate::provider::caller::{Answering, Steps};
 
 /// How long a command waits for this computer's daemon to answer, its service started.
 const REACHING: Duration = Duration::from_secs(30);
@@ -107,10 +104,6 @@ pub enum MigrateCmd {
     Start {
         /// A source, as `tilo migrate sources` names it (home, gdrive, thunderbird, …).
         source: String,
-        /// Say yes beforehand to connecting the chosen mail accounts. Without it each account is
-        /// asked here, and a caller with nobody to ask leaves it unconnected and says so.
-        #[arg(long)]
-        yes: bool,
     },
     /// How each source's migration stands.
     Status {
@@ -140,11 +133,11 @@ pub fn run(cmd: MigrateCmd, json: bool, workspace: Option<&str>) -> Result<ExitC
     // The command's own runtime, on the process's main thread: a step awaits the device's
     // answers, and this is where the command waits for its steps.
     let runtime = crate::login::runtime()?;
-    let call = |action: &str, args: Map<String, Value>, asks: Asks| {
-        step(&runtime, &device, action, args, json, asks)?.map_err(failed)
+    let call = |action: &str, args: Map<String, Value>| {
+        step(&runtime, &device, action, args, json)?.map_err(failed)
     };
     let answer = match cmd {
-        MigrateCmd::Sources => listed_sources(call("sources", Map::new(), Asks::Leave)?)?,
+        MigrateCmd::Sources => listed_sources(call("sources", Map::new())?)?,
         MigrateCmd::Connect {
             service,
             url,
@@ -162,20 +155,13 @@ pub fn run(cmd: MigrateCmd, json: bool, workspace: Option<&str>) -> Result<ExitC
             if let Some(file) = &secret_file {
                 args.insert("secret".into(), json!(*secret("", Some(file))?));
             }
-            match step(
-                &runtime,
-                &device,
-                "connect",
-                args.clone(),
-                json,
-                Asks::Leave,
-            )? {
+            match step(&runtime, &device, "connect", args.clone(), json)? {
                 Ok(answer) => answer,
                 Err(failure) => match asked_secret(&failure) {
                     // The person types what it asks for, and it runs again with it.
                     Some(asks) if secret_file.is_none() => {
                         args.insert("secret".into(), json!(*secret(&asks, None)?));
-                        call("connect", args, Asks::Leave)?
+                        call("connect", args)?
                     }
                     _ => return Err(failed(failure)),
                 },
@@ -186,7 +172,7 @@ pub fn run(cmd: MigrateCmd, json: bool, workspace: Option<&str>) -> Result<ExitC
             if let Some(profile) = profile {
                 args.insert("profile".into(), json!(handed_profile(&profile)?));
             }
-            call("review", args, Asks::Leave)?
+            call("review", args)?
         }
         MigrateCmd::Choose {
             source,
@@ -198,28 +184,27 @@ pub fn run(cmd: MigrateCmd, json: bool, workspace: Option<&str>) -> Result<ExitC
             args.insert("items".into(), json!(items));
             args.insert("leave_out".into(), json!(leave_out));
             args.insert("only".into(), json!(only));
-            call("choose", args, Asks::Leave)?
+            call("choose", args)?
         }
-        MigrateCmd::Start { source, yes } => {
-            let mut args = sourced(&source);
-            args.insert("yes".into(), json!(yes));
+        MigrateCmd::Start { source } => {
+            let args = sourced(&source);
             if !json {
                 eprintln!(
                     "Bringing {source} over; `tilo migrate stop {source}` stops it after the item \
                      it is on."
                 );
             }
-            call("start", args, asks_of(yes))?
+            call("start", args)?
         }
         MigrateCmd::Status { source } => {
             let args = source.as_deref().map(sourced).unwrap_or_default();
-            call("status", args, Asks::Leave)?
+            call("status", args)?
         }
-        MigrateCmd::Stop { source } => call("stop", sourced(&source), Asks::Leave)?,
+        MigrateCmd::Stop { source } => call("stop", sourced(&source))?,
         MigrateCmd::Undo { run } => {
             let mut args = Map::new();
             args.insert("run".into(), json!(run));
-            call("undo", args, Asks::Leave)?
+            call("undo", args)?
         }
     };
     if json {
@@ -315,76 +300,20 @@ fn reach() -> Result<Steps> {
 }
 
 /// Invoke `action` with `args` on `device` and follow it to its end, saying its progress on
-/// stderr unless `json`, and answering the questions it asks as `asks` says: its answer, or the
-/// failure it ran into.
+/// stderr unless `json`, with the questions it asks: its answer, or the failure it ran into.
 fn step(
     runtime: &tokio::runtime::Runtime,
     device: &Steps,
     action: &str,
     args: Map<String, Value>,
     json: bool,
-    asks: Asks,
 ) -> Result<std::result::Result<Value, ActionFailure>> {
-    let mut prompt = |question: &Asked| asked_at_terminal(question, json);
     let mut say = |line: &str| {
         if !json {
             eprintln!("{line}");
         }
     };
-    runtime.block_on(device.step(
-        action,
-        args,
-        &mut Answering {
-            asks,
-            prompt: &mut prompt,
-            say: &mut say,
-        },
-    ))
-}
-
-/// How `tilo migrate start` answers the questions its run asks, given its `--yes` and whether a
-/// person is at a terminal: yes beforehand, the person asked here, or (with nobody to ask) no,
-/// so the account stays unconnected and the run says so.
-fn asks_of(yes: bool) -> Asks {
-    if yes {
-        return Asks::Approve;
-    }
-    if std::io::stdin().is_terminal() || std::env::var_os("TILO_ASK_TTY").is_some() {
-        Asks::Prompt
-    } else {
-        Asks::Decline
-    }
-}
-
-/// Put `question` to the person at this terminal; `false` when nobody is there to ask.
-fn asked_at_terminal(question: &Asked, json: bool) -> Result<bool> {
-    if !json {
-        eprintln!("{}", question_said(question));
-    }
-    let mut tty = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("/dev/tty")
-        .ok();
-    let Some(tty) = tty.as_mut() else {
-        eprintln!(
-            "Nobody can be asked here, so the account stays unconnected. Run this in your \
-             terminal, or pass --yes to say yes beforehand."
-        );
-        return Ok(false);
-    };
-    ask_yes(tty)
-}
-
-/// One visible line the person types on `tty`: yes for `y`, `yes` or nothing.
-fn ask_yes(tty: &mut std::fs::File) -> Result<bool> {
-    use std::io::{BufRead as _, Write as _};
-    write!(tty, "Connect it? [Y/n] ")?;
-    tty.flush()?;
-    let mut said = String::new();
-    std::io::BufReader::new(&*tty).read_line(&mut said)?;
-    let said = said.trim();
-    Ok(said.is_empty() || said == "y" || said == "yes" || said == "Y" || said == "Yes")
+    runtime.block_on(device.step(action, args, &mut Answering { say: &mut say }))
 }
 
 /// A secret the person types, unseen, or reads from a file they name; never an argument.
@@ -431,27 +360,4 @@ pub(crate) fn read_hidden(
     writeln!(tty)?;
     read?;
     Ok(zeroize::Zeroizing::new(line.trim().to_owned()))
-}
-
-#[cfg(test)]
-mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        reason = "in a test these are the assertion"
-    )]
-
-    use super::*;
-
-    /// `--yes` says yes without asking; with nobody at a terminal to ask and no `--yes`, the
-    /// answer is no, so the account stays unconnected and the run says so.
-    #[test]
-    fn the_terminal_says_yes_beforehand_or_leaves_it_unconnected() {
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.remove("TILO_ASK_TTY");
-        assert_eq!(asks_of(true), Asks::Approve);
-        assert_eq!(asks_of(false), Asks::Decline, "nobody is here to ask");
-        env.set("TILO_ASK_TTY", "1");
-        assert_eq!(asks_of(false), Asks::Prompt, "a person is at a terminal");
-    }
 }

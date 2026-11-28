@@ -1,8 +1,8 @@
 //! `tilo migrate` as a person runs it, through the device's daemon: the steps are the ones the
 //! command takes ([`tilo_migrate::provider::caller::Steps`]), each an invocation of the device's
 //! migrations followed to its end, and the question a run asks its person (keeping a Thunderbird
-//! mail account) is the asked record the workspace lists, answered with its own `resolve`, as the
-//! terminal answers it. `-w` names the workspace the migration lands in: another the device is a
+//! mail account) is the asked record the workspace lists, which the terminal says and only the
+//! person's shell answers. `-w` names the workspace the migration lands in: another the device is a
 //! member of takes the run there, as the migration's agent in that workspace, and one it is not
 //! in is refused naming the command that joins it.
 //!
@@ -18,13 +18,13 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 use tilo_actions::remote::CatalogueQuery;
-use tilo_actions::remote::asked::Asked;
-use tilo_migrate::provider::caller::{Answering, Asks, Steps, question_said};
+use tilo_actions::remote::asked::CONFIRMED_BY_THE_SYSTEM;
+use tilo_migrate::provider::caller::{Answering, Steps};
 use tilo_migrate::thunderbird::fixture::WORK_EMAIL;
 
 use crate::language::agent_fixture::said;
 use crate::language::host;
-use crate::language::migrate_window::{agent_does, engine};
+use crate::language::migrate_window::{agent_does, answer, engine};
 
 /// The Migrations app, whose own records a step's review is kept in.
 const MIGRATE: &str = "so.tilo.migrate";
@@ -35,28 +35,25 @@ struct Stepped {
     said: Vec<String>,
 }
 
-/// The step `action` of the device's migrations with `args`, as `tilo migrate` takes it,
-/// answering the questions its run asks as `asks` says.
-async fn step(steps: &Arc<Steps>, action: &str, args: Value, asks: Asks) -> Stepped {
+/// The step `action` of the device's migrations with `args`, as `tilo migrate` takes it.
+async fn step(steps: &Arc<Steps>, action: &str, args: Value) -> Stepped {
+    step_saying(steps, action, args, &Arc::default()).await
+}
+
+/// [`step`], each line it says kept in `said` as it is said.
+async fn step_saying(
+    steps: &Arc<Steps>,
+    action: &str,
+    args: Value,
+    said: &Arc<Mutex<Vec<String>>>,
+) -> Stepped {
     let Value::Object(args) = args else {
         panic!("a step's arguments are an object")
     };
-    let said = Arc::new(Mutex::new(Vec::new()));
-    let telling = Arc::clone(&said);
+    let telling = Arc::clone(said);
     let mut say = move |line: &str| telling.lock().unwrap().push(line.to_owned());
-    let mut prompt = |question: &Asked| -> anyhow::Result<bool> {
-        panic!("nobody is at a terminal here: {}", question_said(question))
-    };
     let stepped = match steps
-        .step(
-            action,
-            args,
-            &mut Answering {
-                asks,
-                prompt: &mut prompt,
-                say: &mut say,
-            },
-        )
+        .step(action, args, &mut Answering { say: &mut say })
         .await
     {
         Ok(stepped) => stepped,
@@ -67,25 +64,41 @@ async fn step(steps: &Arc<Steps>, action: &str, args: Value, asks: Asks) -> Step
     Stepped { answer, said }
 }
 
+/// The step `start`, while the person answers `resolution` in their shell to the question it
+/// asks, once the terminal said it, as a person reads it there and goes to answer.
+async fn started(host: &host::Host, steps: &Arc<Steps>, resolution: &str) -> Stepped {
+    let said: Arc<Mutex<Vec<String>>> = Arc::default();
+    let answering = async {
+        for _ in 0..600 {
+            let told = said
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|line| line.contains("(asked by"));
+            if told && let Some(asked) = steps.questions().await.expect("the questions read").pop()
+            {
+                let record = format!("{}/{}", asked.record.workspace, asked.record.record);
+                return answer(host, &record, resolution).await;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("the terminal says what the run asks the person");
+    };
+    tokio::join!(
+        step_saying(steps, "start", json!({"source": "thunderbird"}), &said),
+        answering
+    )
+    .0
+}
+
 /// The step `action` with `args`, which the device refuses before it runs: what it says.
 async fn refused(steps: &Arc<Steps>, action: &str, args: Value) -> String {
     let Value::Object(args) = args else {
         panic!("a step's arguments are an object")
     };
     let mut say = |_: &str| {};
-    let mut prompt = |question: &Asked| -> anyhow::Result<bool> {
-        panic!("a refused step asks nothing: {}", question_said(question))
-    };
     let answered = steps
-        .step(
-            action,
-            args,
-            &mut Answering {
-                asks: Asks::Leave,
-                prompt: &mut prompt,
-                say: &mut say,
-            },
-        )
+        .step(action, args, &mut Answering { say: &mut say })
         .await;
     match answered {
         Err(error) => format!("{error:#}"),
@@ -147,9 +160,9 @@ fn device_of(engine: &str) -> [u8; 32] {
         .unwrap_or_else(|| panic!("a device key: {hex}"))
 }
 
-/// A Thunderbird migration whose chosen mail account its person is asked about: with nobody to
-/// ask the terminal says no, the account stays unconnected and the run says so; `--yes` keeps it
-/// in the workspace's mail accounts. The question names the migration's agent and the account.
+/// A Thunderbird migration whose chosen mail account its person is asked about: their no in their
+/// shell leaves it unconnected and the run says so; their yes keeps it in the workspace's mail
+/// accounts. The question names the migration's agent and the account.
 /// `-w` naming a workspace the device is not in is refused with the command that joins it; one
 /// it is a member of takes the run there, and what it brings is that workspace's, not the
 /// device's own.
@@ -173,7 +186,7 @@ fn the_terminal_walks_a_thunderbird_migration_on_the_device() {
         host.daemon().serve_migrations();
         let device = device_of(&engine(host.as_ref()));
         // The terminal reaches the daemon on the person's own connection, which the kernel says
-        // is theirs: what their CLI's prompt answers, and what leaves their devices, is theirs.
+        // is theirs: what leaves their devices is theirs, and what it asks is theirs to answer.
         let (own, caller) = host
             .daemon()
             .own_connection_in(host.workspace())
@@ -227,13 +240,7 @@ fn the_terminal_walks_a_thunderbird_migration_on_the_device() {
         // its records it then lands are refused.
         host.install_app_into(&lab, "so.tilo.contacts").await;
         let into_lab = steps_in(&lab);
-        let reviewed = step(
-            &into_lab,
-            "review",
-            json!({"source": "thunderbird"}),
-            Asks::Leave,
-        )
-        .await;
+        let reviewed = step(&into_lab, "review", json!({"source": "thunderbird"})).await;
         let book = reviewed.answer["items"]
             .as_array()
             .into_iter()
@@ -246,16 +253,9 @@ fn the_terminal_walks_a_thunderbird_migration_on_the_device() {
             &into_lab,
             "choose",
             json!({"source": "thunderbird", "items": [book], "only": true}),
-            Asks::Leave,
         )
         .await;
-        let landed = step(
-            &into_lab,
-            "start",
-            json!({"source": "thunderbird"}),
-            Asks::Leave,
-        )
-        .await;
+        let landed = step(&into_lab, "start", json!({"source": "thunderbird"})).await;
         assert_eq!(landed.answer["state"], "complete", "{:#}", landed.answer);
         assert!(
             listed_in(host.as_ref(), &lab, "contacts")
@@ -286,13 +286,7 @@ fn the_terminal_walks_a_thunderbird_migration_on_the_device() {
         // The workspace the device is in runs by its id: what follows lands there.
         let steps = steps_in(host.workspace());
 
-        let reviewed = step(
-            &steps,
-            "review",
-            json!({"source": "thunderbird"}),
-            Asks::Leave,
-        )
-        .await;
+        let reviewed = step(&steps, "review", json!({"source": "thunderbird"})).await;
         let account = reviewed.answer["items"]
             .as_array()
             .into_iter()
@@ -307,19 +301,13 @@ fn the_terminal_walks_a_thunderbird_migration_on_the_device() {
             &steps,
             "choose",
             json!({"source": "thunderbird", "items": [WORK_EMAIL], "only": true}),
-            Asks::Leave,
         )
         .await;
 
-        // With nobody to ask, the terminal says no: the account stays unconnected, and the run
-        // says so. The question it answered named the migration's agent and the account.
-        let declined = step(
-            &steps,
-            "start",
-            json!({"source": "thunderbird"}),
-            Asks::Decline,
-        )
-        .await;
+        // The terminal says the question, naming the migration's agent and the account, and that
+        // only the person answers it on their screen: their no there leaves it unconnected, and
+        // the run says so.
+        let declined = started(host.as_ref(), &steps, "decline").await;
         let asked: Vec<&String> = declined
             .said
             .iter()
@@ -337,7 +325,7 @@ fn the_terminal_walks_a_thunderbird_migration_on_the_device() {
             declined
                 .said
                 .iter()
-                .any(|line| line.contains("You said no")),
+                .any(|line| line.contains(CONFIRMED_BY_THE_SYSTEM)),
             "{:?}",
             declined.said
         );
@@ -359,22 +347,8 @@ fn the_terminal_walks_a_thunderbird_migration_on_the_device() {
             "no question waits once it is answered"
         );
 
-        // `--yes` says yes beforehand: the account is kept in the workspace's mail accounts.
-        let approved = step(
-            &steps,
-            "start",
-            json!({"source": "thunderbird"}),
-            Asks::Approve,
-        )
-        .await;
-        assert!(
-            approved
-                .said
-                .iter()
-                .any(|line| line.contains("You said yes")),
-            "{:?}",
-            approved.said
-        );
+        // Their yes keeps the account in the workspace's mail accounts.
+        let approved = started(host.as_ref(), &steps, "approve").await;
         assert!(
             approved
                 .said
@@ -385,13 +359,7 @@ fn the_terminal_walks_a_thunderbird_migration_on_the_device() {
             approved.answer
         );
         assert!(kept_accounts(&agent).await.contains(&WORK_EMAIL.to_owned()));
-        let status = step(
-            &steps,
-            "status",
-            json!({"source": "thunderbird"}),
-            Asks::Leave,
-        )
-        .await;
+        let status = step(&steps, "status", json!({"source": "thunderbird"})).await;
         assert_eq!(status.answer["state"], "complete", "{:#}", status.answer);
         drop(agent);
     });

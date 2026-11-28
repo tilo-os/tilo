@@ -299,9 +299,8 @@ async fn keep(host: &Host, transfer: &str) {
     );
     let (own, person) = host
         .daemon()
-        .own_connection_in(host.workspace())
-        .expect("the person's own connection reaches the workspace");
-    assert!(person.is_own_connection(), "{person:?}");
+        .own_shell_in(host.workspace())
+        .expect("the person's shell reaches the workspace");
     let answered = own
         .invoke(&person, resolve())
         .await

@@ -56,9 +56,8 @@ pub struct BrokerActor {
     /// to reach: what goes further asks first
     /// ([`tilo_action_policy::Reach`]).
     pub ceiling: Option<tilo_action_policy::Reach>,
-    /// The person on a plain connection to their own device's daemon, by peer credential: the
-    /// connection whose own prompt (the CLI's) may confirm what the workspace asks them. Their
-    /// call is never the answer.
+    /// The person on a plain connection to their own device's daemon, by peer credential: any
+    /// program of theirs, which never answers what the workspace asks them.
     own_connection: bool,
 }
 

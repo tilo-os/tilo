@@ -12,7 +12,7 @@
 //! then syncs the account from its server, as it does any account. Nothing is copied from
 //! Thunderbird's cache: the person's mail stays on their mail server, where Mail reads it.
 //! Connecting is the person's to say: the migration shows each account and its servers at their
-//! terminal and connects it once they say yes (or said `--yes` beforehand). The password is never
+//! terminal and connects it once they say yes on their screen. The password is never
 //! printed, logged or kept anywhere on this computer.
 //!
 //! Contacts and events land in Contacts and Calendar under an id the source decides, so running
@@ -445,15 +445,15 @@ pub fn connect_mail(adding: Value, lander: &mut Lander<'_>) -> Result<()> {
     }
     let saved = adding.get("password").is_some();
     lander.say(&format!("connecting {address} asks you first"));
-    // The account is kept through the workspace's own governance action, as this run's step:
-    // the policy asks its person first, so the call waits in their asked record, and the answer
-    // (here, in their shell, an agent's caller) is what adds it.
+    // The account is kept through the workspace's own action, as this run's step: the policy
+    // asks its person first, so the call waits in their asked record, and their answer on their
+    // screen is what adds it.
     let added = match lander.act(MAIL_ACCOUNTS, "add", adding) {
         Ok(answer) => answer.result().cloned().unwrap_or(Value::Null),
         Err(error) if is_unanswered(&error) => {
             lander.say(&format!(
-                "{address} is left unconnected: connecting it waits for your yes. Answer it, or \
-                 run `tilo migrate start thunderbird --yes` to say yes beforehand."
+                "{address} is left unconnected: connecting it waits for your yes on your screen; \
+                 `tilo migrate start thunderbird` asks again."
             ));
             return Ok(());
         }

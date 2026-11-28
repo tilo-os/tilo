@@ -93,8 +93,8 @@ async fn allow(host: &host::Host, asked: &str) {
         .to_owned();
     let (own, person) = host
         .daemon()
-        .own_connection_in(host.workspace())
-        .expect("the person's own connection reaches the workspace");
+        .own_shell_in(host.workspace())
+        .expect("the person's shell reaches the workspace");
     let receipt = own
         .invoke(
             &person,

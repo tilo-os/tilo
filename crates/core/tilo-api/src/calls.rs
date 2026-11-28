@@ -1175,12 +1175,12 @@ impl Calls {
         Ok(answer)
     }
 
-    /// Answer the question that waits in `record` (`<workspace>/<record>`) as the person, on
-    /// this computer's own connection to its daemon, as `tilo do`'s own prompt answers one:
-    /// approved, or declined.
+    /// Resolve the question that waits in `record` (`<workspace>/<record>`) on this connection,
+    /// approved or declined: a program's answer, which the daemon refuses, since only the person
+    /// answers where Tilo asks them.
     ///
     /// # Errors
-    /// These calls are a key's, which answers nothing for its person, or the answer was refused.
+    /// The answer was refused.
     pub async fn answer_asked(&self, record: &str, approve: bool) -> Result<()> {
         use tilo_actions::remote::{ActionProvider as _, Caller, InvokeRequest, ReceiptStatus};
         let At::Daemon { line, person, .. } = &self.at else {

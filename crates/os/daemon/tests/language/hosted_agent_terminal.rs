@@ -139,8 +139,8 @@ async fn take_back(host: &host::Host, id: GrantId) {
 }
 
 /// The person allows what their assistant's turn asks: the invocation of the workspace's that
-/// waits for them is answered at `tilo`'s own prompt, on a connection the kernel says is theirs.
-/// The same answer from a program on a plain connection is refused.
+/// waits for them is answered where Tilo asks them, in their shell. The same answer from a
+/// program, even on a connection the kernel says is theirs, is refused.
 async fn allow(host: &host::Host) -> String {
     let dispatch = host.dispatch();
     let caller = host.caller();
@@ -166,12 +166,23 @@ async fn allow(host: &host::Host) -> String {
         ),
         "a program does not answer for the person: {by_a_program:?}"
     );
+    // Any program of the person's connects as their own connection: it raises questions, and
+    // never answers one, its own least.
     let (own, person) = host
         .daemon()
         .own_connection_in(host.workspace())
         .expect("the person's own connection reaches the workspace");
-    assert!(person.is_own_connection(), "{person:?}");
-    let receipt = own
+    let by_their_connection = own.invoke(&person, resolve()).await;
+    assert!(
+        matches!(&by_their_connection, Some(Err(ActionCallError::Refused { reason }))
+            if reason == tilo_actions::remote::asked::CONFIRMED_BY_THE_SYSTEM),
+        "a connection of the person's does not answer for them: {by_their_connection:?}"
+    );
+    let (shell, person) = host
+        .daemon()
+        .own_shell_in(host.workspace())
+        .expect("the person's shell reaches the workspace");
+    let receipt = shell
         .invoke(&person, resolve())
         .await
         .expect("the dispatch answers")

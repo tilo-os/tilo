@@ -51,14 +51,13 @@ async fn asked(key: &host::Key, name: &str) -> (String, String) {
     }
 }
 
-/// The person answers the question in `record` on their own connection to the device, as
-/// `tilo do`'s own prompt answers it.
+/// The person answers the question in `record` where Tilo asks them, in their shell.
 async fn answer(host: &host::Host, record: &str, resolution: &str) {
     let (workspace, record) = record.split_once('/').expect("<workspace>/<record>");
     let (own, person) = host
         .daemon()
-        .own_connection_in(workspace)
-        .expect("the person's own connection reaches their workspace");
+        .own_shell_in(workspace)
+        .expect("the person's shell reaches their workspace");
     let receipt = own
         .invoke(
             &person,

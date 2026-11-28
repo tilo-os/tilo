@@ -116,21 +116,26 @@ async fn agent_does_approved(
     }
 }
 
-/// Approve the invocation waiting in the asked `record` as the person does: on their own
-/// connection, where Tilo asks them, which a program's plain connection may not answer for.
+/// Approve the invocation waiting in the asked `record` as the person does.
 async fn approve(host: &host::Host, record: &str) {
+    answer(host, record, "approve").await;
+}
+
+/// Answer `resolution` to the invocation waiting in the asked `record` as the person does: in
+/// their shell, where Tilo asks them, which a program of theirs may not answer for.
+pub(crate) async fn answer(host: &host::Host, record: &str, resolution: &str) {
     let (workspace, record) = record
         .split_once('/')
         .unwrap_or_else(|| panic!("an asked record is <workspace>/<record>: {record:?}"));
     let request = host::call(
         workspace_invocations::PROVIDER,
         tilo_actions::ActionAddress::new(record.to_owned(), tilo_actions::remote::asked::RESOLVE),
-        &json!({"resolution": "approve"}),
+        &json!({ "resolution": resolution }),
     );
     let (own, person) = host
         .daemon()
-        .own_connection_in(workspace)
-        .expect("the person's own connection reaches the workspace");
+        .own_shell_in(workspace)
+        .expect("the person's shell reaches the workspace");
     own.invoke(&person, request)
         .await
         .expect("the dispatch answers")

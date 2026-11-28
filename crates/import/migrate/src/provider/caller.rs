@@ -1,11 +1,11 @@
 //! A device's migrations as their caller steps them: one invocation of a step, followed to its
-//! end, and the questions a run asks its person answered as the caller says. `tilo migrate` is
+//! end, and the questions a run asks its person said where the caller runs. `tilo migrate` is
 //! this caller over the daemon's native endpoint; anything that reaches the device's dispatch
 //! steps the migrations the same way.
 //!
 //! A run that keeps a mail account asks its person first: the call waits in its asked record,
-//! which the workspace's invocations record lists (read through the record API) and which is
-//! answered with its own `resolve`, as the person's shell answers it.
+//! which the workspace's invocations record lists (read through the record API). Only the person
+//! answers it, where Tilo asks them on their screen: the caller is a program, and never does.
 
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -14,7 +14,7 @@ use std::time::Duration;
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Map, Value, json};
 use tilo_action_services::workspace_invocations;
-use tilo_actions::remote::asked::{Asked, AskedBy, RESOLVE};
+use tilo_actions::remote::asked::{Asked, AskedBy, CONFIRMED_BY_THE_SYSTEM, RecordRef};
 use tilo_actions::remote::{
     ActionProvider, Caller, InvokeRequest, MAX_REMOTE_WAIT, Pending, ReadAnswer, ReceiptStatus,
     RemoteActionMessage, RemoteActionTarget, ResourceReadRequest, UpdateMark,
@@ -26,40 +26,15 @@ use super::{PROVIDER, resource};
 /// How long past the longest remote wait the device is waited for before it is given up.
 const SLACK: Duration = Duration::from_secs(30);
 
-/// How long a run that may ask is waited on before its questions are looked for again.
+/// How long a run that waits is left before its questions are looked for again, until one is
+/// said.
 const LOOK_AGAIN: Duration = Duration::from_millis(250);
 
 /// The steps that land in a workspace, and so take the one they land in.
 const LANDING: [&str; 6] = ["review", "choose", "start", "stop", "status", "undo"];
 
-/// How a caller answers the questions a run asks: say yes beforehand (`--yes`), ask the person
-/// where the caller runs, leave them to someone else, or (with nobody to ask) say no, so the
-/// account stays unconnected and the run says so.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Asks {
-    /// Answer nobody: another client of the workspace (the person's shell) does.
-    Leave,
-    /// Say yes to every question, as `--yes` does.
-    Approve,
-    /// Say no: nobody is there to ask.
-    Decline,
-    /// Put each question to the person ([`Answering::prompt`]).
-    Prompt,
-}
-
-impl Asks {
-    /// Whether the caller answers the run's questions at all.
-    #[must_use]
-    pub const fn answers(self) -> bool {
-        !matches!(self, Self::Leave)
-    }
-}
-
 /// What the caller does with what a step says while it runs.
 pub struct Answering<'a> {
-    pub asks: Asks,
-    /// Put a question to the person: their yes, or no. Asked only for [`Asks::Prompt`].
-    pub prompt: &'a mut (dyn FnMut(&Asked) -> Result<bool> + Send),
     /// A line the person reads: the run's progress, a question asked of them, their answer.
     pub say: &'a mut (dyn FnMut(&str) + Send),
 }
@@ -121,8 +96,8 @@ impl Steps {
         self.into.as_deref().unwrap_or(&self.workspace)
     }
 
-    /// Invoke `action` with `args` and follow it to its end, answering the questions it asks as
-    /// `answering` says: its answer, or the failure it ran into.
+    /// Invoke `action` with `args` and follow it to its end, saying the questions it asks:
+    /// its answer, or the failure it ran into.
     ///
     /// # Errors
     /// The device did not answer, or refused the step before it ran.
@@ -149,8 +124,8 @@ impl Steps {
         self.follow(id, receipt.status, answering).await
     }
 
-    /// Follow the invocation `id`, whose receipt said `status`, to its end, answering the
-    /// questions it asks as `answering` says.
+    /// Follow the invocation `id`, whose receipt said `status`, to its end, saying the questions
+    /// it asks.
     async fn follow(
         &self,
         id: InvocationId,
@@ -162,6 +137,8 @@ impl Steps {
         // The progress lines said here, by their sequence: a run's answer lists every line it
         // said, and those said while nobody looked are said once it ends.
         let mut told = std::collections::BTreeSet::new();
+        // The questions said here, each once.
+        let mut asked = Vec::new();
         loop {
             match status {
                 ReceiptStatus::Accepted => {}
@@ -193,15 +170,16 @@ impl Steps {
                 .observe(&self.caller, &id)
                 .ok_or_else(stopped)?;
             if UpdateMark::of(&state.update) == seen {
-                if answering.asks.answers() {
-                    // A run that waits for its person asks in a record of its own: the caller
-                    // answers it, as any other client of the workspace does.
-                    self.answer_asks(answering).await?;
-                    let _ = within(LOOK_AGAIN, change).await;
+                // A run that waits for its person asks in a record of its own, said here once.
+                self.say_asks(&mut asked, answering).await;
+                // Until a question is said, the run is looked at again soon: its question is kept
+                // a moment after the step that asks it says so.
+                let wait = if asked.is_empty() {
+                    LOOK_AGAIN
                 } else {
-                    // A wait the device let pass unanswered is looked at again.
-                    let _ = within(MAX_REMOTE_WAIT.saturating_add(SLACK), change).await;
-                }
+                    MAX_REMOTE_WAIT.saturating_add(SLACK)
+                };
+                let _ = within(wait, change).await;
                 continue;
             }
             seen = UpdateMark::of(&state.update);
@@ -218,34 +196,22 @@ impl Steps {
         }
     }
 
-    /// Answer the questions a run asks, as `answering` says, each with its record's own
-    /// `resolve`, as the person's shell answers it.
-    async fn answer_asks(&self, answering: &mut Answering<'_>) -> Result<()> {
-        for question in self.questions().await? {
-            if !connects_a_mail_account(&question) {
-                continue;
+    /// Say each question a run asks that was not `told` yet, and where only the person answers it.
+    async fn say_asks(&self, told: &mut Vec<RecordRef>, answering: &mut Answering<'_>) {
+        // What this caller may not read it cannot say: the question still waits for the person
+        // where Tilo asks them, and the run for their answer.
+        let Ok(questions) = self.questions().await else {
+            return;
+        };
+        for question in questions {
+            if connects_a_mail_account(&question) && !told.contains(&question.record) {
+                (answering.say)(&format!(
+                    "{}\n{CONFIRMED_BY_THE_SYSTEM}.",
+                    question_said(&question)
+                ));
+                told.push(question.record);
             }
-            let approve = match answering.asks {
-                Asks::Approve => true,
-                Asks::Decline => false,
-                Asks::Prompt => (answering.prompt)(&question)?,
-                Asks::Leave => continue,
-            };
-            if answering.asks != Asks::Prompt {
-                (answering.say)(&question_said(&question));
-            }
-            if let Err(error) = self.answer(&question, approve).await {
-                // Another client answered it first: the run reads their answer.
-                (answering.say)(&format!("the answer did not go through: {error:#}"));
-                continue;
-            }
-            (answering.say)(if approve {
-                "You said yes: it is connected."
-            } else {
-                "You said no: it stays unconnected."
-            });
         }
-        Ok(())
     }
 
     /// The questions that wait for the caller's person where the migration lands, oldest first:
@@ -274,30 +240,6 @@ impl Steps {
         };
         let reading: Value = serde_json::from_str(&reading)?;
         Ok(waiting_in(&reading))
-    }
-
-    /// Answer `question`'s record with `approve`, in the workspace that keeps it.
-    async fn answer(&self, question: &Asked, approve: bool) -> Result<()> {
-        let mut args = Map::new();
-        args.insert(
-            "resolution".into(),
-            json!(if approve { "approve" } else { "decline" }),
-        );
-        let request = InvokeRequest::plain(
-            RemoteActionTarget {
-                provider: workspace_invocations::PROVIDER.into(),
-                address: ActionAddress::new(question.record.record.clone(), RESOLVE),
-            },
-            args,
-        );
-        let caller = self
-            .caller
-            .clone()
-            .in_workspace(question.record.workspace.clone());
-        answered(self.dispatch.invoke(&caller, request))
-            .await?
-            .map_err(|error| anyhow!("the answer was refused: {}", error.said()))?;
-        Ok(())
     }
 }
 
@@ -428,7 +370,7 @@ mod tests {
         assert!(refusal.contains("Lab"), "{refusal}");
     }
 
-    /// Only the question that keeps a mail account is a migration's: the caller answers that
+    /// Only the question that keeps a mail account is a migration's: the caller says that
     /// one, and leaves another question to its own caller.
     #[test]
     fn only_keeping_a_mail_account_is_a_migrations_question() {

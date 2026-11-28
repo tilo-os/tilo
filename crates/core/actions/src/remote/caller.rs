@@ -98,9 +98,9 @@ pub struct Caller {
     // The device's operating system (`Self::local_system`), which acts for nobody.
     system: bool,
     // How the call came: over a link, on the person's plain connection to their own device's
-    // daemon, which the kernel says is their own account (`Self::own_person`), where their CLI's
-    // own prompt may confirm what the workspace asks them (the call never does), or from the
-    // device's own code in process (`Self::in_process`).
+    // daemon, which the kernel says is their own account (`Self::own_person`), which never
+    // answers what the workspace asks them, or from the device's own code in process
+    // (`Self::in_process`).
     came: Came,
     // The invitation a visitor redeems (`Self::invited`): it acts by its issuer's authority,
     // which the action checks against the issuer's grant when it runs.
@@ -324,9 +324,9 @@ impl Caller {
     }
 
     /// The person on a plain connection to their own device's daemon, which the kernel says is
-    /// their own account ([`crate::remote::Caller`]): their calls are their own act, and the
-    /// answer their CLI's own prompt gives on it to what the workspace asks them is their
-    /// confirmation ([`crate::remote::asked`]). Making the call is never that answer.
+    /// their own account ([`crate::remote::Caller`]): their calls are their own act, but any
+    /// program of theirs makes them, so what the workspace asks them is answered only in their
+    /// shell ([`crate::remote::asked`]).
     #[must_use]
     pub fn own_person(person: impl Into<tilo_member_types::PersonId>) -> Self {
         Self {
