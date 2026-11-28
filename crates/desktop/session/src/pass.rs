@@ -328,7 +328,9 @@ impl Session {
         self.compositor.begin_tick();
         let timeout = self.wait(timeout);
         tilo_frame_metrics::profile::expire(Instant::now());
+        tilo_startup_metrics::launch_present_phase("wait");
         self.compositor.dispatch(timeout)?;
+        tilo_startup_metrics::launch_present_phase("dispatch");
         self.take_input()?;
         // What stands over the desktop and takes the keys of its own: while one of them is
         // drawn, the shell's own controls stay behind it.
@@ -348,7 +350,9 @@ impl Session {
             .shell_seat
             .set(!self.compositor.locked() && !self.compositor.keyboard_client());
         self.follow_logout_request();
+        tilo_startup_metrics::launch_present_phase("input");
         self.pump()?;
+        tilo_startup_metrics::launch_present_phase("pump");
         // The session's windows are drawn as far as they have come; an animated switch owns its frames
         // until they rest.
         self.compositor.set_switch_holding(self.windows.animating());
@@ -356,8 +360,10 @@ impl Session {
         // window committing the frame it was placed in, an app acking the configure — is in this
         // frame, not in the next one.
         self.compositor.catch_up()?;
+        tilo_startup_metrics::launch_present_phase("catch up");
         let drawn = self.compositor.frames_presented();
         self.compositor.render()?;
+        tilo_startup_metrics::launch_present_phase("render");
         if self.compositor.frames_presented() == drawn {
             // The session stayed as it was: a compositor that has gone quiet after work gets freed
             // heap back once it stays quiet a moment.
@@ -371,6 +377,7 @@ impl Session {
                 break;
             }
             self.compositor.render()?;
+            tilo_startup_metrics::launch_present_phase("arrivals");
         }
         self.first_frame_presented();
         self.desktop_ready();
@@ -394,6 +401,7 @@ impl Session {
             self.follow_session_actions();
             self.follow_settings_steps();
         }
+        tilo_startup_metrics::launch_present_phase("after");
         self.compositor
             .mark_after(after.elapsed().saturating_sub(answering));
         self.compositor.end_tick();

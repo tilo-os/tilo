@@ -2375,6 +2375,7 @@ impl Compositor {
                 .mark_redraw_all(tilo_frame_metrics::paint_reason::PRESENTATION);
         }
         let (drew, layers) = self.prepare_surfaces();
+        tilo_startup_metrics::launch_present_phase("surfaces");
         if drew {
             self.data
                 .state
@@ -2421,6 +2422,7 @@ impl Compositor {
         }
         let drawn_before = self.data.state.frames_drawn();
         let submitting = Instant::now();
+        tilo_startup_metrics::launch_present_phase("arranged");
         self.data.backend.render(&mut self.data.state)?;
         let drawn = self.data.state.frames_drawn();
         if drawn > drawn_before {

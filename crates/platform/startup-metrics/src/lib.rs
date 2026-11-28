@@ -66,12 +66,13 @@ struct PendingLaunch {
     handed_on: bool,
     surface_id: Option<u64>,
     mapped_at: Option<Instant>,
-    /// Where the compositor's dispatch got to before the spawn
-    /// ([`launch_phase`]), in order.
+    /// Where the compositor's dispatch got to before the spawn ([`launch_phase`]), and where
+    /// the session's loop got to between the map and the first presented frame
+    /// ([`launch_present_phase`]), in order.
     phases: Vec<(&'static str, Instant)>,
 }
 
-const LAUNCH_PHASES_MAX: usize = 16;
+const LAUNCH_PHASES_MAX: usize = 64;
 
 /// The most launches the table keeps. More than a person's desktop opens at
 /// once, so a launch whose window never comes (an app that failed inside its
@@ -248,21 +249,36 @@ pub fn launch_phase(key: &str, phase: &'static str) {
     }
 }
 
-/// `phase:ms,...`: each phase's interval, ending at that phase and starting at
-/// the one before (the request for the first), then `registered`, the rest of
-/// the way to `spawned_at`. Milliseconds to 0.1.
-fn format_launch_phases(
-    requested_at: Instant,
-    phases: &[(&'static str, Instant)],
-    spawned_at: Instant,
-) -> String {
-    let mut previous = requested_at;
-    let mut out = Vec::with_capacity(phases.len().saturating_add(1));
-    for (name, at) in phases
-        .iter()
-        .copied()
-        .chain(std::iter::once(("registered", spawned_at)))
+/// Note that the session's loop reached `phase` now, for every launch whose window is mapped and
+/// whose first frame is not presented yet: [`launch_first_present`] reports them, so the time
+/// between the two is split where the loop spends it.
+pub fn launch_present_phase(phase: &'static str) {
+    if AWAITING_FIRST_PRESENT.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+        return;
+    }
+    let now = Instant::now();
+    for launch in launch_table()
+        .iter_mut()
+        .filter(|launch| launch.mapped_at.is_some())
     {
+        if launch.phases.len() < LAUNCH_PHASES_MAX {
+            launch.phases.push((phase, now));
+        }
+    }
+}
+
+/// `phase:ms,...`: each phase's interval, ending at that phase and starting at
+/// the one before (`from` for the first), then `last`, the rest of the way to
+/// `to`. Milliseconds to 0.1.
+fn format_launch_phases(
+    from: Instant,
+    phases: &[(&'static str, Instant)],
+    last: &'static str,
+    to: Instant,
+) -> String {
+    let mut previous = from;
+    let mut out = Vec::with_capacity(phases.len().saturating_add(1));
+    for (name, at) in phases.iter().copied().chain(std::iter::once((last, to))) {
         let tenths = at.saturating_duration_since(previous).as_micros() / 100;
         out.push(format!("{name}:{}.{}", tenths / 10, tenths % 10));
         previous = previous.max(at);
@@ -292,7 +308,7 @@ pub fn launch_spawned(id: u64, pid: u32) {
         package_id = %key,
         pid,
         request_to_spawn_us = now.duration_since(requested_at).as_micros(),
-        dispatch_phases = %format_launch_phases(requested_at, &phases, now),
+        dispatch_phases = %format_launch_phases(requested_at, &phases, "registered", now),
         "application launcher spawned"
     );
 }
@@ -342,6 +358,7 @@ pub fn launch_mapped(key: &str, surface_id: u64, tag: Option<&str>) {
     let now = Instant::now();
     launch.surface_id = Some(surface_id);
     launch.mapped_at = Some(now);
+    launch.phases.clear();
     AWAITING_FIRST_PRESENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let (id, key, requested_at, spawned_at) = (
         launch.id,
@@ -392,6 +409,8 @@ pub fn launch_first_present(surface_id: u64, frame_seq: u64) {
         request_to_first_present_us = now.duration_since(retired.requested_at).as_micros(),
         spawn_to_first_present_us = retired.spawned_at.map(|spawned| now.duration_since(spawned).as_micros()),
         map_to_first_present_us = now.duration_since(mapped_at).as_micros(),
+        present_phases = %format_launch_phases(mapped_at, &retired.phases, "presented", now),
+        presented_epoch_us = tilo_clock::unix_now_ns() / 1_000,
         "application first frame presented"
     );
 }
