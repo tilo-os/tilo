@@ -690,6 +690,8 @@ pub const SHARED_CHECKLIST: &str = "so.tilo.example.shared-checklist";
 
 /// Poker, a default Rust app: its one table is the workspace's record.
 pub const POKER: &str = "so.tilo.poker";
+/// The Gallery: the tilolang app that shows every component of the toolkit.
+pub const GALLERY: &str = "so.tilo.lang.gallery";
 
 /// The two people's laptops in the site's workspace, each carrying what `install` puts in its
 /// store before its session starts, and the workspace letting `authored` author its records.
@@ -2348,7 +2350,19 @@ impl Device {
     /// Install Shortcuts in this device's store, as a device with the app installed has it: the
     /// tilolang package this run built, which no development session starts.
     pub fn install_shortcuts(&self) {
-        super::dev_apps::install_extra(&self.store());
+        super::dev_apps::install_named(&self.store(), &["so.tilo.shortcuts"]);
+        super::dev_apps::install_runtimes(&self.store().join("runtimes"));
+    }
+
+    /// Install the Gallery in this device's store, as [`Self::install_shortcuts`] installs
+    /// Shortcuts: a tilolang window of every component, on pages a sidebar picks.
+    pub fn install_gallery(&self) {
+        assert_eq!(
+            super::dev_apps::install_named(&self.store(), &[GALLERY]),
+            [GALLERY],
+            "{} installs the Gallery",
+            self.label
+        );
         super::dev_apps::install_runtimes(&self.store().join("runtimes"));
     }
 

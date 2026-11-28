@@ -238,6 +238,8 @@ mod refounded_workspace;
 mod refused_writes;
 #[path = "region_formats.rs"]
 mod region_formats;
+#[path = "reopened_tl_window.rs"]
+mod reopened_tl_window;
 #[path = "repl_api.rs"]
 mod repl_api;
 #[path = "rotation.rs"]
@@ -317,6 +319,8 @@ mod test_control;
 mod theme_package;
 #[path = "theme_package_process.rs"]
 mod theme_package_process;
+#[path = "theme_reaches_windows.rs"]
+mod theme_reaches_windows;
 #[path = "tools.rs"]
 mod tools;
 #[path = "traditional_desktop.rs"]
