@@ -267,9 +267,18 @@ fn shown_rows(k: session.Keyboard, t: Typing) -> List<List<Text>> {
     rows_named(shown_layout(k, t))
 }
 
-/// Every key shown, in reading order: what the pad's indices count.
+/// The keys drawn, row by row. A secret field has no emoji key: the picker would show recents it
+/// must leave no trace of, and nothing can be typed into it that a field of words would suggest.
+fn drawn_rows(k: session.Keyboard, t: Typing) -> List<List<Text>> {
+    let rows = shown_rows(k, t)
+    if k.secret {
+        rows.map(row -> row.filter(key -> what_of(key) != "!emoji"))
+    } else { rows }
+}
+
+/// Every key drawn, in reading order: what the pad's indices count.
 fn shown_keys(k: session.Keyboard, t: Typing) -> List<Text> {
-    shown_rows(k, t).flat_map(r -> r)
+    drawn_rows(k, t).flat_map(r -> r)
 }
 
 /// The layout's rows as the device reads them: each key `label:width`.
@@ -306,9 +315,10 @@ fn cased(text: Text, shift: Int) -> Text {
     if shift > 0 { text.upper() } else { text }
 }
 
-/// The pad's keys for what is shown now.
+/// The pad's keys for what is shown now. A secret field has no emoji key: the picker would show
+/// recents it must leave no trace of.
 fn pad_keys(k: session.Keyboard, t: Typing) -> List<ui.PadKey> {
-    let rows = shown_rows(k, t)
+    let rows = drawn_rows(k, t)
     rows.flat_map(
         row -> row.map(key -> pad_key(k, t, key, rows.index_of(row) ?? 0, row.index_of(key) ?? 0)),
     )
@@ -473,6 +483,13 @@ fn learns(k: session.Keyboard) -> Bool {
     k.personalization and composes(k)
 }
 
+/// Whether where the person's taps land is read and learned here: in a field of words, where a
+/// letter's meaning follows the words around it. An address is typed as its keys stand, and a
+/// secret field has nothing to learn from.
+fn biases(k: session.Keyboard) -> Bool {
+    k.purpose == "text" and not k.secret
+}
+
 /// The keyboard follows the field in front: in another field what was composed in the last one is
 /// gone, and the keys start where that field's case asks.
 fn here(k: session.Keyboard, t: Typing) -> Typing {
@@ -548,7 +565,7 @@ action held(k: session.Keyboard, typing: Typing, choice: List<Text>) -> Typing {
 /// move the edge between two letters, never the keys drawn; what the tap taught of where they
 /// land is kept. Only in a field of words, and never a secret's.
 action meant(k: session.Keyboard, t: Typing, key: Text, at: List<Float>) -> Text {
-    if not composes(k) or t.page != "letters" or at.len() < 2 {
+    if not biases(k) or t.page != "letters" or at.len() < 2 {
         return key
     }
     let rows = shown_rows(k, t)
@@ -739,7 +756,7 @@ action press(k: session.Keyboard, typing: Typing, key: Text) -> Typing {
         session.preedit(k, text: t.word)
         return offer(k, t)
     }
-    // A mark ends the word and goes in with it.
+    // A mark ends the word and goes in with it; a mark that ends a sentence shifts for the next.
     t = commit(k, t, key, true)
     t.sentence = key == "." or key == "!" or key == "?"
     if t.shift == 1 {
@@ -748,7 +765,7 @@ action press(k: session.Keyboard, typing: Typing, key: Text) -> Typing {
     if t.page == "symbols" and key == "'" {
         t.page = "letters"
     }
-    offer(k, t)
+    settle_case(k, offer(k, t))
 }
 
 /// The composing word goes into the field with `after` behind it: corrected first when `correct`

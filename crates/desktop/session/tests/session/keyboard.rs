@@ -1079,3 +1079,119 @@ fn a_number_field_gets_the_number_pad() {
     press(&mut session, &mut client, "2");
     until_typed(&mut session, &mut client, |committed, _| committed == "42");
 }
+
+/// The controls the keyboard draws, by name.
+fn drawn_names(session: &Session) -> Vec<String> {
+    controls(session)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect()
+}
+
+/// A text field's keyboard offers the emoji picker; a secret field's has no emoji key at all,
+/// since the picker's recents are shared and a password may leave no trace of itself.
+#[test]
+fn a_secret_field_has_no_emoji_key_and_a_text_field_does() {
+    use zwp_text_input_v3::{ContentHint, ContentPurpose};
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let (_home, text, _client) = typing_for(ContentHint::empty(), ContentPurpose::Normal);
+    let names = drawn_names(&text);
+    assert!(
+        names.iter().any(|name| name == "Emoji"),
+        "a field of words offers the emoji picker: {names:?}"
+    );
+    drop(text);
+
+    let (_home, secret, _client) = typing_for(ContentHint::SensitiveData, ContentPurpose::Password);
+    let names = drawn_names(&secret);
+    assert!(
+        !names.iter().any(|name| name == "Emoji"),
+        "a secret field offers no emoji key: {names:?}"
+    );
+}
+
+/// A field that capitalizes sentences opens with its letters capital, the next letter after the
+/// first is small, and a mark that ends the sentence capitals the one after it.
+#[test]
+fn a_sentence_starts_capital_and_a_mark_starts_the_next() {
+    use zwp_text_input_v3::{ContentHint, ContentPurpose};
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let (_home, mut session, mut client) =
+        typing_for(ContentHint::AutoCapitalization, ContentPurpose::Normal);
+    let names = drawn_names(&session);
+    assert!(
+        names
+            .iter()
+            .any(|name| name == "T" || name == "H" || name == "Q"),
+        "the sentence starts in capitals: {names:?}"
+    );
+
+    // A letter typed takes the shift with it: the keys after it are small.
+    let capital = names
+        .iter()
+        .find(|name| {
+            name.chars().count() == 1
+                && name.chars().all(char::is_alphabetic)
+                && name.chars().all(char::is_uppercase)
+        })
+        .cloned()
+        .expect("a capital letter");
+    press(&mut session, &mut client, &capital);
+    let names = drawn_names(&session);
+    assert!(
+        names
+            .iter()
+            .any(|name| name == "e" || name == "a" || name == "s"),
+        "the letters after the first are small: {names:?}"
+    );
+
+    // A mark ends the sentence, and the next letter begins one.
+    press(&mut session, &mut client, "Numbers and symbols");
+    press(&mut session, &mut client, "!");
+    press(&mut session, &mut client, "Letters");
+    let names = drawn_names(&session);
+    assert!(
+        names.iter().any(|name| {
+            name.chars().count() == 1
+                && name.chars().all(char::is_alphabetic)
+                && name.chars().all(char::is_uppercase)
+        }),
+        "a mark starts the next sentence in capitals: {names:?}"
+    );
+}
+
+/// Put the keys away and one strip stands in their place; Show keys brings the letters back.
+#[test]
+fn parked_keys_leave_one_strip_that_brings_them_back() {
+    use zwp_text_input_v3::{ContentHint, ContentPurpose};
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let (_home, mut session, mut client) = typing_for(ContentHint::empty(), ContentPurpose::Normal);
+    let letters = drawn_names(&session)
+        .into_iter()
+        .filter(|name| name.chars().count() == 1 && name.chars().all(char::is_alphabetic))
+        .count();
+    assert!(letters >= 20, "the keys stand first: {letters}");
+
+    press(&mut session, &mut client, "Put the keys away");
+    let names = drawn_names(&session);
+    assert!(
+        names.iter().any(|name| name == "Show keys"),
+        "the strip brings the keys back: {names:?}"
+    );
+    assert!(
+        !names
+            .iter()
+            .any(|name| name.chars().count() == 1 && name.chars().all(char::is_alphabetic)),
+        "no letter key stands while the keys are away: {names:?}"
+    );
+
+    press(&mut session, &mut client, "Show keys");
+    let letters = drawn_names(&session)
+        .into_iter()
+        .filter(|name| name.chars().count() == 1 && name.chars().all(char::is_alphabetic))
+        .count();
+    assert!(
+        letters >= 20,
+        "Show keys brings the letters back: {letters}"
+    );
+}
