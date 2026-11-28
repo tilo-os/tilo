@@ -4765,3 +4765,72 @@ fn a_states_offered_action_inside_a_scrolling_page_answers_a_pointer_press() {
         "the pointer press at the state's action in the page reaches the app"
     );
 }
+
+/// A button a page holds under its sections answers the pointer, as one of the state's does: the
+/// scroll and the page it is laid out in change nothing of where a press reaches.
+#[test]
+fn a_pages_button_answers_a_pointer_press() {
+    let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
+    let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    let mut page = UiNode::empty("page", "shell#page");
+    let mut stack = UiNode::empty("stack", "shell#page-stack");
+    stack.props.insert("gap".to_owned(), Value::text("group"));
+    for at in 0..6 {
+        let mut section = UiNode::empty(&kind("Text"), &format!("shell#section-{at}"));
+        section
+            .props
+            .insert("value".to_owned(), Value::text(format!("Section {at}")));
+        stack.children.push(section);
+    }
+    let mut field = UiNode::empty(&kind("TextInput"), "shell#description");
+    field
+        .props
+        .insert("placeholder".to_owned(), Value::text("Tidy my inbox"));
+    stack.children.push(field);
+    let mut button = UiNode::empty(&kind("Button"), "shell#draft");
+    button
+        .props
+        .insert("label".to_owned(), Value::text("Draft it"));
+    button
+        .props
+        .insert("role".to_owned(), Value::text("primary"));
+    button.events.insert(
+        "press".to_owned(),
+        crate::Event {
+            invokes: Some(crate::Invocation {
+                resource: "1".to_owned(),
+                action: "draft".to_owned(),
+            }),
+            ..crate::Event::default()
+        },
+    );
+    stack.children.push(button);
+    page.children.push(stack);
+    let mut scroll = UiNode::empty(&kind("Scroll"), "shell#scroll");
+    scroll.children.push(page);
+    send(&mut app, &chooser_page(vec![scroll]));
+    window.receive();
+    let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(window), (1280, 800));
+    harness.present_in_window_bar();
+    harness.relayout();
+    harness.relayout();
+    let node = named_node(&harness, "Draft it");
+    let bounds = harness
+        .a11y_nodes()
+        .into_iter()
+        .find(|(id, _)| *id == node)
+        .and_then(|(_, described)| described.bounds())
+        .expect("the page's button is described where it stands");
+    let (x, y) = (
+        f64::midpoint(bounds.x0, bounds.x1),
+        f64::midpoint(bounds.y0, bounds.y1),
+    );
+    harness.click_at(x, y);
+    drawn_window(&mut harness).flush();
+    assert!(
+        sent(&mut app)
+            .iter()
+            .any(|message| matches!(message, ToApp::Invoke { .. } | ToApp::Fire { .. })),
+        "the pointer press at the page's button reaches the app, at {x},{y}"
+    );
+}
