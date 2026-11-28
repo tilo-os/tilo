@@ -87,7 +87,7 @@ mod rule;
 pub use {rule::Rule, rule::RuleProps};
 mod link;
 pub use {link::Link, link::LinkProps};
-mod flap;
+pub mod flap;
 pub use {flap::FlapState, flap::SplitLayout};
 mod bottom_sheet;
 pub use {
@@ -100,24 +100,14 @@ mod fullscreen_view;
 pub use {fullscreen_view::Fullscreen, fullscreen_view::FullscreenProps, fullscreen_view::Screen};
 mod stage;
 pub use {stage::Stage, stage::StagePinProps, stage::StageProps};
-mod sidebar;
+pub mod sidebar;
 pub use {
     sidebar::DEFAULT_DRAWER_BREAKPOINT, sidebar::DEFAULT_DRAWER_DOCKED_WIDTH,
     sidebar::DEFAULT_DRAWER_WIDTH, sidebar::SidebarDrawer, sidebar::SidebarSide,
 };
-mod nav_shell;
-#[cfg(feature = "native")]
-pub use nav_shell::memory::remember_for_app as remember_sidebar_widths_for_app;
 pub mod window_controls;
 pub mod window_header;
 pub mod window_toolbar_row;
-pub use {
-    nav_shell::HeldNotice, nav_shell::InspectorFrame, nav_shell::InspectorLink,
-    nav_shell::InspectorPlacement, nav_shell::NavGeometry, nav_shell::NavMode, nav_shell::NavPane,
-    nav_shell::NavShell, nav_shell::NavShellProps, nav_shell::OverviewPlacement,
-    nav_shell::SidebarPlacement, nav_shell::WINDOW_BACK, nav_shell::WINDOW_SIDEBAR,
-    nav_shell::WindowBarLink,
-};
 pub use {
     window_header::ColumnFrame, window_header::HISTORY_CONTROL_ID, window_header::HeaderStatus,
     window_header::HistoryControl, window_header::HistoryOpener, window_header::STATUS_ACTION_ID,
@@ -126,7 +116,7 @@ pub use {
     window_header::merged_row_holds_search, window_header::merged_row_width,
     window_header::merged_row_width_in,
 };
-mod nav_list;
+pub mod nav_list;
 pub use nav_list::nav_row;
 pub use {
     nav_list::NavAction, nav_list::NavArt, nav_list::NavDrop, nav_list::NavEntry,
@@ -886,13 +876,6 @@ pub mod internals {
         pub mod model {
             pub use crate::widget::nav_list::model::*;
         }
-    }
-    pub mod nav_shell {
-        pub use crate::widget::nav_shell::sidebar_resize::AdaptiveSidebar;
-        pub use crate::widget::nav_shell::*;
-        pub use crate::widget::toast::ToastKind;
-        #[cfg(feature = "test-support")]
-        pub use crate::widget::window_header::header_row::{test_measure_title, test_title_style};
     }
     pub mod page_sidebar {
         pub use crate::widget::page_sidebar::*;

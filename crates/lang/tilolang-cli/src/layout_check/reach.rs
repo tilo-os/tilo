@@ -188,7 +188,7 @@ pub(super) fn first_row(
 /// window comes back to the list it opened something from: the chip the shell's header row holds.
 pub(super) fn back_chip(staged: &stage::Staged, viewport: (u32, u32)) -> bool {
     fn in_frame(node: &ui::headless::InspectionNode, viewport: (u32, u32)) -> bool {
-        (reachable(node, viewport) && node.test_id.as_deref() == Some(ui::widget::WINDOW_BACK))
+        (reachable(node, viewport) && node.test_id.as_deref() == Some(tilo_ui_nav::WINDOW_BACK))
             || node.children.iter().any(|child| in_frame(child, viewport))
     }
     in_frame(&staged.harness().inspection().root, viewport)
@@ -199,7 +199,7 @@ pub(super) fn back_chip(staged: &stage::Staged, viewport: (u32, u32)) -> bool {
 /// forward.
 pub(super) fn sidebar_toggle(staged: &stage::Staged, viewport: (u32, u32)) -> bool {
     fn in_frame(node: &ui::headless::InspectionNode, viewport: (u32, u32)) -> bool {
-        (reachable(node, viewport) && node.test_id.as_deref() == Some(ui::widget::WINDOW_SIDEBAR))
+        (reachable(node, viewport) && node.test_id.as_deref() == Some(tilo_ui_nav::WINDOW_SIDEBAR))
             || node.children.iter().any(|child| in_frame(child, viewport))
     }
     in_frame(&staged.harness().inspection().root, viewport)

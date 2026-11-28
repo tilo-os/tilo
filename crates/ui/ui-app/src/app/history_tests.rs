@@ -5580,7 +5580,7 @@ fn header_history_control_opens_framework_history() {
         state.doc.put(ROOT, "body", body).unwrap();
         state.commit_action(None, None);
     }
-    let shell = crate::widget::NavShell::new()
+    let shell = tilo_ui_nav::NavShell::new()
         .content_header("Notes", vec![])
         .content(Box::new(crate::widget::Text::new("Body")));
     let mut app = app_with_root(state, Box::new(shell));

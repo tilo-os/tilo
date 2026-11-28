@@ -830,7 +830,7 @@ fn every_bar_gives_every_part_its_own_place_at_every_width() {
 #[test]
 fn the_window_controls_follow_the_row_a_capture_changes_size_under() {
     use crate::testing::TestLeaf;
-    let shell = crate::widget::NavShell::new()
+    let shell = tilo_ui_nav::NavShell::new()
         .sidebar(TestLeaf::fill("sidebar").boxed().0)
         .overview(TestLeaf::fill("overview").boxed().0)
         .content(TestLeaf::fill("content").boxed().0)
@@ -857,7 +857,7 @@ fn the_window_controls_follow_the_row_a_capture_changes_size_under() {
         driver.set_theme(theme.with_reduce_motion(true));
         driver.resize(viewport).expect("layout");
         driver.settle_for_capture(std::time::Duration::from_millis(250));
-        let g = driver.root::<crate::widget::NavShell>().geometry().clone();
+        let g = driver.root::<tilo_ui_nav::NavShell>().geometry().clone();
         let live = crate::widget::window_header::content_bar(driver.root_widget())
             .expect("the row holds the bar");
         let painted = driver

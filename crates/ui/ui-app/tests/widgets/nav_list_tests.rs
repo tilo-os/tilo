@@ -1308,7 +1308,7 @@ fn host_frame(app: &mut tilo_ui_app::app::App, damage: &mut tilo_ui_app::app::Su
 /// or built. Also the rows the list publishes.
 fn keystroke_walk_beside(count: usize) -> (usize, usize, usize) {
     use tilo_ui_base::a11y::Role;
-    let shell = tilo_ui_app::widget::NavShell::new()
+    let shell = tilo_ui_nav::NavShell::new()
         .sidebar(Box::new(NavList::new(destinations(count))))
         .content(Box::new(
             tilo_ui_app::widget::TextInput::local().with_accessible_name("Note"),

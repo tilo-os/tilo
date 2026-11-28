@@ -487,7 +487,7 @@ fn selections(
     }
 }
 
-/// The shell of a window and the list of its places: what it is made of ([`ui::widget::NavShell`],
+/// The shell of a window and the list of its places: what it is made of ([`tilo_ui_nav::NavShell`],
 /// [`ui::widget::NavList`]).
 const NAV_SHELL: &str = "NavShell";
 const NAV_TITLE: &str = "NavShellTitle";

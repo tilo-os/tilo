@@ -39,7 +39,7 @@ fn responsive_nav_factory(
     let root = crate::widget::ModelView::from_document(
         |doc, _| doc.get(ROOT, "setup").unwrap().is_some(),
         |setup| {
-            let mut nav = crate::widget::NavShell::new()
+            let mut nav = tilo_ui_nav::NavShell::new()
                 .overview(Box::new(crate::widget::Text::new("Conversations")))
                 .overview_header(
                     "Conversations",
@@ -52,7 +52,7 @@ fn responsive_nav_factory(
                 } else {
                     "Conversation"
                 })));
-            nav.show(crate::widget::NavPane::Content);
+            nav.show(tilo_ui_nav::NavPane::Content);
             Box::new(nav)
         },
     );

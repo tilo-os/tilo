@@ -8,7 +8,7 @@ use super::{
     Column, ContentKind, Inputs, InspectorPlacement, Metrics, NavMode, NavPane, OverviewPlacement,
     Part, SidebarPlacement, inspector_layout_of, reaches,
 };
-use crate::widget::flap::SplitLayout;
+use tilo_ui::widget::flap::SplitLayout;
 use tilo_ui_base::num::f64_of_usize;
 use tilo_ui_base::tokens::Breakpoint;
 
@@ -51,7 +51,7 @@ pub struct NavGeometry {
     pub(super) inspector_toggle_column: Option<Column>,
     pub(super) history_column: Option<Column>,
     pub resize_handle: Rect,
-    pub sheet: crate::widget::SheetFrame,
+    pub sheet: tilo_ui::widget::SheetFrame,
     pub sheet_covered: f64,
     /// The content edges of a centred page column (its leading and trailing
     /// text edge), where the content is one ([`NavShell::with_page_column`]).
@@ -113,7 +113,7 @@ impl NavGeometry {
             window_row: t(self.window_row),
             band: t(self.band),
             resize_handle: t(self.resize_handle),
-            sheet: crate::widget::SheetFrame {
+            sheet: tilo_ui::widget::SheetFrame {
                 area: t(self.sheet.area),
                 ..self.sheet
             },
@@ -631,7 +631,7 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         }
         InspectorPlacement::Sheet => {
             let header = inputs.header_wanted(Column::Inspector);
-            g.sheet = crate::widget::SheetFrame {
+            g.sheet = tilo_ui::widget::SheetFrame {
                 area: Rect::new(0.0, drawer_top, w, h),
                 peek: if header {
                     drawer_hh.max(m.header)

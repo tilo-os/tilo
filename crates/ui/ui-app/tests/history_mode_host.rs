@@ -139,7 +139,7 @@ fn a_first_build_whose_header_takes_the_history_control_is_admitted_as_built() {
     let mut state = State::new();
     state.doc.put(ROOT, "body", "existing document").unwrap();
     state.commit_action(None, None);
-    let mut live = tilo_ui_app::widget::NavShell::new()
+    let mut live = tilo_ui_nav::NavShell::new()
         .content(Box::new(Button::new("live", "Send")))
         .content_header("Page", Vec::new());
     let mut history = HistoryHost::new(registration(), &state.doc).unwrap();
@@ -755,7 +755,7 @@ fn header_history_control_opens_the_registered_history() {
         state.commit_action(None, None);
     }
     let before = state.doc.get_heads();
-    let shell = tilo_ui_app::widget::NavShell::new()
+    let shell = tilo_ui_nav::NavShell::new()
         .content_header("Notes", vec![])
         .content(Box::new(tilo_ui_app::widget::Text::new("Body")));
     let mut driver = Driver::from_managed_root(
@@ -848,7 +848,7 @@ fn opening_history_lays_the_shell_out_at_its_narrower_width() {
     });
     let overview = vec![probes.next().unwrap(), probes.next().unwrap()];
     let content = vec![probes.next().unwrap(), probes.next().unwrap()];
-    let shell = tilo_ui_app::widget::NavShell::new()
+    let shell = tilo_ui_nav::NavShell::new()
         .sidebar(Box::new(tilo_ui_app::widget::Text::new("Library")))
         .overview(Box::new(tilo_ui_app::widget::Text::new("List")))
         .overview_header("All snippets", overview)

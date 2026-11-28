@@ -425,10 +425,7 @@ pub use {
     widget::card_columns,
 };
 pub use {widget::EditOutcome, widget::EditableLabel};
-pub use {
-    widget::NavItem, widget::NavList, widget::NavMode, widget::NavPane, widget::NavSection,
-    widget::NavShell,
-};
+pub use {widget::NavItem, widget::NavList, widget::NavSection};
 
 // Audit-timeline widgets + their shared types. The `ArtifactKind`
 // re-export flows through these widgets, so callers can build

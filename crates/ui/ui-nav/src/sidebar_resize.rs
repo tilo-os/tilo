@@ -7,8 +7,8 @@
 use vello::kurbo::Rect;
 
 use super::{Inputs, Metrics, NavMode, NavShell, Resize};
-use crate::widget::flap::SplitLayout;
-use crate::widget::{SplitHandle, SplitOrientation, SplitRatio};
+use tilo_ui::widget::flap::SplitLayout;
+use tilo_ui::widget::{SplitHandle, SplitOrientation, SplitRatio};
 use tilo_ui_base::interaction::InteractionEnvironment;
 use tilo_ui_base::num::f32_of_f64;
 use tilo_ui_base::theme::Theme;
@@ -19,16 +19,16 @@ use tilo_ui_base::theme::Theme;
 #[derive(Debug, Default)]
 pub(super) struct Edge {
     pub(super) touch: Option<u64>,
-    memory: Option<crate::storage::Settings<super::memory::NavShellMemory>>,
+    memory: Option<tilo_ui::storage::Settings<super::memory::NavShellMemory>>,
 }
 
 impl Metrics {
     /// The header row for a person using `input`: the shell's own buttons
     /// are the minimum target it needs, as an app's buttons are
-    /// ([`crate::widget::window_header::header_row::HeaderRowMetrics::resolve_for`]).
+    /// ([`tilo_ui::widget::window_header::header_row::HeaderRowMetrics::resolve_for`]).
     fn for_input(mut self, theme: &Theme, input: InteractionEnvironment) -> Self {
         let row =
-            crate::widget::window_header::header_row::HeaderRowMetrics::resolve_for(theme, input);
+            tilo_ui::widget::window_header::header_row::HeaderRowMetrics::resolve_for(theme, input);
         self.row = row;
         self.header = row.height;
         self.chip = row.chip;
@@ -231,7 +231,7 @@ impl NavShell {
         } else {
             self.sidebar
                 .as_deref()
-                .and_then(crate::widget::nav_list::adaptive)
+                .and_then(tilo_ui::widget::nav_list::adaptive)
                 .map(|nav| adaptive_sidebar(nav, theme, &metrics))
         };
         let fitted = [
@@ -240,7 +240,7 @@ impl NavShell {
         ]
         .into_iter()
         .flatten()
-        .filter_map(|part| crate::widget::nav_list::fitted_rail_width(part, theme))
+        .filter_map(|part| tilo_ui::widget::nav_list::fitted_rail_width(part, theme))
         .reduce(f64::max);
         if let Some(rail) = fitted {
             metrics.rail = rail;
@@ -263,7 +263,7 @@ impl NavShell {
         let Some(sidebar) = self.sidebar.as_deref_mut() else {
             return;
         };
-        let Some(nav) = crate::widget::nav_list::adaptive_mut(sidebar) else {
+        let Some(nav) = tilo_ui::widget::nav_list::adaptive_mut(sidebar) else {
             return;
         };
         if nav.set_rail(rail) {
@@ -357,7 +357,7 @@ impl Inputs {
 
 /// How the navigation sidebar `nav` adapts to its width under `theme`.
 pub(super) fn adaptive_sidebar(
-    nav: &dyn crate::widget::nav_list::AdaptiveNav,
+    nav: &dyn tilo_ui::widget::nav_list::AdaptiveNav,
     theme: &Theme,
     m: &Metrics,
 ) -> AdaptiveSidebar {

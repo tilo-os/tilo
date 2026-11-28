@@ -1037,7 +1037,7 @@ impl SidebarDrawer {
 /// The floating drawer surface: the floating shadow, the floating material
 /// with its edge, at the panel radius. Returns the theme for what stands on
 /// it.
-pub(crate) fn paint_floating_drawer(
+pub fn paint_floating_drawer(
     scene: &mut Scene,
     transform: Affine,
     rect: Rect,

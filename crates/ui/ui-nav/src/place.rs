@@ -353,7 +353,7 @@ fn place_header(
     } else {
         // The toolkit's one overflow rule: how many of the row's controls fit beside the API's own
         // button. What does not fit is named in the menu, never dropped from the row.
-        let fits = crate::widget::plan_overflow(band, compact.iter().copied(), gap, gap + more_w);
+        let fits = tilo_ui::widget::plan_overflow(band, compact.iter().copied(), gap, gap + more_w);
         (true, false, fits.min(kept).max(must))
     };
     // What each action takes: the row's narrower width, but for the primary where it says its words.

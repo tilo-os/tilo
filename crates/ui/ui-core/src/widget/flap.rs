@@ -146,7 +146,7 @@ impl FlapState {
 
     /// Start the reveal over from closed, so an open flap that just came into a layout (a
     /// sidebar that docks as the window widens) slides in rather than appearing.
-    pub(crate) fn slide_in(&mut self, layout: SplitLayout) {
+    pub fn slide_in(&mut self, layout: SplitLayout) {
         if !self.is_open(layout) {
             return;
         }
@@ -204,7 +204,7 @@ impl FlapState {
     /// The reveal as it stands in `layout`: the drawn value while the flap
     /// is laid out there, else where `layout`'s resolved state would put it
     /// (a layout the flap has not been reconciled to yet does not slide).
-    pub(crate) fn reveal_in(&self, layout: SplitLayout) -> f64 {
+    pub fn reveal_in(&self, layout: SplitLayout) -> f64 {
         if self.last_layout.is_none_or(|last| last == layout) {
             self.reveal()
         } else if self.is_open(layout) {

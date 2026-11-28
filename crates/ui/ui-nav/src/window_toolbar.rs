@@ -5,7 +5,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use super::{InspectorPlacement, NavPane, NavShell, SidebarPlacement};
-use crate::window_toolbar::{ToolbarEvent, WindowToolbar};
+use tilo_ui::window_toolbar::{ToolbarEvent, WindowToolbar};
 
 /// The shell's buttons, and an app inside it ([`WindowBarLink`]), report
 /// presses here; the shell runs them at its next sync or update.
@@ -25,13 +25,13 @@ pub(super) struct Requests {
     /// The app shows one thing alone ([`WindowBarLink::show_content_alone`]).
     pub(super) content_alone: Cell<bool>,
     /// A notice the app asked the window's bar to show ([`WindowBarLink::toast`]).
-    pub(super) toast: RefCell<Option<(String, crate::widget::toast::ToastKind)>>,
+    pub(super) toast: RefCell<Option<(String, tilo_ui::widget::toast::ToastKind)>>,
     parts: RefCell<WindowToolbar>,
     /// The inspector's frame as of the last layout, and what an
     /// [`super::InspectorLink`] asked of it.
     pub(super) inspector_frame: Cell<super::InspectorFrame>,
     pub(super) inspector_wanted: Cell<Option<bool>>,
-    pub(super) inspector_detent: Cell<Option<crate::widget::SheetDetent>>,
+    pub(super) inspector_detent: Cell<Option<tilo_ui::widget::SheetDetent>>,
 }
 
 /// The shell's own buttons in the window's bar, for an app that paints
@@ -89,7 +89,7 @@ impl WindowBarLink {
 
     /// Show a transient notice in the window's bar, as [`NavShell::toast`] does: what an
     /// operation the app ran came to.
-    pub fn toast(&self, text: impl Into<String>, kind: crate::widget::toast::ToastKind) {
+    pub fn toast(&self, text: impl Into<String>, kind: tilo_ui::widget::toast::ToastKind) {
         *self.0.toast.borrow_mut() = Some((text.into(), kind));
     }
 
@@ -118,7 +118,7 @@ impl NavShell {
     /// Run what the shell's buttons and a linked app asked for since the
     /// last pass. Returns whether anything changed.
     pub(super) fn take_requests(&mut self) -> bool {
-        let floats = crate::window_toolbar::floats();
+        let floats = tilo_ui::window_toolbar::floats();
         let floats_changed =
             std::mem::replace(&mut self.inputs.borrow_mut().floats, floats) != floats;
         if floats_changed {
@@ -144,7 +144,7 @@ impl NavShell {
             self.toggle_inspector();
             acted = true;
         }
-        if crate::window_toolbar::take_notice_press(super::notices::WINDOW_NOTICE_ACTION) {
+        if tilo_ui::window_toolbar::take_notice_press(super::notices::WINDOW_NOTICE_ACTION) {
             acted |= self.press_notice_action();
         }
         acted |= self.take_inspector_requests();
@@ -195,7 +195,7 @@ impl NavShell {
         acted
     }
 
-    /// The app's toolbar is its window bar's parts ([`crate::window_toolbar`]): the shell draws
+    /// The app's toolbar is its window bar's parts ([`tilo_ui::window_toolbar`]): the shell draws
     /// no header row of its own, in a Tilo session or out of it.
     #[must_use]
     pub fn with_window_toolbar(self) -> Self {
@@ -208,7 +208,7 @@ impl NavShell {
     }
 
     /// The app shows the sidebar toggle in the window's bar
-    /// ([`crate::window_toolbar::WindowToolbar::sidebar`]) and runs it
+    /// ([`tilo_ui::window_toolbar::WindowToolbar::sidebar`]) and runs it
     /// with [`Self::toggle_sidebar`]: the header row keeps no toggle of its own,
     /// and stands only for what else it holds.
     pub fn set_sidebar_toggle_in_window_bar(&mut self, on: bool) {
@@ -235,7 +235,7 @@ impl NavShell {
     /// inspector's toggle while there is an inspector (the last action).
     #[must_use]
     pub fn window_toolbar(&self) -> WindowToolbar {
-        use crate::window_toolbar::ToolbarAction;
+        use tilo_ui::window_toolbar::ToolbarAction;
         let lookup = tilo_ui_base::i18n::I18nManager::lookup_plain;
         let back = self.can_go_back();
         // Back leads in the toggle's place while the sidebar is closed on a screen or in a
@@ -292,8 +292,8 @@ impl NavShell {
     /// Add the app's own actions to [`Self::window_toolbar`]'s, before the
     /// inspector's toggle, which stays the last of the row.
     pub fn push_window_actions(
-        toolbar: &mut crate::window_toolbar::WindowToolbar,
-        actions: impl IntoIterator<Item = crate::window_toolbar::ToolbarAction>,
+        toolbar: &mut tilo_ui::window_toolbar::WindowToolbar,
+        actions: impl IntoIterator<Item = tilo_ui::window_toolbar::ToolbarAction>,
     ) {
         let inspector = toolbar
             .actions

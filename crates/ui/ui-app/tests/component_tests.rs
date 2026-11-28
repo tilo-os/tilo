@@ -37,6 +37,7 @@ fn toolkit() -> Registry {
     Registry::of(&[
         &TOOLKIT,
         &tilo_ui_charts::COMPONENTS,
+        &tilo_ui_nav::COMPONENTS,
         &tilo_ui_map::COMPONENTS,
     ])
 }

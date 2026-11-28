@@ -26,6 +26,7 @@ name = "it"
 path = "tests/it.rs"
 
 [dependencies]
+tilo-ui-nav = { version = "0.1.0", path = "../../ui/ui-nav" }
 # What the profile's session left for processes outside it, which this process reads
 # where no host installed its settings.
 settings-store = { package = "tilo-settings-store", version = "0.1.0", path = "../../desktop/settings" }

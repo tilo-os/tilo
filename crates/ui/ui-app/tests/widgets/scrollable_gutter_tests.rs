@@ -108,9 +108,9 @@ fn content_that_overflowed_before_the_view_had_its_place_keeps_no_gutter() {
         }
         Box::new(column)
     };
-    let shell = tilo_ui_app::widget::NavShell::new()
+    let shell = tilo_ui_nav::NavShell::new()
         .content_kind(tilo_ui_base::widget::ContentKind::Page)
-        .mode(tilo_ui_app::widget::NavMode::Push)
+        .mode(tilo_ui_nav::NavMode::Push)
         .sidebar(Box::new(tilo_ui_app::widget::NavList::new(vec![
             tilo_ui_app::widget::NavSection::untitled(
                 "sections",

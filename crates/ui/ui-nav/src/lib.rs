@@ -2,6 +2,70 @@
 //! list beside the content, the content, and an optional inspector, laid out at
 //! `theme.tokens.metrics`.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::collapsible_if,
+    clippy::default_trait_access,
+    clippy::doc_markdown,
+    clippy::empty_line_after_doc_comments,
+    clippy::format_collect,
+    clippy::format_push_string,
+    clippy::implicit_hasher,
+    clippy::indexing_slicing,
+    clippy::items_after_statements,
+    clippy::items_after_test_module,
+    clippy::large_enum_variant,
+    clippy::large_stack_arrays,
+    clippy::manual_assert_eq,
+    clippy::manual_find,
+    clippy::manual_midpoint,
+    clippy::many_single_char_names,
+    clippy::map_unwrap_or,
+    clippy::match_wildcard_for_single_variants,
+    clippy::missing_errors_doc,
+    clippy::needless_collect,
+    clippy::needless_pass_by_value,
+    clippy::needless_range_loop,
+    clippy::needless_raw_string_hashes,
+    clippy::or_fun_call,
+    clippy::panic_in_result_fn,
+    clippy::redundant_clone,
+    clippy::redundant_closure,
+    clippy::redundant_closure_for_method_calls,
+    clippy::ref_as_ptr,
+    clippy::result_large_err,
+    clippy::semicolon_if_nothing_returned,
+    clippy::significant_drop_in_scrutinee,
+    clippy::significant_drop_tightening,
+    clippy::similar_names,
+    clippy::struct_excessive_bools,
+    clippy::too_many_lines,
+    clippy::type_complexity,
+    clippy::unchecked_time_subtraction,
+    clippy::unicode_not_nfc,
+    clippy::uninlined_format_args,
+    clippy::unnecessary_literal_bound,
+    clippy::unnecessary_wraps,
+    clippy::unreadable_literal,
+    clippy::unused_self,
+    clippy::used_underscore_binding,
+    clippy::useless_conversion,
+    reason = "lint debt these widgets carried in the toolkit, scoped to this target"
+)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::disallowed_methods,
+        clippy::string_slice,
+        clippy::unreachable,
+        clippy::float_cmp,
+        reason = "in a test these are the assertion, not a hazard, and tests may wait on the real clock"
+    )
+)]
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -14,11 +78,11 @@ use vello::kurbo::{Affine, Point, Rect, Vec2};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::time::Instant;
-use crate::widget::flap::{FlapState, SplitLayout};
-use crate::widget::window_header::header_row::HeaderRowMetrics;
-use crate::widget::window_header::{HistoryControl, WindowHeader};
-use crate::{
+use tilo_ui::time::Instant;
+use tilo_ui::widget::flap::{FlapState, SplitLayout};
+use tilo_ui::widget::window_header::header_row::HeaderRowMetrics;
+use tilo_ui::widget::window_header::{HistoryControl, WindowHeader};
+use tilo_ui::{
     widget::Button, widget::ButtonRole, widget::DescribedList, widget::NavList, widget::SearchField,
 };
 use tilo_ui_base::LocalState;
@@ -41,7 +105,10 @@ mod band;
 mod header_parts;
 mod inspector;
 mod layout;
-pub(crate) mod memory;
+mod memory;
+/// The sidebar widths a person set, remembered for the app that runs here.
+#[cfg(feature = "native")]
+pub use memory::remember_for_app as remember_sidebar_widths_for_app;
 mod nothing_listed;
 mod notices;
 mod open_states;
@@ -53,7 +120,6 @@ mod status_action;
 mod swap;
 mod window_header;
 mod window_toolbar;
-use crate::widget::OverflowButton;
 use band::plan;
 use header_parts::HeaderTitle;
 use inspector::inspector_layout_of;
@@ -61,7 +127,8 @@ pub use inspector::{InspectorFrame, InspectorLink};
 pub use layout::NavGeometry;
 use layout::{layout_of, stack_index};
 pub use notices::HeldNotice;
-use sidebar_resize::AdaptiveSidebar;
+pub use sidebar_resize::AdaptiveSidebar;
+use tilo_ui::widget::OverflowButton;
 use tilo_ui_base::widget::ContentKind;
 use window_toolbar::Requests;
 pub use window_toolbar::{WINDOW_BACK, WINDOW_SIDEBAR, WindowBarLink};
@@ -110,7 +177,7 @@ pub enum InspectorPlacement {
     /// inspector's own counterpart of a sidebar drawer).
     Drawer,
     /// Too narrow to dock: a sheet up from the window's foot, over the
-    /// content's lower part ([`crate::widget::BottomSheet`]).
+    /// content's lower part ([`tilo_ui::widget::BottomSheet`]).
     Sheet,
 }
 
@@ -314,7 +381,7 @@ pub struct Metrics {
     pub scale: f64,
     /// One line of body text: the unit of a page column's width.
     pub body_line: f64,
-    /// One `rem` in logical pixels ([`crate::widget::arrange::rem_of`]): the unit the width
+    /// One `rem` in logical pixels ([`tilo_ui::widget::arrange::rem_of`]): the unit the width
     /// classes are measured in, so the content beside a sidebar keeps a column's width at every
     /// text size.
     pub rem: f32,
@@ -339,7 +406,7 @@ impl Metrics {
     /// below the width class it is in there ([`ContentKind::beside_sidebar_class`]).
     pub fn beside_sidebar_min(&self, kind: ContentKind) -> f64 {
         self.content_min(kind)
-            .max(f64::from(crate::widget::arrange::class_min_width(
+            .max(f64::from(tilo_ui::widget::arrange::class_min_width(
                 kind.beside_sidebar_class(),
                 self.rem,
             )))
@@ -380,7 +447,7 @@ impl Metrics {
             pointer: f64::from(m.min_pointer_target),
             scale: theme.responsive_scale(),
             body_line: f64::from(theme.text(tilo_ui_base::TextRole::Body).line_height_px()),
-            rem: crate::widget::arrange::rem_of(theme),
+            rem: tilo_ui::widget::arrange::rem_of(theme),
             reading_measure: f64::from(m.reading_measure) * growth,
             scroll_gutter: f64::from(m.scrollbar_gutter),
             page_pad: f64::from(s.s6),
@@ -452,10 +519,10 @@ struct Inputs {
     page_lines: Option<f64>,
     metrics: Metrics,
     has_sidebar: bool,
-    /// The window floats over the shell as a card ([`crate::window_toolbar::floats`]): too narrow
+    /// The window floats over the shell as a card ([`tilo_ui::window_toolbar::floats`]): too narrow
     /// to dock its sidebar, it shows its content alone.
     floats: bool,
-    /// The app shows one thing alone ([`crate::widget::WindowBarLink::show_content_alone`]): no
+    /// The app shows one thing alone ([`crate::WindowBarLink::show_content_alone`]): no
     /// sidebar is placed at any width.
     alone: bool,
     has_overview: bool,
@@ -497,7 +564,7 @@ struct Inputs {
     inspector_collapse: InspectorCollapse,
     sidebar: FlapState,
     inspector: FlapState,
-    sheet: crate::widget::BottomSheet,
+    sheet: tilo_ui::widget::BottomSheet,
     pane: NavPane,
     /// The drawn position in the push stack while a push slides; `None` at
     /// rest, where the front screen's index stands.
@@ -575,7 +642,7 @@ impl Default for Inputs {
             inspector_collapse: InspectorCollapse::Sheet,
             sidebar: FlapState::open_when_docked(),
             inspector: FlapState::open_when_docked(),
-            sheet: crate::widget::BottomSheet::new(),
+            sheet: tilo_ui::widget::BottomSheet::new(),
             pane: NavPane::Content,
             push_pos: None,
             push: tilo_ui_base::motion::MotionValue::new(0.0),
@@ -803,11 +870,11 @@ pub struct NavShell {
     layout_dirty: bool,
     paint_dirty: bool,
     /// The window's notice, shown in its bar ([`Self::toast`]).
-    notice: crate::widget::toast::Transient<notices::ShellNotice>,
+    notice: tilo_ui::widget::toast::Transient<notices::ShellNotice>,
     /// The notice whose button the person pressed, for
     /// [`Self::take_toast_action`].
     notice_pressed: Option<String>,
-    sync_status: crate::widget::HeaderStatus,
+    sync_status: tilo_ui::widget::HeaderStatus,
     /// The status changed since the last frame drawn: only where it was
     /// ([`Self::status_drawn`]) and where it is repaint, not the whole shell.
     status_dirty: bool,
@@ -817,7 +884,7 @@ pub struct NavShell {
     status_span: Rect,
     status_action: Option<Button>,
     band: Option<Element>,
-    status_action_spec: Option<crate::widget::StatusAction>,
+    status_action_spec: Option<tilo_ui::widget::StatusAction>,
     retired_status_actions: Vec<Button>,
     /// Whether Back goes back now, for a shell made from its description with a `back`
     /// event: taken in place as the description changes.
@@ -889,11 +956,11 @@ impl NavShell {
             toggle: Box::new(toggle),
             back: Box::new(back),
             inspector_toggle: Box::new(inspector_toggle),
-            history_open: Box::new(crate::history_api::history_control_button(
+            history_open: Box::new(tilo_ui::history_api::history_control_button(
                 "nav-shell-history",
                 HistoryControl::Closed,
             )),
-            history_close: Box::new(crate::history_api::history_control_button(
+            history_close: Box::new(tilo_ui::history_api::history_control_button(
                 "nav-shell-history",
                 HistoryControl::Open,
             )),
@@ -939,9 +1006,9 @@ impl NavShell {
             bodies_swapped: false,
             layout_dirty: true,
             paint_dirty: true,
-            notice: crate::widget::toast::Transient::new(),
+            notice: tilo_ui::widget::toast::Transient::new(),
             notice_pressed: None,
-            sync_status: crate::widget::HeaderStatus::default(),
+            sync_status: tilo_ui::widget::HeaderStatus::default(),
             status_dirty: false,
             status_drawn: Rect::ZERO,
             status_span: Rect::ZERO,
@@ -960,7 +1027,7 @@ impl NavShell {
         Button::icon_only(id, icon, name).on_open(on_press)
     }
 
-    /// The sidebar of destinations (usually a [`crate::widget::NavList`]).
+    /// The sidebar of destinations (usually a [`tilo_ui::widget::NavList`]).
     #[must_use]
     pub fn sidebar(mut self, sidebar: Element) -> Self {
         self.set_sidebar(Some(sidebar));
@@ -1215,7 +1282,7 @@ impl NavShell {
         self
     }
 
-    /// The window's search narrows the sidebar's list ([`crate::widget::Filterable`]) wherever
+    /// The window's search narrows the sidebar's list ([`tilo_ui::widget::Filterable`]) wherever
     /// it stands: also while a narrow window shows the content screen, whose content may then
     /// show what the list's filter finds.
     #[must_use]
@@ -1781,7 +1848,7 @@ impl NavShell {
             return None;
         }
         list.selected_count()
-            .map(crate::widget::nav_list::nav_row::NavCount::value)
+            .map(tilo_ui::widget::nav_list::nav_row::NavCount::value)
     }
 
     /// A column's header draws its count only where no visible sidebar already draws it for the
@@ -1926,7 +1993,7 @@ impl NavShell {
     /// Bring `pane` to the front of a narrow window's push stack. In a wide window every pane
     /// is already showing; this records which one a later collapse keeps in front.
     pub fn show(&mut self, pane: NavPane) {
-        let source = tilo_ui_base::motion::recent_input(crate::time::now())
+        let source = tilo_ui_base::motion::recent_input(tilo_ui::time::now())
             .unwrap_or(tilo_ui_base::tokens::MotionSource::Action);
         self.show_from(pane, source);
     }
@@ -2193,7 +2260,7 @@ impl NavShell {
                         .as_ref()
                         .and_then(|node| node.name.clone())
                         .unwrap_or_default();
-                    let mut item = crate::widget::context_menu::MenuItem::selection(name)
+                    let mut item = tilo_ui::widget::context_menu::MenuItem::selection(name)
                         .with_enabled(node.as_ref().is_none_or(|node| !node.state.disabled));
                     if let Some(checked) = node.as_ref().and_then(|node| node.state.checked) {
                         item = item.with_checked(checked);
@@ -2210,8 +2277,9 @@ impl NavShell {
                     if let Some(why) = button.why_disabled() {
                         item = item.with_description(why);
                     }
-                    let item = item
-                        .with_destructive(button.kind() == crate::widget::ButtonRole::Destructive);
+                    let item = item.with_destructive(
+                        button.kind() == tilo_ui::widget::ButtonRole::Destructive,
+                    );
                     let item = match button.menu_group() {
                         Some(group) => item.with_group(group),
                         None => item,
@@ -2270,7 +2338,7 @@ impl NavShell {
             Column::Inspector => self.inspector.as_deref_mut(),
         };
         if let (Some(field), Some(target)) = (self.filter.as_deref_mut(), target) {
-            crate::widget::sync_filter(field, target);
+            tilo_ui::widget::sync_filter(field, target);
         }
     }
 
@@ -2280,15 +2348,15 @@ impl NavShell {
         let from_sidebar = self
             .sidebar
             .as_deref_mut()
-            .is_some_and(|sidebar| crate::widget::nav_list::take_navigation(sidebar));
+            .is_some_and(|sidebar| tilo_ui::widget::nav_list::take_navigation(sidebar));
         let from_rail = self
             .rail
             .as_deref_mut()
-            .is_some_and(|rail| crate::widget::nav_list::take_navigation(rail));
+            .is_some_and(|rail| tilo_ui::widget::nav_list::take_navigation(rail));
         let from_overview = self
             .overview
             .as_deref_mut()
-            .is_some_and(|overview| crate::widget::nav_list::take_navigation(overview));
+            .is_some_and(|overview| tilo_ui::widget::nav_list::take_navigation(overview));
         if from_sidebar {
             self.chose_in = Some(NavPane::Sidebar);
             self.active_hint = Some(if self.has_overview() {
@@ -2390,7 +2458,7 @@ impl NavShell {
     /// where the one before it stood, on the theme's cross-fade, and lands at once for a person
     /// who asked for less motion. The layout is the new content's from this frame, so a page never
     /// waits for an old one to leave.
-    pub(super) fn content_replaced(&mut self, key: Option<String>) {
+    pub(crate) fn content_replaced(&mut self, key: Option<String>) {
         let changed = key != self.content_key;
         self.content_key = key;
         if !changed {
@@ -2727,7 +2795,7 @@ impl NavShell {
         }
         self.paint_rules(f.scene, f.transform, f.theme, &g);
         if self.resize_focused && self.sidebar_resize_handle().is_some() {
-            crate::widget::paint_focus_ring(f.scene, f.transform, g.resize_handle, 2.0, f.theme);
+            tilo_ui::widget::paint_focus_ring(f.scene, f.transform, g.resize_handle, 2.0, f.theme);
         }
 
         if g.open_drawer().is_some() {
@@ -2908,7 +2976,7 @@ impl NavShell {
                 continue;
             }
             let local = self.column_theme(theme, Some(column));
-            crate::widget::window_header::header_row::HeaderRowFace::in_row(
+            tilo_ui::widget::window_header::header_row::HeaderRowFace::in_row(
                 header,
                 self.inputs.borrow().metrics.row,
             )
@@ -2984,12 +3052,12 @@ impl Widget for NavShell {
             request.provide::<dyn tilo_ui_base::widget::controls::ActionControls>(self);
         } else if request.wants::<dyn WindowHeader>() {
             request.provide::<dyn WindowHeader>(self);
-        } else if request.wants::<dyn crate::widget::resources::PublishesResources>() {
-            request.provide::<dyn crate::widget::resources::PublishesResources>(self);
+        } else if request.wants::<dyn tilo_ui::widget::resources::PublishesResources>() {
+            request.provide::<dyn tilo_ui::widget::resources::PublishesResources>(self);
         } else if request.wants::<dyn tilo_ui_base::widget::ResourceOperations>() {
             request.provide::<dyn tilo_ui_base::widget::ResourceOperations>(self);
         } else if self.sidebar_search
-            && request.wants::<dyn crate::widget::Filterable>()
+            && request.wants::<dyn tilo_ui::widget::Filterable>()
             && let Some(sidebar) = &self.sidebar
         {
             sidebar.provide(request);
@@ -3006,12 +3074,12 @@ impl Widget for NavShell {
             request.provide::<dyn tilo_ui_base::widget::controls::ActionControls>(self);
         } else if request.wants::<dyn WindowHeader>() {
             request.provide::<dyn WindowHeader>(self);
-        } else if request.wants::<dyn crate::widget::resources::PublishesResources>() {
-            request.provide::<dyn crate::widget::resources::PublishesResources>(self);
+        } else if request.wants::<dyn tilo_ui::widget::resources::PublishesResources>() {
+            request.provide::<dyn tilo_ui::widget::resources::PublishesResources>(self);
         } else if request.wants::<dyn tilo_ui_base::widget::ResourceOperations>() {
             request.provide::<dyn tilo_ui_base::widget::ResourceOperations>(self);
         } else if self.sidebar_search
-            && request.wants::<dyn crate::widget::Filterable>()
+            && request.wants::<dyn tilo_ui::widget::Filterable>()
             && let Some(sidebar) = &mut self.sidebar
         {
             sidebar.provide_mut(request);
@@ -3824,7 +3892,7 @@ fn button_mut(action: &mut dyn Widget) -> Option<*mut Button> {
 
 /// Whether `action` is the button that opens the app's search, which the window's bar replaces.
 fn is_app_search(action: &dyn Widget) -> bool {
-    action.test_id() == Some(crate::widget::search_request::APP_SEARCH_BUTTON_ID)
+    action.test_id() == Some(tilo_ui::widget::search_request::APP_SEARCH_BUTTON_ID)
 }
 
 /// Whether `body` shows, inside `region`, a text of its own that is the page's title and says
@@ -3865,10 +3933,10 @@ fn page_title_shown(body: &dyn Widget, region: Rect) -> Option<TitleShown> {
 /// it is a heading assistive technology reads as the page's name or only the field the person
 /// edits it in.
 #[derive(Clone, Debug, PartialEq)]
-pub(super) struct TitleShown {
-    pub(super) rect: Rect,
-    pub(super) words: String,
-    pub(super) heading: bool,
+pub(crate) struct TitleShown {
+    pub(crate) rect: Rect,
+    pub(crate) words: String,
+    pub(crate) heading: bool,
 }
 
 fn same_words(a: &str, b: &str) -> bool {
@@ -3883,7 +3951,7 @@ fn same_words(a: &str, b: &str) -> bool {
 /// Controls in a column the shell is not showing (a hidden sidebar, a closed drawer, a
 /// pushed-away screen) still belong to the window: ownership, invocations and availability reach
 /// every part the shell owns.
-impl crate::widget::resources::PublishesResources for NavShell {}
+impl tilo_ui::widget::resources::PublishesResources for NavShell {}
 
 impl tilo_ui_base::widget::ResourceOperations for NavShell {}
 
@@ -4255,13 +4323,13 @@ impl NavShell {
 
     /// Whether the content's change is still fading.
     #[must_use]
-    pub fn test_content_fade_moving(&self, now: crate::time::Instant) -> bool {
+    pub fn test_content_fade_moving(&self, now: tilo_ui::time::Instant) -> bool {
         self.content_fade.is_moving(now)
     }
 
     /// How far the content's change has faded, from 0 to 1.
     #[must_use]
-    pub fn test_content_fade_progress(&self, now: crate::time::Instant) -> f64 {
+    pub fn test_content_fade_progress(&self, now: tilo_ui::time::Instant) -> f64 {
         self.content_fade.progress(now)
     }
 
@@ -4273,7 +4341,7 @@ impl NavShell {
 
     /// How far the column switch has faded, from 0 to 1.
     #[must_use]
-    pub fn test_switch_fade_progress(&self, now: crate::time::Instant) -> f64 {
+    pub fn test_switch_fade_progress(&self, now: tilo_ui::time::Instant) -> f64 {
         self.switch_fade.progress(now)
     }
 
@@ -4303,7 +4371,7 @@ impl NavShell {
 
     /// Whether the incoming page is still sliding in.
     #[must_use]
-    pub fn test_push_moving(&self, now: crate::time::Instant) -> bool {
+    pub fn test_push_moving(&self, now: tilo_ui::time::Instant) -> bool {
         self.inputs.borrow().push.is_moving(now)
     }
 
@@ -4313,3 +4381,13 @@ impl NavShell {
         self.inputs.borrow().adaptive
     }
 }
+
+include!(concat!(env!("OUT_DIR"), "/component_registry.rs"));
+
+/// The window shell, which a window builds by name beside the toolkit's
+/// (`tilo_ui::component_catalogue::TOOLKIT`).
+pub static COMPONENTS: tilo_ui_base::component::Set = tilo_ui_base::component::Set {
+    entries: generated_entries,
+    parts: GENERATED_PARTS,
+    enums: Vec::new,
+};

@@ -822,7 +822,7 @@ fn rect_of(app: &App, id: &str) -> vello::kurbo::Rect {
 fn a_header_actions_place_is_where_the_row_draws_it() {
     let button = crate::widget::Button::new("new-shortcut", "New shortcut");
     let identified = tilo_ui_base::widget::Identified::new(Box::new(button), doing());
-    let shell = crate::widget::NavShell::new()
+    let shell = tilo_ui_nav::NavShell::new()
         .sidebar(crate::testing::TestLeaf::fill("sidebar").boxed().0)
         .content(crate::testing::TestLeaf::fill("content").boxed().0)
         .content_header(

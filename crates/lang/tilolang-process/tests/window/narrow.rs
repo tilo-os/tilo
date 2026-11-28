@@ -258,7 +258,7 @@ fn a_row_of_the_tree_pushes_its_note_and_back_returns_to_the_tree() {
         "the tree went behind the note its row opened"
     );
     app.harness()
-        .click_named(ui::widget::WINDOW_BACK)
+        .click_named(ui::nav_shell::WINDOW_BACK)
         .expect("the row holds Back");
     app.harness().relayout();
     assert!(
@@ -284,7 +284,7 @@ fn back_in_a_driven_phone_window_shows_the_tree_in_the_frame_it_takes() {
         "the tree stands behind the note's page"
     );
     app.harness()
-        .click_named(ui::widget::WINDOW_BACK)
+        .click_named(ui::nav_shell::WINDOW_BACK)
         .expect("the row holds Back");
     // The frame the press asks for shows the tree it returned to: the press's own frame is
     // never one that rested on what stood before it.

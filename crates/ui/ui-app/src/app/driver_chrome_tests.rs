@@ -9,8 +9,8 @@
 )]
 
 use crate::headless::Driver;
-use crate::widget::{NavShell, SidebarPlacement};
 use tilo_ui_base::theme::Theme;
+use tilo_ui_nav::{NavShell, SidebarPlacement};
 
 /// A mail window: mailboxes in the sidebar, a mailbox's messages beside them and the message
 /// read, each column titled in its header row.

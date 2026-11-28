@@ -21,7 +21,7 @@ default = ["native"]
 model = ["tilo-ui/model", "tilo-ui-base/model", "dep:runtime-collab", "dep:collaboration", "dep:collab-types", "dep:tilo-resource", "dep:tilo-reference"]
 # The native runner: the winit event loop with its AccessKit adapter, the platform chrome and
 # the OS search hand-off.
-native = ["tilo-ui/native", "tilo-ui-base/native", "dep:accesskit_winit", "dep:tilo-host-search", "dep:objc2", "dep:objc2-app-kit", "dep:windows", "dep:jni", "dep:ndk-context", "tokio/full"]
+native = ["tilo-ui/native", "tilo-ui-nav/native", "tilo-ui-base/native", "dep:accesskit_winit", "dep:tilo-host-search", "dep:objc2", "dep:objc2-app-kit", "dep:windows", "dep:jni", "dep:ndk-context", "tokio/full"]
 x11 = ["tilo-ui/x11"]
 syntax-definitions = ["tilo-ui/syntax-definitions"]
 lazy-highlight = ["tilo-ui/lazy-highlight"]
@@ -53,6 +53,7 @@ portal = ["native", "tilo-ui/portal"]
 host-portals = ["tilo-ui/host-portals"]
 
 [dependencies]
+tilo-ui-nav = { version = "0.1.0", path = "../ui-nav" }
 tilo-permissions.workspace = true
 tilo-action-types.workspace = true
 tilo-ui = { version = "0.1.0", path = "../ui-core", default-features = false }
@@ -156,6 +157,7 @@ tilo-ui-base = { path = "../ui-base", features = ["test-support"] }
 tilo-rich-edit = { path = "../tilo-rich-edit", features = ["test-support"] }
 # The charts and stat tiles the runner's tests mount, and the registry its component tests build.
 tilo-ui-charts = { path = "../ui-charts", features = ["test-support"] }
+tilo-ui-nav = { path = "../ui-nav", features = ["test-support"] }
 tilo-ui-map = { path = "../ui-map", features = ["test-support"] }
 # The closure-built action host the driver's job tests answer calls with.
 tilo-actions = { path = "../../core/actions", features = ["test-support"] }

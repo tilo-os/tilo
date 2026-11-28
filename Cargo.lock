@@ -15030,6 +15030,7 @@ dependencies = [
  "tilo-ui-base",
  "tilo-ui-charts",
  "tilo-ui-map",
+ "tilo-ui-nav",
  "tilo-workspace-agent",
  "tilo-workspace-emoji",
  "tracing",
@@ -15441,6 +15442,7 @@ dependencies = [
  "tilo-ui-charts",
  "tilo-ui-graph",
  "tilo-ui-map",
+ "tilo-ui-nav",
  "tilo-webview",
  "tracing",
  "workspace-hack",
@@ -21641,6 +21643,7 @@ dependencies = [
  "tilo-ui-base",
  "tilo-ui-charts",
  "tilo-ui-map",
+ "tilo-ui-nav",
  "tilo-ui-render",
  "tilo-vello",
  "tilo-vello-encoding",
@@ -21869,6 +21872,27 @@ dependencies = [
  "tilo-test-env",
  "tilo-ui-base",
  "tilo-vello",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-ui-nav"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-actions",
+ "tilo-automerge-fork",
+ "tilo-component-scan",
+ "tilo-settings-model",
+ "tilo-sort",
+ "tilo-taffy",
+ "tilo-test-env",
+ "tilo-ui",
+ "tilo-ui-base",
+ "tilo-vello",
+ "tilo-winit",
+ "tracing",
  "workspace-hack",
 ]
 
@@ -22799,6 +22823,7 @@ dependencies = [
  "tilo-ui-app",
  "tilo-ui-base",
  "tilo-ui-graph",
+ "tilo-ui-nav",
  "tilolang",
  "tilolang-tilo",
  "tilolang-window",
@@ -23171,6 +23196,7 @@ dependencies = [
  "tilo-render-protocol",
  "tilo-ui-app",
  "tilo-ui-base",
+ "tilo-ui-nav",
  "tilolang-runtime",
  "tilolang-tilo",
  "workspace-hack",

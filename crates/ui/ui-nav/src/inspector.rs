@@ -1,6 +1,6 @@
 //! The inspector: shown or hidden per window size class, docked beside the
 //! content, and in a window too narrow to dock it a sheet up from the
-//! window's foot ([`crate::widget::BottomSheet`]) whose grip drags it
+//! window's foot ([`tilo_ui::widget::BottomSheet`]) whose grip drags it
 //! between its detents while the content above stays live.
 
 use std::rc::Rc;
@@ -10,8 +10,8 @@ use winit::event::WindowEvent;
 
 use super::window_toolbar::Requests;
 use super::{Column, Frame, InspectorPlacement, NavGeometry, NavShell};
-use crate::widget::SheetDetent;
-use crate::widget::flap::SplitLayout;
+use tilo_ui::widget::SheetDetent;
+use tilo_ui::widget::flap::SplitLayout;
 
 /// Where the inspector stands this frame, in the window's coordinates: the
 /// one frame a retained inspector is laid out in and a painted one draws
@@ -261,8 +261,8 @@ impl NavShell {
             .sheet
             .handle_event(event, ctx, motion);
         match response {
-            crate::widget::SheetInput::Ignored => false,
-            crate::widget::SheetInput::Taken { moved } => {
+            tilo_ui::widget::SheetInput::Ignored => false,
+            tilo_ui::widget::SheetInput::Taken { moved } => {
                 if moved {
                     self.sheet_moved();
                 } else {
@@ -329,14 +329,14 @@ impl NavShell {
             let header = self.geometry.header(Column::Inspector);
             if header.height() > 0.0 {
                 let local = self.column_theme(f.theme, Some(Column::Inspector));
-                crate::widget::window_header::header_row::HeaderRowFace::in_row(
+                tilo_ui::widget::window_header::header_row::HeaderRowFace::in_row(
                     header,
                     self.inputs.borrow().metrics.row,
                 )
                 .paint_rule(f.scene, f.transform, &local);
             }
         } else {
-            crate::widget::sidebar::paint_floating_drawer(f.scene, f.transform, rect, f.theme);
+            tilo_ui::widget::sidebar::paint_floating_drawer(f.scene, f.transform, rect, f.theme);
         }
     }
 }

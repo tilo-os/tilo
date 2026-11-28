@@ -399,8 +399,8 @@ impl Staged {
     pub fn front_target(&mut self) -> Option<ResourceRef> {
         let window = self.window()?;
         let sidebar = matches!(
-            window.shell_ref().map(ui::widget::NavShell::front_pane),
-            Some(ui::widget::NavPane::Sidebar | ui::widget::NavPane::Overview)
+            window.shell_ref().map(tilo_ui_nav::NavShell::front_pane),
+            Some(tilo_ui_nav::NavPane::Sidebar | tilo_ui_nav::NavPane::Overview)
         );
         if sidebar {
             return None;
@@ -954,7 +954,7 @@ mod tests {
                 .expect("the window lies out");
             crate::layout_check::header_row_controls(&staged, (width, height))
                 .iter()
-                .any(|control| control.id == ui::widget::WINDOW_BACK)
+                .any(|control| control.id == tilo_ui_nav::WINDOW_BACK)
         };
         assert!(
             !back("YouTube cannot be reached"),
@@ -1632,7 +1632,7 @@ mod tests {
             "the page carries the shell's way back at {width}×{height}"
         );
         staged
-            .press_shell(ui::widget::WINDOW_BACK)
+            .press_shell(tilo_ui_nav::WINDOW_BACK)
             .expect("the shell's back presses");
         staged.freshen().expect("the list comes back to rest");
         let root = &staged.harness().inspection().root;
@@ -1659,7 +1659,7 @@ mod tests {
             "the task's page carries the shell's way back at {width}×{height}"
         );
         staged
-            .press_shell(ui::widget::WINDOW_BACK)
+            .press_shell(tilo_ui_nav::WINDOW_BACK)
             .expect("the shell's back presses");
         staged.freshen().expect("the list comes back to rest");
         assert!(
@@ -2033,7 +2033,7 @@ mod tests {
             );
 
             staged
-                .press_shell(ui::widget::WINDOW_BACK)
+                .press_shell(tilo_ui_nav::WINDOW_BACK)
                 .expect("the shell's back presses");
             staged.freshen().expect("the list comes back to rest");
             assert_ne!(
@@ -2276,7 +2276,7 @@ mod tests {
             // from the list a finger comes back to.
             if crate::layout_check::back_chip(&staged, (width, height)) {
                 staged
-                    .press_shell(ui::widget::WINDOW_BACK)
+                    .press_shell(tilo_ui_nav::WINDOW_BACK)
                     .expect("back to the list");
             }
             staged

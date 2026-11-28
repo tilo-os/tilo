@@ -4793,213 +4793,6 @@
       }
     },
     {
-      "name": "NavShell",
-      "doc": "A window's shell: a sidebar of places, an overview list, the content and an inspector side by side while they fit, and one at a time with Back when they do not.",
-      "props": [
-        {
-          "name": "content_kind",
-          "doc": "What the content is, which sets the narrowest it still works at: `page` unless said.",
-          "type": {
-            "choice": {
-              "name": "ContentKind",
-              "cases": [
-                "list",
-                "reading",
-                "page",
-                "grid",
-                "document",
-                "canvas"
-              ]
-            }
-          }
-        },
-        {
-          "name": "title",
-          "doc": "The content's title, in its header.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "content_key",
-          "doc": "What the content shows, as the app names it (the pane in front, the place opened): when it changes, what the content shows fades in where the one before it stood, on the theme's cross-fade. Nothing when the content is not a thing that changes.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "count",
-          "doc": "How many things the content lists, beside its title.",
-          "type": {
-            "option": "int"
-          }
-        },
-        {
-          "name": "overview_title",
-          "doc": "The overview column's title.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "overview_count",
-          "doc": "How many things the overview lists, beside its title.",
-          "type": {
-            "option": "int"
-          }
-        },
-        {
-          "name": "sidebar_title",
-          "doc": "The sidebar's title: what the places are of, the app's root.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "can_go_back",
-          "doc": "Whether the content's Back goes back now (a drill-down the app keeps).",
-          "type": "bool"
-        },
-        {
-          "name": "page",
-          "doc": "The view was opened as a page of its own (`open(r, view: v)`, a search hit's view): the window places it over what it showed, a list beside it or not, and gives it Back.",
-          "type": "bool"
-        },
-        {
-          "name": "nothing_listed",
-          "doc": "Nothing at all to list: what `content` gives is the window's empty state, in place of the overview, the content and the inspector.",
-          "type": "bool"
-        },
-        {
-          "name": "sidebar_collapse",
-          "doc": "How the sidebar stands in a window too narrow to dock it: the shell's own rule (`auto`), a drawer over the content (`drawer`), or a screen of the push stack (`screen`).",
-          "type": {
-            "choice": {
-              "name": "SidebarCollapse",
-              "cases": [
-                "auto",
-                "drawer",
-                "screen"
-              ]
-            }
-          }
-        },
-        {
-          "name": "inspector_collapse",
-          "doc": "How the inspector stands in a window too narrow to dock it: a sheet up from the window's foot (`sheet`, the default) or a drawer in from its trailing edge (`drawer`).",
-          "type": {
-            "choice": {
-              "name": "InspectorCollapse",
-              "cases": [
-                "sheet",
-                "drawer"
-              ]
-            }
-          }
-        },
-        {
-          "name": "sidebar_open",
-          "doc": "Whether the view asks for the sidebar open (`true`) or closed (`false`). Applied when it changes; the person's own toggle stands until the view asks for another state.",
-          "type": {
-            "option": "bool"
-          }
-        },
-        {
-          "name": "inspector_open",
-          "doc": "Whether the view asks for the inspector open or closed. Applied when it changes; the person's own toggle stands until the view asks for another state.",
-          "type": {
-            "option": "bool"
-          }
-        }
-      ],
-      "parts": [
-        {
-          "name": "sidebar_actions",
-          "doc": "The sidebar's controls in its header: the action that makes what it lists (a \"+\"), and where a person's new thing goes.",
-          "accepts": "view",
-          "many": true
-        },
-        {
-          "name": "sidebar",
-          "doc": "The places of the app: a navigation list.",
-          "accepts": "view"
-        },
-        {
-          "name": "overview",
-          "doc": "The list the content is chosen from.",
-          "accepts": "view"
-        },
-        {
-          "name": "content",
-          "doc": "What the window is for.",
-          "accepts": "view",
-          "default": true
-        },
-        {
-          "name": "inspector",
-          "doc": "Details of what the content shows, beside it.",
-          "accepts": "view"
-        },
-        {
-          "name": "actions",
-          "doc": "The content's actions, in its header.",
-          "accepts": "view",
-          "many": true
-        },
-        {
-          "name": "band",
-          "doc": "The band across the window's foot: what plays, and the controls that steer it, under every column. An app that shows a player puts it here, as the native shell did.",
-          "accepts": "view"
-        },
-        {
-          "name": "overview_actions",
-          "doc": "The overview's actions, in its header: what the list's owner offers.",
-          "accepts": "view",
-          "many": true
-        }
-      ],
-      "events": [
-        {
-          "name": "back",
-          "doc": "The content's Back was pressed."
-        },
-        {
-          "name": "search",
-          "doc": "The text the window's search holds, narrowing what the frame lists as a chosen place does; empty while the search is closed.",
-          "value": "text"
-        },
-        {
-          "name": "drop",
-          "doc": "Files were dropped on the window, anywhere no component of its own took them: each as a `File` — its name, its media type, its size and where its bytes are — kept by the window. What an app takes a dropped document with, wherever on it the person lets go.",
-          "value": {
-            "list": "file"
-          }
-        }
-      ],
-      "state": [
-        {
-          "name": "pane",
-          "doc": "The column in front of a narrow window.",
-          "type": {
-            "option": {
-              "choice": {
-                "name": "NavPane",
-                "cases": [
-                  "sidebar",
-                  "overview",
-                  "content"
-                ]
-              }
-            }
-          }
-        }
-      ],
-      "semantics": {
-        "role": "Window",
-        "label": "title"
-      }
-    },
-    {
       "name": "NumberInput",
       "doc": "A number with a step either side (a page size, a margin, a count), set by typing, its steppers and the arrow keys within its range.",
       "props": [
@@ -10700,6 +10493,213 @@
       ],
       "semantics": {
         "role": "Image",
+        "label": "title"
+      }
+    },
+    {
+      "name": "NavShell",
+      "doc": "A window's shell: a sidebar of places, an overview list, the content and an inspector side by side while they fit, and one at a time with Back when they do not.",
+      "props": [
+        {
+          "name": "content_kind",
+          "doc": "What the content is, which sets the narrowest it still works at: `page` unless said.",
+          "type": {
+            "choice": {
+              "name": "ContentKind",
+              "cases": [
+                "list",
+                "reading",
+                "page",
+                "grid",
+                "document",
+                "canvas"
+              ]
+            }
+          }
+        },
+        {
+          "name": "title",
+          "doc": "The content's title, in its header.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "content_key",
+          "doc": "What the content shows, as the app names it (the pane in front, the place opened): when it changes, what the content shows fades in where the one before it stood, on the theme's cross-fade. Nothing when the content is not a thing that changes.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "count",
+          "doc": "How many things the content lists, beside its title.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "overview_title",
+          "doc": "The overview column's title.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "overview_count",
+          "doc": "How many things the overview lists, beside its title.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "sidebar_title",
+          "doc": "The sidebar's title: what the places are of, the app's root.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "can_go_back",
+          "doc": "Whether the content's Back goes back now (a drill-down the app keeps).",
+          "type": "bool"
+        },
+        {
+          "name": "page",
+          "doc": "The view was opened as a page of its own (`open(r, view: v)`, a search hit's view): the window places it over what it showed, a list beside it or not, and gives it Back.",
+          "type": "bool"
+        },
+        {
+          "name": "nothing_listed",
+          "doc": "Nothing at all to list: what `content` gives is the window's empty state, in place of the overview, the content and the inspector.",
+          "type": "bool"
+        },
+        {
+          "name": "sidebar_collapse",
+          "doc": "How the sidebar stands in a window too narrow to dock it: the shell's own rule (`auto`), a drawer over the content (`drawer`), or a screen of the push stack (`screen`).",
+          "type": {
+            "choice": {
+              "name": "SidebarCollapse",
+              "cases": [
+                "auto",
+                "drawer",
+                "screen"
+              ]
+            }
+          }
+        },
+        {
+          "name": "inspector_collapse",
+          "doc": "How the inspector stands in a window too narrow to dock it: a sheet up from the window's foot (`sheet`, the default) or a drawer in from its trailing edge (`drawer`).",
+          "type": {
+            "choice": {
+              "name": "InspectorCollapse",
+              "cases": [
+                "sheet",
+                "drawer"
+              ]
+            }
+          }
+        },
+        {
+          "name": "sidebar_open",
+          "doc": "Whether the view asks for the sidebar open (`true`) or closed (`false`). Applied when it changes; the person's own toggle stands until the view asks for another state.",
+          "type": {
+            "option": "bool"
+          }
+        },
+        {
+          "name": "inspector_open",
+          "doc": "Whether the view asks for the inspector open or closed. Applied when it changes; the person's own toggle stands until the view asks for another state.",
+          "type": {
+            "option": "bool"
+          }
+        }
+      ],
+      "parts": [
+        {
+          "name": "sidebar_actions",
+          "doc": "The sidebar's controls in its header: the action that makes what it lists (a \"+\"), and where a person's new thing goes.",
+          "accepts": "view",
+          "many": true
+        },
+        {
+          "name": "sidebar",
+          "doc": "The places of the app: a navigation list.",
+          "accepts": "view"
+        },
+        {
+          "name": "overview",
+          "doc": "The list the content is chosen from.",
+          "accepts": "view"
+        },
+        {
+          "name": "content",
+          "doc": "What the window is for.",
+          "accepts": "view",
+          "default": true
+        },
+        {
+          "name": "inspector",
+          "doc": "Details of what the content shows, beside it.",
+          "accepts": "view"
+        },
+        {
+          "name": "actions",
+          "doc": "The content's actions, in its header.",
+          "accepts": "view",
+          "many": true
+        },
+        {
+          "name": "band",
+          "doc": "The band across the window's foot: what plays, and the controls that steer it, under every column. An app that shows a player puts it here, as the native shell did.",
+          "accepts": "view"
+        },
+        {
+          "name": "overview_actions",
+          "doc": "The overview's actions, in its header: what the list's owner offers.",
+          "accepts": "view",
+          "many": true
+        }
+      ],
+      "events": [
+        {
+          "name": "back",
+          "doc": "The content's Back was pressed."
+        },
+        {
+          "name": "search",
+          "doc": "The text the window's search holds, narrowing what the frame lists as a chosen place does; empty while the search is closed.",
+          "value": "text"
+        },
+        {
+          "name": "drop",
+          "doc": "Files were dropped on the window, anywhere no component of its own took them: each as a `File` — its name, its media type, its size and where its bytes are — kept by the window. What an app takes a dropped document with, wherever on it the person lets go.",
+          "value": {
+            "list": "file"
+          }
+        }
+      ],
+      "state": [
+        {
+          "name": "pane",
+          "doc": "The column in front of a narrow window.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "NavPane",
+                "cases": [
+                  "sidebar",
+                  "overview",
+                  "content"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Window",
         "label": "title"
       }
     },

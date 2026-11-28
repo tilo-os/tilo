@@ -1971,7 +1971,7 @@ impl AppCheck<'_> {
                 // its sidebar toggle, which the app's page never covers: the list is a screen of
                 // the window's, not a page pressed over the page it opened.
                 if sidebar_toggle(&staged, viewport) {
-                    staged.press_shell(ui::widget::WINDOW_SIDEBAR)?;
+                    staged.press_shell(tilo_ui_nav::WINDOW_SIDEBAR)?;
                     layer = format!("{layer}, then the sidebar");
                     for layout in of_size.iter().copied() {
                         staged.lay_out(
@@ -1987,7 +1987,7 @@ impl AppCheck<'_> {
                     tapped = unchosen_row(&staged, viewport);
                 } else if back_chip(&staged, viewport) {
                     let shown = staged.front_target();
-                    staged.press_shell(ui::widget::WINDOW_BACK)?;
+                    staged.press_shell(tilo_ui_nav::WINDOW_BACK)?;
                     layer = format!("{layer}, then Back pressed");
                     for layout in of_size.iter().copied() {
                         staged.lay_out(

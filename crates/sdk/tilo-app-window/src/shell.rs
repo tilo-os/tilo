@@ -320,7 +320,7 @@ fn first_state(nodes: &[UiNode]) -> Option<&UiNode> {
 /// it has none of where that list would stand (a chat's places over "No channels yet"), and what is
 /// where the thing it chooses would show ("No channel open"). While neither holds a list nor a
 /// thing (no channel at all, a first run), the window shows the app's words once
-/// ([`ui::widget::NavShell::nothing_listed`]), on the screen a window opens on, so a narrow window
+/// ([`tilo_ui_nav::NavShell::nothing_listed`]), on the screen a window opens on, so a narrow window
 /// fronts the same state whichever column stood in front before. The app's words are all it adds:
 /// the state's title, its icon and the line under them are the ones it declared. Its bar keeps the
 /// actions its columns offered, so the way to make the first thing is there at every width, and the

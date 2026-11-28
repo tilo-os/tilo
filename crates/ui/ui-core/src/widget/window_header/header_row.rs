@@ -165,7 +165,7 @@ impl HeaderRowFace {
 
     /// The face of an exact row rect (the shell computes its rows itself).
     #[must_use]
-    pub(crate) fn in_row(row: Rect, metrics: HeaderRowMetrics) -> Self {
+    pub fn in_row(row: Rect, metrics: HeaderRowMetrics) -> Self {
         let mut face = Self {
             row,
             toggle: Rect::ZERO,
@@ -377,7 +377,7 @@ fn count_style(theme: &Theme) -> tilo_ui_base::text_render::TextStyle {
 }
 
 /// The width a title and its count take in the row.
-pub(crate) fn measure_title(
+pub fn measure_title(
     text: &mut TextRenderer,
     theme: &Theme,
     title: &str,
@@ -418,7 +418,7 @@ fn count_pill_size(text: &mut TextRenderer, theme: &Theme, count: usize) -> (f64
 /// The least width a title needs to read as words rather than as an ellipsis alone: its first
 /// letter and the ellipsis that says the rest is cut. The count beside it gives way first, so it
 /// never takes that width from the words.
-pub(crate) fn least_title_width(text: &mut TextRenderer, theme: &Theme, title: &str) -> f64 {
+pub fn least_title_width(text: &mut TextRenderer, theme: &Theme, title: &str) -> f64 {
     let first = match tilo_ui_base::text_break::grapheme_indices(title).nth(1) {
         Some((end, _)) => title.get(..end).unwrap_or(title),
         None => title,
@@ -434,7 +434,7 @@ pub(crate) fn least_title_width(text: &mut TextRenderer, theme: &Theme, title: &
 
 /// Paint a header title in `band`: `Heading`, primary ink, vertically centred and elided to the band;
 /// the count follows as a quiet pill in `Caption` tabular figures (the `SectionHeader::count` look).
-pub(crate) fn paint_title_in(
+pub fn paint_title_in(
     scene: &mut Scene,
     transform: Affine,
     text: &mut TextRenderer,

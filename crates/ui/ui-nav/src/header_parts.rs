@@ -1,6 +1,6 @@
 //! The retained parts of a column header the shell owns itself: the title
 //! (with its count). The actions that do not fit overflow into the toolkit's
-//! one button ([`crate::widget::OverflowButton`]).
+//! one button ([`tilo_ui::widget::OverflowButton`]).
 
 use std::collections::HashMap;
 use tilo_ui_base::num::f32_of_f64;
@@ -8,7 +8,7 @@ use tilo_ui_base::num::f32_of_f64;
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::kurbo::Rect;
 
-use crate::widget::window_header::header_row;
+use tilo_ui::widget::window_header::header_row;
 
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;

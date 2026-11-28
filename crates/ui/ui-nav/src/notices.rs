@@ -1,10 +1,10 @@
 //! The window's notice: an operation's result or failure, shown in the
-//! window's bar ([`crate::window_toolbar::notify`]) for a while, with at
+//! window's bar ([`tilo_ui::window_toolbar::notify`]) for a while, with at
 //! most one button there.
 
 use super::NavShell;
-use crate::widget::toast::ToastKind;
-use crate::window_toolbar::{ToolbarAction, ToolbarNotice};
+use tilo_ui::widget::toast::ToastKind;
+use tilo_ui::window_toolbar::{ToolbarAction, ToolbarNotice};
 
 pub const WINDOW_NOTICE_ACTION: &str = "nav-shell-notice";
 
@@ -37,7 +37,7 @@ impl NavShell {
 
     /// Show a notice with one button beside it in the bar, named `action`
     /// ("Undo") with the icon `icon` ("undo-2"). It stays
-    /// [`ACTION_NOTICE_LIFETIME`](crate::widget::toast::ACTION_NOTICE_LIFETIME), long enough
+    /// [`ACTION_NOTICE_LIFETIME`](tilo_ui::widget::toast::ACTION_NOTICE_LIFETIME), long enough
     /// to reach the button.
     /// [`Self::take_toast_action`] reports the press.
     pub fn toast_with_action(
@@ -56,9 +56,9 @@ impl NavShell {
 
     fn show_notice(&mut self, notice: ShellNotice) {
         let lifetime = if notice.action.is_some() {
-            crate::widget::toast::ACTION_NOTICE_LIFETIME
+            tilo_ui::widget::toast::ACTION_NOTICE_LIFETIME
         } else {
-            crate::widget::toast::NOTICE_LIFETIME
+            tilo_ui::widget::toast::NOTICE_LIFETIME
         };
         self.notice.show_for(notice, lifetime);
         self.notice_pressed = None;

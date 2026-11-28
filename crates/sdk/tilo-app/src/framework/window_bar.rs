@@ -73,8 +73,8 @@
 //! Outside a Tilo session (a window of its own, a test) nothing hosts the
 //! parts, and the app's own row — if it keeps one — stays as it was.
 
+use crate::nav_shell::{NavShell, WindowBarLink};
 use tilo_resource::{Effect, Path, Resource};
-use ui_core::widget::{NavShell, WindowBarLink};
 use ui_core::window_toolbar::{
     ToolbarAction, ToolbarEvent, ToolbarLocation, ToolbarView, ToolbarViews, WindowToolbar,
 };

@@ -170,7 +170,7 @@ fn a_phone_folds_the_sidebar_into_a_drawer() {
         said(&window)
     );
 
-    press_window_control(&mut window, ui::widget::WINDOW_BACK);
+    press_window_control(&mut window, tilo_ui_nav::WINDOW_BACK);
     settle_motion(&mut window, ui::time::Duration::from_secs(1));
     assert!(
         !places_in_front(&window, PHONE).is_empty(),

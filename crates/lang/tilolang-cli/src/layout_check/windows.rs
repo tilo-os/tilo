@@ -1687,7 +1687,7 @@ fn back_to_the_list(staged: &mut stage::Staged, size: (u32, u32)) {
         return;
     }
     staged
-        .press_shell(ui::widget::WINDOW_BACK)
+        .press_shell(tilo_ui_nav::WINDOW_BACK)
         .expect("the shell's back presses");
     staged.freshen().expect("the list comes back to rest");
     assert!(

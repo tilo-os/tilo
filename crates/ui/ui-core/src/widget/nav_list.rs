@@ -1885,13 +1885,13 @@ impl Filterable for NavList {
 
 /// Lets the shell hosting a list learn that the person just chose a
 /// destination, so a narrow window can move on to the content.
-pub(crate) trait NavigationSource {
+pub trait NavigationSource {
     fn take_navigation(&mut self) -> bool;
 }
 
 /// A rail whose width follows its destinations' words
 /// ([`crate::widget::nav_list::nav_row::rail_width_fitting`]).
-pub(crate) trait RailExtent {
+pub trait RailExtent {
     fn fitted_rail_width(&self, theme: &tilo_ui_base::Theme) -> Option<f64>;
 }
 
@@ -1916,7 +1916,7 @@ impl RailExtent for NavList {
 
 /// A navigation sidebar whose width decides how it reads: narrow, a rail of tiles (icon over a
 /// short caption); wide, a list (icon beside the label).
-pub(crate) trait AdaptiveNav {
+pub trait AdaptiveNav {
     /// The width of the list as a rail: its longest word whole, up to the
     /// rail's cap ([`crate::widget::nav_list::nav_row::sidebar_rail_width_fitting`]).
     fn rail_fit(&self, theme: &tilo_ui_base::Theme) -> f64;
@@ -1971,13 +1971,11 @@ impl AdaptiveNav for NavList {
 }
 
 /// The navigation sidebar `widget` is, when it is one ([`AdaptiveNav`]).
-pub(crate) fn adaptive(
-    widget: &dyn tilo_ui_base::widget::Widget,
-) -> Option<&(dyn AdaptiveNav + 'static)> {
+pub fn adaptive(widget: &dyn tilo_ui_base::widget::Widget) -> Option<&(dyn AdaptiveNav + 'static)> {
     tilo_ui_base::widget::capability::capability::<dyn AdaptiveNav>(widget)
 }
 
-pub(crate) fn adaptive_mut(
+pub fn adaptive_mut(
     widget: &mut dyn tilo_ui_base::widget::Widget,
 ) -> Option<&mut (dyn AdaptiveNav + 'static)> {
     tilo_ui_base::widget::capability::capability_mut::<dyn AdaptiveNav>(widget)
@@ -1985,7 +1983,7 @@ pub(crate) fn adaptive_mut(
 
 /// The width of the first rail in `widget`'s subtree under `theme`
 /// ([`RailExtent`]), or `None` where it holds none.
-pub(crate) fn fitted_rail_width(
+pub fn fitted_rail_width(
     widget: &dyn tilo_ui_base::widget::Widget,
     theme: &tilo_ui_base::Theme,
 ) -> Option<f64> {
@@ -2006,7 +2004,7 @@ impl NavigationSource for NavList {
 
 /// Whether anything in `widget`'s subtree reported a navigation since the
 /// last ask (and forget it).
-pub(crate) fn take_navigation(widget: &mut dyn tilo_ui_base::widget::Widget) -> bool {
+pub fn take_navigation(widget: &mut dyn tilo_ui_base::widget::Widget) -> bool {
     if let Some(source) =
         tilo_ui_base::widget::capability::capability_mut::<dyn NavigationSource>(widget)
     {

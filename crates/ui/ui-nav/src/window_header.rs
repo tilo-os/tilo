@@ -3,7 +3,7 @@
 //! ([`WindowHeader`]).
 
 use super::NavShell;
-use crate::widget::{HistoryControl, WindowHeader};
+use tilo_ui::widget::{HistoryControl, WindowHeader};
 
 impl WindowHeader for NavShell {
     fn set_window_presents_search(&mut self, presents: bool) -> bool {
@@ -30,7 +30,7 @@ impl WindowHeader for NavShell {
         self.invalidate();
     }
 
-    fn set_sync_status(&mut self, status: Option<&crate::widget::WindowStatus>) -> bool {
+    fn set_sync_status(&mut self, status: Option<&tilo_ui::widget::WindowStatus>) -> bool {
         if self
             .sync_status
             .set(status.map(|status| status.text.as_str()))
@@ -41,7 +41,7 @@ impl WindowHeader for NavShell {
         let action = status.and_then(|status| status.action.as_ref());
         if self.status_action_spec.as_ref() != action {
             self.status_action_spec = action.cloned();
-            let next = action.map(crate::widget::StatusAction::button);
+            let next = action.map(tilo_ui::widget::StatusAction::button);
             // The host's tree may still point at the button it replaces
             // until it builds again.
             if let Some(old) = std::mem::replace(&mut self.status_action, next) {
@@ -54,7 +54,7 @@ impl WindowHeader for NavShell {
         true
     }
 
-    fn set_window_bar(&mut self, bar: Option<crate::widget::WindowBar>) -> bool {
+    fn set_window_bar(&mut self, bar: Option<tilo_ui::widget::WindowBar>) -> bool {
         let controls = bar.map(|bar| bar.controls_width);
         let listed = bar.is_some_and(|bar| bar.lists_actions);
         let relayout = {
@@ -77,13 +77,13 @@ impl WindowHeader for NavShell {
         self.geometry.header_height
     }
 
-    fn column_frames(&self) -> Vec<crate::widget::ColumnFrame> {
+    fn column_frames(&self) -> Vec<tilo_ui::widget::ColumnFrame> {
         let g = &self.geometry;
         super::Column::ALL
             .into_iter()
             .filter_map(|column| {
                 let rect = g.column(column);
-                (rect.width() > 0.0 && rect.height() > 0.0).then(|| crate::widget::ColumnFrame {
+                (rect.width() > 0.0 && rect.height() > 0.0).then(|| tilo_ui::widget::ColumnFrame {
                     key: column.key(),
                     column: rect,
                     header: g.header(column),
@@ -93,9 +93,9 @@ impl WindowHeader for NavShell {
             .collect()
     }
 
-    fn window_bar_part(&self) -> Option<crate::widget::WindowBarPart> {
+    fn window_bar_part(&self) -> Option<tilo_ui::widget::WindowBarPart> {
         let g = &self.geometry;
-        (g.window_controls.width() > 0.0).then_some(crate::widget::WindowBarPart {
+        (g.window_controls.width() > 0.0).then_some(tilo_ui::widget::WindowBarPart {
             row: g.window_row,
             controls: g.window_controls,
         })

@@ -188,7 +188,7 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
                 1 => Box::new(crate::widget::Column::new().push(root)),
                 2 => Box::new(crate::widget::Scrollable::new_vertical().with_child(root)),
                 _ => Box::new(
-                    crate::widget::NavShell::new()
+                    tilo_ui_nav::NavShell::new()
                         .sidebar(Box::new(crate::widget::Text::new("sidebar")))
                         .content(root),
                 ),
@@ -246,7 +246,7 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
                 1 => Box::new(crate::widget::Column::new().push(Box::new(root))),
                 2 => Box::new(crate::widget::Scrollable::new_vertical().with_child(Box::new(root))),
                 _ => Box::new(
-                    crate::widget::NavShell::new()
+                    tilo_ui_nav::NavShell::new()
                         .sidebar(Box::new(crate::widget::Text::new("sidebar")))
                         .content(Box::new(root)),
                 ),

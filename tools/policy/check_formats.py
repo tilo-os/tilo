@@ -80,6 +80,7 @@ SCOPES += (
     Path("crates/ui/tilo-rich-edit"),
     Path("crates/ui/ui-base"),
     Path("crates/ui/ui-charts"),
+    Path("crates/ui/ui-nav"),
     Path("crates/ui/ui-map"),
     Path("crates/ui/ui-core"),
     Path("crates/ui/ui-render"),

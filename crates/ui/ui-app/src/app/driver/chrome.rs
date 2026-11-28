@@ -10,12 +10,10 @@ use super::Driver;
 use crate::headless::InspectionNode;
 use crate::widget::window_header::{content_bar, root_header_row};
 use crate::widget::window_toolbar_row::SIDEBAR_TARGET;
-use crate::{
-    widget::ColumnFrame, widget::NavPane, widget::NavShell, widget::SidebarPlacement,
-    widget::WindowFrame, widget::WindowHeader,
-};
+use crate::{widget::ColumnFrame, widget::WindowFrame, widget::WindowHeader};
 use tilo_ui_base::a11y::AccessNode;
 use tilo_ui_base::widget::Widget;
+use tilo_ui_nav::{NavPane, NavShell, SidebarPlacement};
 
 /// The sidebar toggle a shell's own header row holds while the app's parts are not in a bar.
 const ROW_SIDEBAR_TOGGLE: &str = "nav-shell-sidebar";

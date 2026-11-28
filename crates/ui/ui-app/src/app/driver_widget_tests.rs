@@ -17,12 +17,10 @@ use winit::keyboard::{Key, ModifiersState};
 use crate::app::driver::Driver;
 use crate::headless::ControlInput;
 use crate::state::State;
-use crate::{
-    widget::Button, widget::Column, widget::Labelled, widget::NavShell, widget::Text,
-    widget::TextInput,
-};
+use crate::{widget::Button, widget::Column, widget::Labelled, widget::Text, widget::TextInput};
 use tilo_ui_base::widget::Widget;
 use tilo_ui_base::{platform::Platform, platform::PlatformConventions};
+use tilo_ui_nav::NavShell;
 
 /// A shell with a sidebar and content, as an app shows one.
 fn shell() -> NavShell {

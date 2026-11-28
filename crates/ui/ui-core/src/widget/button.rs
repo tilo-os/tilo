@@ -296,24 +296,24 @@ impl Button {
         self
     }
 
-    pub(crate) fn kind(&self) -> ButtonRole {
+    pub fn kind(&self) -> ButtonRole {
         self.role
     }
 
-    pub(crate) fn menu_group(&self) -> Option<&str> {
+    pub fn menu_group(&self) -> Option<&str> {
         self.menu_group.as_deref()
     }
 
-    pub(crate) fn glyph(&self) -> Option<tilo_ui_base::icons::Icon> {
+    pub fn glyph(&self) -> Option<tilo_ui_base::icons::Icon> {
         self.icon
     }
 
-    pub(crate) fn declared_key(&self) -> Option<tilo_ui_base::platform::Shortcut> {
+    pub fn declared_key(&self) -> Option<tilo_ui_base::platform::Shortcut> {
         self.shortcut.clone()
     }
 
     /// Why it cannot be pressed now, where that says more than its label.
-    pub(crate) fn why_disabled(&self) -> Option<&str> {
+    pub fn why_disabled(&self) -> Option<&str> {
         self.description.as_deref()
     }
 
@@ -894,7 +894,7 @@ impl Button {
 
     /// A header action that stands in its header's menu rather than in the row
     /// ([`Self::in_menu`]).
-    pub(crate) fn is_menu_only(&self) -> bool {
+    pub fn is_menu_only(&self) -> bool {
         self.menu_only
     }
 

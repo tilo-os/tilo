@@ -28,16 +28,14 @@ use tilo_render_protocol::patch::validate::{PatchLimits, Validator};
 use tilo_render_protocol::patch::{self as wire, Answer, Level, ToApp, ToUi, Transport, Words};
 use tilo_ui_base::{tokens::MotionSource, tokens::Rhythm};
 use tilo_ui_base::{widget::Element, widget::PictureInPictureAsk, widget::Widget};
+use tilo_ui_nav::{NavPane, NavShell, SidebarPlacement};
 use ui::floating_surface::{
     FloatingRole, FloatingSource, FloatingSurfaceHostMessage, FloatingSurfacePresentation,
     FloatingSurfaceRequest, protocol_rect,
 };
 use ui::widget::arrange::{Fit, Part, Stack};
 use ui::widget::toast::ToastKind;
-use ui::{
-    widget::Absent, widget::NavPane, widget::NavShell, widget::PermissionPrompt,
-    widget::PromptChoice, widget::SidebarPlacement,
-};
+use ui::{widget::Absent, widget::PermissionPrompt, widget::PromptChoice};
 
 use crate::i18n::{t, t_args};
 use crate::pane::Pane;
