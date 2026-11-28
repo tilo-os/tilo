@@ -707,6 +707,7 @@ d-tqnx77nc = Abschnitt einer Fahrt
     .w-towards = { $line } towards { $headsign }
 
 d-3p2cxc7k = Zeile eines behaltenen Bereichs
+    .w-on-this-device = { $size_text } auf diesem Gerät
     .w-of-tiles = { $done } von { $total } Kacheln
     .w-delete-downloaded-area = Heruntergeladenes Gebiet löschen
     .w-stop-downloading = Download stoppen
@@ -881,6 +882,7 @@ d-l4j52bmq-area = Bereich
 d-l4j52bmq-j = Auftrag
 
 d-oeeojlox = Karte
+    .w-about-to-download = Etwa { $size_text } zum Herunterladen
     .w-search-places = Search places
     .w-results = Results
     .w-nearby = Nearby
@@ -928,4 +930,88 @@ d-oeeojlox = Karte
     .w-done = Done
     .w-map-data-and-map-tiles-openstreetmap = Map data and map tiles © OpenStreetMap contributors.
     .w-the-map-data-is-openstreetmap-contributors = The map data is © OpenStreetMap contributors, available under the Open Database License (ODbL). The map tiles are OpenStreetMap Standard tiles, used under the OpenStreetMap Foundation's tile usage policy.
+
+d-6lpktdi4 = Bytes
+    .doc = Wie viele Bytes seine gespeicherten Bilder auf diesem Gerät einnehmen.
+
+d-ev3h2p2t = Größenabfrage
+    .doc = Das Gebiet und die Stufen, für die die Größe eines Gebiets gefragt wird, bevor etwas davon gespeichert ist.
+    .noun = { $count ->
+        [one] Größenabfrage
+       *[other] Größenabfragen
+    }
+
+d-eo5sioxh = Norden
+
+d-frl3lfpj = Süden
+
+d-whqip2ev = Osten
+
+d-na3j2ote = Westen
+
+d-auc6qawd = Kleinste Stufe
+
+d-ncoxj26z = Größte Stufe
+
+d-ev3h2p2t-filter-north = Norden
+
+d-ev3h2p2t-filter-south = Süden
+
+d-ev3h2p2t-filter-east = Osten
+
+d-ev3h2p2t-filter-west = Westen
+
+d-ev3h2p2t-filter-least_zoom = Kleinste Stufe
+
+d-ev3h2p2t-filter-most_zoom = Größte Stufe
+
+d-wc5l752q = Schätzung
+    .doc = Eine Route, die dieses Gerät zeichnet, weil der Routendienst nicht antworten konnte: eine gerade Linie zwischen den genannten Orten, mit dem Grund der Ablehnung. Sie gehört diesem Gerät, nie dem Arbeitsbereich, und räumt sich auf, sobald eine echte Route gefunden ist.
+    .noun = { $count ->
+        [one] Schätzung
+       *[other] Schätzungen
+    }
+
+d-swubdrlp = Routen
+    .doc = Die Schätzung, die dieses Gerät gezeichnet hat, solange keine echte Route steht.
+
+d-etpwzex3 = Grund
+    .doc = Warum der Routendienst nicht antworten konnte.
+
+d-2tw4k5ez = Geschätzte Kacheln
+    .doc = Was das Speichern der Ansicht, die das Offline-Blatt zeigt, kosten würde, gezählt und gemessen vom Kachelmotor.
+
+d-grvfkavq = Geschätzte Bytes
+
+d-pdbplpkr = Gezeigte Schätzung
+    .doc = Behält `route` als Schätzung dieses Geräts und den Grund, warum der Dienst nicht antworten konnte.
+
+d-pdbplpkr-route = Route
+
+d-pdbplpkr-why = Grund
+
+d-bmcrzcpz = Ansicht schätzen
+    .doc = Nennt, was das Speichern eines Gebiets dieser Ränder und Stufen kosten würde, aus der Zählung des Kachelmotors und der Größe seiner gespeicherten Bilder.
+
+d-bmcrzcpz-north = Norden
+
+d-bmcrzcpz-south = Süden
+
+d-bmcrzcpz-east = Osten
+
+d-bmcrzcpz-west = Westen
+
+d-bmcrzcpz-least_zoom = Kleinste Stufe
+
+d-bmcrzcpz-most_zoom = Größte Stufe
+
+d-g2c2z6xq = Gespeicherte Größen lesen
+    .doc = Liest, was jedes gespeicherte Gebiet auf diesem Gerät einnimmt, wie der Kachelmotor seine Bilder misst.
+
+d-45o6dckm = Größe als Text
+    .w-b = { $bytes } B
+    .w-kb = { $precise } kB
+    .w-mb = { $precise } MB
+    .w-gb = { $precise } GB
+
 

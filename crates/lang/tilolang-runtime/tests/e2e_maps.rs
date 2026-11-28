@@ -140,6 +140,7 @@ mod cases {
                     "forget-area" => Ok(r#"{"freed":1024}"#.to_owned()),
                     "clear-saved" => Ok(r#"{"freed":4096}"#.to_owned()),
                     "kept-areas" => Ok("[]".to_owned()),
+                    "estimate-area" => Ok(r#"{"tiles":12,"bytes":216000}"#.to_owned()),
                     _ => Err(format!("`{op}` is no op this device runs")),
                 },
                 &Files::default(),
@@ -152,20 +153,20 @@ mod cases {
             let app = App::compile(SOURCE, &[]);
             app.load(&rt);
             let root = rt.create_root("Atlas").unwrap();
-            // What this device keeps offline, as opening the app makes it.
-            let kept_ty = app
-                .meta()
-                .types
-                .iter()
-                .find(|declared| declared.name == "KeptAreas")
-                .expect("the kept areas type")
-                .id
-                .clone();
-            rt.create_root_at(
-                &format!("devices/local/{}/root-{kept_ty}", app.meta().app),
-                &kept_ty,
-            )
-            .expect("the device's kept areas");
+            // What this device keeps, as opening the app makes it: the areas offline and the
+            // route it estimates when the routing service cannot answer.
+            for name in ["KeptAreas", "Estimate"] {
+                let ty = app
+                    .meta()
+                    .types
+                    .iter()
+                    .find(|declared| declared.name == name)
+                    .unwrap_or_else(|| panic!("the {name} type"))
+                    .id
+                    .clone();
+                rt.create_root_at(&format!("devices/local/{}/root-{ty}", app.meta().app), &ty)
+                    .unwrap_or_else(|error| panic!("the device's {name} root: {error:?}"));
+            }
             Self {
                 rt,
                 app,
@@ -305,17 +306,22 @@ mod cases {
             self.records(&self.root, "journeys")
         }
 
-        /// The areas this device keeps offline, as its own root lists them.
-        fn offline(&self) -> Vec<ResourceRef> {
+        /// This device's root of the type `name`.
+        fn device_root(&self, name: &str) -> ResourceRef {
             let meta = self.app.meta();
             let ty = meta
                 .types
                 .iter()
-                .find(|declared| declared.name == "KeptAreas")
-                .expect("the kept areas type")
+                .find(|declared| declared.name == name)
+                .unwrap_or_else(|| panic!("the {name} type"))
                 .id
                 .clone();
-            let root = ResourceRef::root(format!("devices/local/{}/root-{ty}", meta.app), ty);
+            ResourceRef::root(format!("devices/local/{}/root-{ty}", meta.app), ty)
+        }
+
+        /// The areas this device keeps offline, as its own root lists them.
+        fn offline(&self) -> Vec<ResourceRef> {
+            let root = self.device_root("KeptAreas");
             self.records(&root, "kept")
         }
 
@@ -1573,6 +1579,101 @@ mod cases {
         assert!(
             matches!(own, Value::Opt(None) | Value::Missing),
             "a person's own view docks nobody on the place: {own:?}"
+        );
+
+    }
+
+    }
+
+    tilo_test_env::scenario! {
+        fn a_map_estimates_a_refused_route_and_an_offline_area_size;
+
+    phase a_refused_route_is_estimated_on_this_device;
+    {
+        let m = Maps::new();
+        m.search("Marienplatz");
+        *m.web.offline.borrow_mut() = true;
+        m.call(
+            "directions",
+            vec![
+                Value::resource(&m.root),
+                Value::Text("Marienplatz".to_owned()),
+                Value::Text("Café Glockenspiel".to_owned()),
+            ],
+        );
+        assert!(
+            m.routes().is_empty(),
+            "a refused route is never written into the workspace's map"
+        );
+        let estimate = m.device_root("Estimate");
+        let held = m.records(&estimate, "routes");
+        assert_eq!(held.len(), 1, "one estimate stands while no real route does");
+        let route = held[0].clone();
+        assert!(
+            m.float(&route, "distance_m") > 0.0,
+            "the estimate is a real distance between the two places"
+        );
+        assert!(
+            m.float(&route, "duration_s") > 0.0,
+            "and a real time for the mode it travels"
+        );
+        let steps = m.record_values(&route, "steps");
+        assert_eq!(m.text_of(&steps[0], "instruction"), "Head east to start");
+        assert_eq!(
+            m.text_of(&steps[1], "instruction"),
+            "Turn right toward destination"
+        );
+        assert_eq!(
+            m.text_of(&steps[2], "instruction"),
+            "Arrive at your destination"
+        );
+        assert!(
+            m.text(&m.root, "status").contains("The offline estimate is shown."),
+            "the status says the route is an estimate: {}",
+            m.text(&m.root, "status")
+        );
+
+        // A route the service does find replaces the estimate and clears it.
+        *m.web.offline.borrow_mut() = false;
+        m.call(
+            "directions",
+            vec![
+                Value::resource(&m.root),
+                Value::Text("Marienplatz".to_owned()),
+                Value::Text("Café Glockenspiel".to_owned()),
+            ],
+        );
+        assert!(!m.routes().is_empty(), "the service's route is kept");
+        assert!(
+            m.records(&estimate, "routes").is_empty(),
+            "the estimate is cleared once a real route is found"
+        );
+    }
+
+    phase an_offline_area_quotes_the_size_it_will_take;
+    {
+        let m = Maps::new();
+        m.call(
+            "estimate_view",
+            vec![
+                Value::resource(&m.root),
+                Value::Float(48.18),
+                Value::Float(48.10),
+                Value::Float(11.62),
+                Value::Float(11.55),
+                Value::Int(14),
+                Value::Int(14),
+            ],
+        );
+        assert_eq!(
+            m.read(&m.root, "estimate_tiles"),
+            Value::Int(12),
+            "the tiles engine counts the area's pictures"
+        );
+        assert_eq!(
+            m.read(&m.root, "estimate_bytes"),
+            Value::Int(216_000),
+            "and quotes what they take at the size it measures"
         );
     }
 

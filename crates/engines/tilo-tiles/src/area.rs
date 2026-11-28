@@ -25,6 +25,10 @@ pub const MOST_ZOOM: i64 = 19;
 /// What the kept areas are listed in, under the saved pictures' own directory.
 const MANIFEST: &str = "areas.json";
 
+/// About how many bytes one map picture takes, for quoting an area before its pictures are
+/// kept: what the maps app itself estimated a tile at before this device had kept any.
+pub const AVERAGE_TILE_BYTES: u64 = 18_000;
+
 /// An area of the map kept on this device for offline use.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Area {
@@ -150,6 +154,50 @@ impl Area {
 }
 
 impl Tiles {
+    /// How many bytes the area's kept pictures take on this device now; a picture another kept
+    /// area shares counts for both.
+    #[must_use]
+    pub fn area_bytes(&self, area: &Area) -> u64 {
+        let dir = self.saved_dir();
+        area.addresses()
+            .into_iter()
+            .filter_map(|address| std::fs::metadata(Self::path_in(&dir, &address)).ok())
+            .map(|meta| if meta.is_file() { meta.len() } else { 0 })
+            .sum()
+    }
+
+    /// About how many bytes keeping an area of `tiles` pictures takes: their number times the
+    /// size this device's kept pictures average, or [`AVERAGE_TILE_BYTES`] before it kept any.
+    #[must_use]
+    pub fn estimated_bytes(&self, tiles: u64) -> u64 {
+        tiles.saturating_mul(self.average_tile_bytes())
+    }
+
+    /// The bytes one kept picture takes on average on this device, as the pictures it keeps now
+    /// measure; [`AVERAGE_TILE_BYTES`] when none was kept yet.
+    #[must_use]
+    pub fn average_tile_bytes(&self) -> u64 {
+        let Ok(entries) = std::fs::read_dir(self.saved_dir()) else {
+            return AVERAGE_TILE_BYTES;
+        };
+        let mut files = 0_u64;
+        let mut bytes = 0_u64;
+        for entry in entries.flatten() {
+            if entry.path().extension().is_some_and(|kind| kind == "img")
+                && let Ok(meta) = entry.metadata()
+                && meta.is_file()
+            {
+                files = files.saturating_add(1);
+                bytes = bytes.saturating_add(meta.len());
+            }
+        }
+        if files == 0 {
+            AVERAGE_TILE_BYTES
+        } else {
+            bytes.checked_div(files).unwrap_or(AVERAGE_TILE_BYTES)
+        }
+    }
+
     /// Fetch and keep every tile of `area`, so it shows with no network. `stop` is asked between
     /// tiles, so the person can stop it and keep what it got; `progress` is told how far it has
     /// come every so often, and once at the end. A tile already kept is not fetched again, so
@@ -377,6 +425,49 @@ mod tests {
             tiles.saved_bytes(),
             0,
             "no picture of a forgotten area stays"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An area quotes its stored bytes, and about what it will take from the size this device's
+    /// kept pictures average, before any of its own are kept.
+    #[test]
+    fn an_areas_size_is_quoted_before_and_after_its_pictures_are_kept() {
+        let dir = scratch("sizes");
+        let tiles = Tiles::open(dir.clone());
+        let held = area(12, 12);
+        assert_eq!(
+            tiles.average_tile_bytes(),
+            AVERAGE_TILE_BYTES,
+            "with nothing kept, a picture is the map's own average"
+        );
+        assert_eq!(
+            tiles.estimated_bytes(held.tile_count()),
+            held.tile_count() * AVERAGE_TILE_BYTES,
+            "an area quotes its tile count at that average"
+        );
+        // Two of its pictures are kept, at sizes the device can measure.
+        let addresses: Vec<String> = held.addresses().into_iter().take(2).collect();
+        for (at, address) in addresses.iter().enumerate() {
+            let path = Tiles::path_in(&tiles.saved_dir(), address);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, vec![0_u8; 100 + at * 200]).unwrap();
+        }
+        tiles.record_area(&held);
+        assert_eq!(
+            tiles.area_bytes(&held),
+            400,
+            "the area's kept pictures are counted, and only theirs"
+        );
+        assert_eq!(
+            tiles.average_tile_bytes(),
+            200,
+            "the average is the pictures this device keeps"
+        );
+        assert_eq!(
+            tiles.estimated_bytes(held.tile_count()),
+            held.tile_count() * 200,
+            "an estimate uses the device's own average once it has one"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

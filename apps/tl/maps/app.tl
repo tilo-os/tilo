@@ -8,6 +8,8 @@ app so.tilo.maps "Maps" (
 )
 
 op "locate"
+op "estimate-area"
+op "kept-areas"
 op "forget-area"
 op "save-area"
 op "clear-saved"
@@ -200,6 +202,8 @@ type KeptArea (title: name) {
     tiles: Int = 0
     /// How many of them are kept on the device.
     done: Int = 0
+    /// How many bytes its kept pictures take on this device.
+    bytes: Int = 0
     /// Whether the person stopped its download; the tiles kept so far stay on the device.
     stopped: Bool = false
     /// The job keeping it, while one runs.
@@ -235,6 +239,26 @@ type ForgetAreaAsk {
     id: Text
 }
 
+/// The ground and levels an area's size is asked for before any of it is kept.
+type EstimateAsk {
+    north: Float
+    south: Float
+    east: Float
+    west: Float
+    least_zoom: Int
+    most_zoom: Int
+}
+
+/// A route this device draws because the routing service could not answer: a straight line
+/// between the places the person named, with why the service refused. It is this device's, never
+/// the workspace's, and clears itself as soon as a real route is found.
+type Estimate {
+    /// The estimate this device drew, while no real route stands.
+    routes: Collection<Route>
+    /// Why the routing service could not answer.
+    why: Text = ""
+}
+
 /// The workspace's map: the places it knows, the searches it made and the directions it found.
 /// People, agents and other apps read and change it through this package's actions. The areas a
 /// device keeps offline are the device's own (the `kept` root).
@@ -268,6 +292,10 @@ type Atlas {
     /// How close the map opens: the camera's zoom, where 1 draws a world pixel as a screen pixel.
     /// [`tile_zoom`] reads it as the level of imagery it shows.
     centre_zoom: Float = 5.3
+    /// What keeping the view the offline sheet shows would take, as the tiles engine counted
+    /// and measured it, and zero before it was asked.
+    estimate_tiles: Int = 0
+    estimate_bytes: Int = 0
     /// Whether the person is following a route: the live card says the turn ahead.
     navigating: Bool = false
 
@@ -283,6 +311,8 @@ type Atlas {
 root atlas: Atlas
 
 device root kept: KeptAreas
+
+device root estimate: Estimate
 
 /// Marks every place a search found as no longer found, and forgets the ones nobody kept.
 // The map's data, kept as the person works with it.
@@ -354,9 +384,10 @@ action accept_places(a: Atlas, places: Text) (
     }
 }
 
-/// The route the map draws, when directions found one.
+/// The route the map draws: what directions found, or the estimate this device drew when the
+/// routing service could not answer.
 fn shown_route(a: Atlas) -> Option<Route> {
-    a.routes.at(a.route_at)
+    a.routes.at(a.route_at) ?? estimate.routes.first()
 }
 
 /// The journey the map draws, when public transport offered one.
@@ -1520,9 +1551,20 @@ action directions(a: Atlas, from_words: Text, to_words: Text) uses web, time (
     let answer = web.get(address)
     let tours = routes_of(answer.text(), answer.status)
     if tours.why != "" {
-        a.status = tours.why
+        shown_estimate(a, fallback_route(from, to, a.mode), tours.why)
+        a.status = "{tours.why} The offline estimate is shown."
         return
     }
+    if tours.found.is_empty() {
+        let why = "The routing service offered no route between those places."
+        shown_estimate(a, fallback_route(from, to, a.mode), why)
+        a.status = "{why} The offline estimate is shown."
+        return
+    }
+    for held in estimate.routes.map(r -> r) {
+        estimate.routes.remove(held)
+    }
+    estimate.why = ""
     for old in a.routes {
         a.routes.remove(old)
     }
@@ -1660,6 +1702,10 @@ action clear_route(a: Atlas) (icon: .x, label: "Clear route", did: "cleared the 
     }
     a.route_at = 0
     a.navigating = false
+    for held in estimate.routes.map(r -> r) {
+        estimate.routes.remove(held)
+    }
+    estimate.why = ""
     a.status = "The route is cleared."
 }
 
@@ -1783,6 +1829,138 @@ action open_poi(a: Atlas, poi: Text) (icon: .map_pin, label: "Open place of inte
 // Offline maps: keeping the imagery of an area on this device, so a trip with no network still
 // shows it. The tiles are the device's work (`engine.call` and `engine.start` on the app's own
 // engine), and what a device keeps is listed as its own resource.
+/// A number of bytes as a person reads it: `980 B`, `18.2 kB`, `3.4 MB`.
+fn size_text(bytes: Int) -> Text {
+    if bytes < 1000 {
+        "{bytes} B"
+    } else if bytes < 1000000 {
+        "{precise(bytes.to_float() / 1000.0)} kB"
+    } else if bytes < 1000000000 {
+        "{precise(bytes.to_float() / 1000000.0)} MB"
+    } else {
+        "{precise(bytes.to_float() / 1000000000.0)} GB"
+    }
+}
+
+/// A number to one decimal place, with `.0` left off.
+fn precise(value: Float) -> Text {
+    let tenths = (value * 10.0).round()
+    if tenths % 10 == 0 { "{tenths / 10}" } else { "{tenths / 10}.{tenths.abs() % 10}" }
+}
+
+/// How fast a way of travelling gets there, for an estimate with no service to ask: kilometres
+/// in an hour.
+fn mode_speed_kmh(mode: TravelMode) -> Float {
+    match mode {
+        .car => 32.0,
+        .bike => 15.0,
+        .foot => 4.8,
+        .transit => 20.0,
+    }
+}
+
+/// Keeps `route` as this device's estimate, and why the service could not answer.
+action shown_estimate(a: Atlas, route: Route, why: Text) {
+    for held in estimate.routes.map(r -> r) {
+        estimate.routes.remove(held)
+    }
+    estimate.routes.insert(route)
+    estimate.why = why
+}
+
+/// A route between two places as this device can estimate it with no routing service: east or
+/// west to the destination's meridian, then north or south along it, at the mode's own speed.
+fn fallback_route(from: Place, to: Place, mode: TravelMode) -> Route {
+    let corner_lat = from.latitude
+    let corner_lon = to.longitude
+    let side = if to.longitude >= from.longitude { "east" } else { "west" }
+    let turn = if to.latitude >= from.latitude { "left" } else { "right" }
+    let first = metres_between(from.latitude, from.longitude, corner_lat, corner_lon)
+    let second = metres_between(corner_lat, corner_lon, to.latitude, to.longitude)
+    let distance = first + second
+    let speed = mode_speed_kmh(mode) * 1000.0 / 3600.0
+    Route(
+        mode: mode,
+        distance_m: distance,
+        duration_s: distance / speed,
+        geometry: [
+            from.latitude,
+            from.longitude,
+            corner_lat,
+            corner_lon,
+            to.latitude,
+            to.longitude,
+        ],
+        from_name: from.name,
+        to_name: to.name,
+        from_latitude: from.latitude,
+        from_longitude: from.longitude,
+        to_latitude: to.latitude,
+        to_longitude: to.longitude,
+        steps: [
+            Step(instruction: "Head {side} to start", distance_m: first, maneuver: .depart),
+            Step(
+                instruction: "Turn {turn} toward destination",
+                distance_m: second,
+                maneuver: if to.latitude >= from.latitude { .left } else { .right },
+            ),
+            Step(instruction: "Arrive at your destination", maneuver: .arrive),
+        ],
+    )
+}
+
+/// Quotes what keeping an area of these edges and levels would take, from the tiles engine's own
+/// count and the size its kept pictures average.
+action estimate_view(
+    a: Atlas,
+    north: Float,
+    south: Float,
+    east: Float,
+    west: Float,
+    least_zoom: Int,
+    most_zoom: Int,
+) {
+    let ask = json.encode(
+        EstimateAsk(
+            north: north,
+            south: south,
+            east: east,
+            west: west,
+            least_zoom: least_zoom,
+            most_zoom: most_zoom,
+        ),
+    )
+    match engine.call("estimate-area", ask) {
+        .ok(answer) => match json.parse(answer) {
+            .ok(value) => {
+                a.estimate_tiles = number_at(value, "tiles").to_int()
+                a.estimate_bytes = number_at(value, "bytes").to_int()
+            }
+            .err(_) => {}
+        },
+        .err(_) => {}
+    }
+}
+
+/// Reads what each kept area takes on this device, as the tiles engine measures the pictures it
+/// holds.
+action read_kept_sizes() {
+    match engine.call("kept-areas", "") {
+        .ok(answer) => match json.parse(answer) {
+            .ok(value) => {
+                for entry in items_of(value) {
+                    let key = text_of(entry, "id")
+                    if let held = kept.kept.find(k -> k.key == key) {
+                        held.bytes = number_at(entry, "bytes").to_int()
+                    }
+                }
+            }
+            .err(_) => {}
+        },
+        .err(_) => {}
+    }
+}
+
 /// The address the map's imagery comes from: the basemap's own `%z`, `%x` and `%y` stand for a
 /// tile's level, column and row.
 fn basemap() -> Text {
@@ -1918,6 +2096,7 @@ action area_saved(a: Atlas, area: KeptArea, j: host.Job) {
             held.tiles = j.total
         }
         held.job = ""
+        read_kept_sizes()
         if j.state == .done {
             a.status = "Offline area ready ({held.tiles} tiles)"
         } else if j.state == .cancelled {
@@ -2101,6 +2280,7 @@ view map(a: Atlas) {
                         sheet,
                         least_zoom,
                         most_zoom,
+                        seen,
                     )
                     if a.status != "" {
                         stack(at: .top, fill, padding: .related) {
@@ -2462,6 +2642,7 @@ view map_controls(
     sheet: State<Text>,
     least_zoom: State<Int>,
     most_zoom: State<Int>,
+    seen: State<List<Float>>,
 ) {
     stack(at: .trailing, padding: .related, gap: .tight) {
         ui.Button(
@@ -2728,12 +2909,43 @@ view offline_sheet(
         }
         row(gap: .tight, align: .center) {
             ui.Button("Fewer zoom levels", icon: .minus, icon_only: true, role: .plain) {
-                on press: set(least_zoom, (least_zoom + 1).min(most_zoom))
+                on press: {
+                    let level = (least_zoom + 1).min(most_zoom)
+                    set(least_zoom, level)
+                    estimate_view(
+                        a,
+                        seen.at(3) ?? a.centre_latitude + 0.02,
+                        seen.at(4) ?? a.centre_latitude - 0.02,
+                        seen.at(5) ?? a.centre_longitude + 0.03,
+                        seen.at(6) ?? a.centre_longitude - 0.03,
+                        level,
+                        most_zoom,
+                    )
+                }
             }
             ui.Text("Zoom levels {least_zoom}–{most_zoom}", numeric: true)
             ui.Button("More zoom levels", icon: .plus, icon_only: true, role: .plain) {
-                on press: set(most_zoom, (most_zoom + 1).min(19))
+                on press: {
+                    let level = (most_zoom + 1).min(19)
+                    set(most_zoom, level)
+                    estimate_view(
+                        a,
+                        seen.at(3) ?? a.centre_latitude + 0.02,
+                        seen.at(4) ?? a.centre_latitude - 0.02,
+                        seen.at(5) ?? a.centre_longitude + 0.03,
+                        seen.at(6) ?? a.centre_longitude - 0.03,
+                        least_zoom,
+                        level,
+                    )
+                }
             }
+        }
+        if a.estimate_bytes > 0 {
+            ui.Text(
+                "About {size_text(a.estimate_bytes)} to download",
+                role: .caption,
+                secondary: true,
+            )
         }
         ui.Button("Download this view", icon: .cloud_download, role: .primary) {
             on press: download_view(
@@ -2799,6 +3011,9 @@ view area_row(a: Atlas, area: KeptArea) {
         }
         if total > 0 {
             ui.ProgressBar(done.to_float() / total.to_float())
+        }
+        if area.bytes > 0 {
+            ui.Text("{size_text(area.bytes)} on this device", role: .caption, secondary: true)
         }
         if area.stopped {
             ui.Text(

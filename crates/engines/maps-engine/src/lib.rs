@@ -7,10 +7,11 @@
 //! | op | kind | asks | answers |
 //! |---|---|---|---|
 //! | `save-area` | job | `{id, name, north, south, east, west, least_zoom, most_zoom, basemap}` | the job's path; each move `{done, total}` |
-//! | `kept-areas` | call | — | `[{id, name, north, south, east, west, least_zoom, most_zoom, tiles}]` |
+//! | `kept-areas` | call | — | `[{id, name, north, south, east, west, least_zoom, most_zoom, tiles, bytes}]` for the areas this device keeps, `bytes` the size their kept pictures take |
 //! | `forget-area` | call | `{id}` | `{freed}` |
 //! | `clear-saved` | call | — | `{freed}` |
 //! | `saved-bytes` | call | — | `{bytes}` |
+//! | `estimate-area` | call | `{north, south, east, west, least_zoom, most_zoom}` | `{tiles, bytes}`: what keeping the area would take, at this device's average picture |
 //! | `locate` | call | — | `{lat, lon, accuracy_m}`, or `{why}` when the device cannot say |
 //!
 //! The pictures are kept where the app's window keeps the ones it looked at
@@ -63,6 +64,17 @@ struct AreaAsk {
 #[derive(Deserialize)]
 struct AreaId {
     id: String,
+}
+
+/// The ground and levels an estimate is asked for, as `estimate-area` names them.
+#[derive(Deserialize)]
+struct EstimateAsk {
+    north: f64,
+    south: f64,
+    east: f64,
+    west: f64,
+    least_zoom: i64,
+    most_zoom: i64,
 }
 
 /// Where the device is, as the platform's own location service says: its latitude, longitude and
@@ -226,6 +238,7 @@ impl Provider for Maps {
                             "least_zoom": area.least_zoom,
                             "most_zoom": area.most_zoom,
                             "tiles": area.tile_count(),
+                            "bytes": self.tiles.area_bytes(area),
                         })
                     })
                     .collect();
@@ -238,6 +251,28 @@ impl Provider for Maps {
             }
             "clear-saved" => Ok(json!({ "freed": self.tiles.clear_saved() }).to_string()),
             "saved-bytes" => Ok(json!({ "bytes": self.tiles.saved_bytes() }).to_string()),
+            "estimate-area" => {
+                let ask: EstimateAsk = serde_json::from_str(input)
+                    .map_err(|error| format!("the ask does not read: {error}"))?;
+                let area = Area::new(
+                    String::new(),
+                    String::new(),
+                    AreaBounds {
+                        north: ask.north,
+                        south: ask.south,
+                        east: ask.east,
+                        west: ask.west,
+                        least_zoom: ask.least_zoom,
+                        most_zoom: ask.most_zoom,
+                    },
+                    String::new(),
+                );
+                let tiles = area.tile_count();
+                Ok(
+                    json!({ "tiles": tiles, "bytes": self.tiles.estimated_bytes(tiles) })
+                        .to_string(),
+                )
+            }
             "locate" => self.locate(),
             _ => Err(format!("`{op}` is no op this device runs")),
         }
@@ -415,5 +450,65 @@ mod tests {
             JobSink::new(|_, _| {}),
         );
         assert!(refused.is_err(), "an area needs real edges: {refused:?}");
+    }
+
+    /// An area quotes what it will take before any picture is kept, and what it takes once its
+    /// pictures are on the device; the listing carries both.
+    #[test]
+    fn an_area_quotes_its_size_before_and_after_keeping_it() {
+        let engine = engine("sized");
+        let estimate = |engine: &Maps| {
+            let said: serde_json::Value = serde_json::from_str(
+                &engine
+                    .call(
+                        "estimate-area",
+                        &json!({
+                            "north": 48.18,
+                            "south": 48.10,
+                            "east": 11.62,
+                            "west": 11.55,
+                            "least_zoom": 14,
+                            "most_zoom": 14,
+                        })
+                        .to_string(),
+                    )
+                    .expect("it answers"),
+            )
+            .expect("JSON");
+            (
+                said["tiles"].as_u64().expect("tiles"),
+                said["bytes"].as_u64().expect("bytes"),
+            )
+        };
+        let (tiles, bytes) = estimate(&engine);
+        assert!(tiles > 0, "the area's tiles are counted before any is kept");
+        assert_eq!(
+            bytes,
+            tiles * tilo_tiles::AVERAGE_TILE_BYTES,
+            "before any picture is kept, the map's own average is quoted"
+        );
+
+        // The area is asked for; once its job ends it is listed, with the size its kept
+        // pictures take.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let moved = JobSink::new(move |state: State, detail: serde_json::Value| {
+            if state.ended() {
+                let _ = tx.send(detail);
+            }
+        });
+        engine
+            .start("devices/d/jobs/1", "save-area", &ask("Munich"), moved)
+            .expect("it starts");
+        rx.recv_timeout(Duration::from_secs(10))
+            .expect("the job ends");
+        let listed: serde_json::Value =
+            serde_json::from_str(&engine.call("kept-areas", "").expect("it lists"))
+                .expect("a list");
+        let area = &listed.as_array().expect("a list of areas")[0];
+        assert!(
+            area["bytes"].as_u64().is_some(),
+            "an area says what it takes: {area}"
+        );
+        assert!(engine.call("clear-saved", "").is_ok());
     }
 }
