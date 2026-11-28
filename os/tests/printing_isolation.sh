@@ -19,7 +19,7 @@ CONFINEMENT="$OS_ROOT/usr/lib/systemd/system/cups.service.d/tilo-confinement.con
 SOCKET_DROPIN="$OS_ROOT/usr/lib/systemd/system/cups.socket.d/tilo-local-only.conf"
 CUPSD_CONF="$OS_ROOT/etc/cups/cupsd.conf"
 CONTAINERFILE="$OS_ROOT/Containerfile"
-SCANNER_RS="$OS_ROOT/../crates/engines/tilo-capture/src/scanner.rs"
+SCANNER_RS="$OS_ROOT/../crates/platform/tilo-scanner/src/lib.rs"
 PORTAL_PRINT_RS="$OS_ROOT/../crates/desktop/portal/src/print.rs"
 
 fails=0
