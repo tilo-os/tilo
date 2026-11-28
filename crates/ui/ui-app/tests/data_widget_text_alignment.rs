@@ -33,8 +33,8 @@ use tilo_ui_app::search::{SearchGroup, SearchResult};
 use tilo_ui_app::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use tilo_ui_app::{
     widget::Banner, widget::Button, widget::Column, widget::DescribedTreeView, widget::ListRowFace,
-    widget::SearchResultsView, widget::Section, widget::SectionHeader, widget::Text,
-    widget::TreeViewNodeProps, widget::TreeViewProps,
+    widget::Section, widget::SectionHeader, widget::Text, widget::TreeViewNodeProps,
+    widget::TreeViewProps,
 };
 use tilo_ui_base::TextRole;
 use tilo_ui_base::icons::Icon;
@@ -43,6 +43,7 @@ use tilo_ui_base::widget::Element;
 use tilo_ui_base::{chrome::disclosure_gutter, chrome::row_bleed};
 use tilo_ui_base::{component::Described, component::ResourceId};
 use tilo_ui_charts::{Chart, Series, StatGroup, StatTile, Trend};
+use tilo_ui_search::SearchResultsView;
 use vello::kurbo::Rect;
 
 // Pinned widget defaults the regions below are built from.

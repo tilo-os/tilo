@@ -1,5 +1,5 @@
 use super::*;
-use crate::testing::{Dispatch, dispatch};
+use tilo_ui::testing::{Dispatch, dispatch};
 use tilo_ui_base::{i18n::widget_format, i18n::widget_text};
 use tilo_ui_base::{
     synthetic_input::char_key, synthetic_input::cursor_moved, synthetic_input::mouse_press,

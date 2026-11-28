@@ -1,7 +1,7 @@
 use super::*;
-use crate::testing::{Dispatch, dispatch};
 use automerge::AutoCommit;
 use std::fs;
+use tilo_ui::testing::{Dispatch, dispatch};
 use winit::event::ElementState;
 
 fn cursor_at(p: Point) -> WindowEvent {

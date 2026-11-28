@@ -12,6 +12,70 @@
 //! can't `..` out of them, and every chosen path is checked against their real paths again
 //! before it is answered.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::collapsible_if,
+    clippy::default_trait_access,
+    clippy::doc_markdown,
+    clippy::empty_line_after_doc_comments,
+    clippy::format_collect,
+    clippy::format_push_string,
+    clippy::implicit_hasher,
+    clippy::indexing_slicing,
+    clippy::items_after_statements,
+    clippy::items_after_test_module,
+    clippy::large_enum_variant,
+    clippy::large_stack_arrays,
+    clippy::manual_assert_eq,
+    clippy::manual_find,
+    clippy::manual_midpoint,
+    clippy::many_single_char_names,
+    clippy::map_unwrap_or,
+    clippy::match_wildcard_for_single_variants,
+    clippy::missing_errors_doc,
+    clippy::needless_collect,
+    clippy::needless_pass_by_value,
+    clippy::needless_range_loop,
+    clippy::needless_raw_string_hashes,
+    clippy::or_fun_call,
+    clippy::panic_in_result_fn,
+    clippy::redundant_clone,
+    clippy::redundant_closure,
+    clippy::redundant_closure_for_method_calls,
+    clippy::ref_as_ptr,
+    clippy::result_large_err,
+    clippy::semicolon_if_nothing_returned,
+    clippy::significant_drop_in_scrutinee,
+    clippy::significant_drop_tightening,
+    clippy::similar_names,
+    clippy::struct_excessive_bools,
+    clippy::too_many_lines,
+    clippy::type_complexity,
+    clippy::unchecked_time_subtraction,
+    clippy::unicode_not_nfc,
+    clippy::uninlined_format_args,
+    clippy::unnecessary_literal_bound,
+    clippy::unnecessary_wraps,
+    clippy::unreadable_literal,
+    clippy::unused_self,
+    clippy::used_underscore_binding,
+    clippy::useless_conversion,
+    reason = "lint debt these widgets carried in the toolkit, scoped to this target"
+)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::disallowed_methods,
+        clippy::string_slice,
+        clippy::unreachable,
+        clippy::float_cmp,
+        reason = "in a test these are the assertion, not a hazard, and tests may wait on the real clock"
+    )
+)]
+
 mod places;
 mod reading;
 pub mod semantic;
@@ -35,15 +99,15 @@ use tilo_ui_base::{
     icons::Icon, icons::LUCIDE_DEFAULT_STROKE_PX, icons::draw_icon, icons::icon_for_path,
 };
 
-use crate::widget::ButtonRole;
-use crate::widget::file_table::{
-    FileColumn, FileRow, FileTable, FileTableInputs, FileTableMetrics, NameCell,
-    paint_icon_and_name,
-};
-use crate::{widget::Breadcrumb, widget::SearchField, widget::TextInput};
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
+use tilo_ui::widget::ButtonRole;
+use tilo_ui::widget::file_table::{
+    FileColumn, FileRow, FileTable, FileTableInputs, FileTableMetrics, NameCell,
+    paint_icon_and_name,
+};
+use tilo_ui::{widget::Breadcrumb, widget::SearchField, widget::TextInput};
 use tilo_ui_base::selection::SelectionModel;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
@@ -479,7 +543,7 @@ pub struct FilePicker {
     metrics: PickerMetrics,
 
     last_cursor: Point,
-    last_click: Option<(usize, crate::time::Instant)>,
+    last_click: Option<(usize, tilo_ui::time::Instant)>,
 
     hover_button: Option<u8>,
     hover_prompt: Option<PickerFocus>,
@@ -553,7 +617,7 @@ impl FilePicker {
             // A file name is not prose: no spelling marks, and never an
             // autocorrection rewriting a word of it.
             filename: TextInput::local()
-                .with_kind(crate::widget::TextInputKind::Name)
+                .with_kind(tilo_ui::widget::TextInputKind::Name)
                 .with_plain_chrome()
                 .with_accessible_name(tr("widget-filepicker-name-accessible"))
                 .with_placeholder(tr("widget-filepicker-name-placeholder")),
@@ -1190,7 +1254,7 @@ impl FilePicker {
             self.listed.clone()
         };
         self.query.set_count(narrowing.then(|| {
-            crate::widget::search_field::FilterCount::new(self.entries.len(), self.listed.len())
+            tilo_ui::widget::search_field::FilterCount::new(self.entries.len(), self.listed.len())
         }));
         let len = self.entries.len();
         let kept: Vec<usize> = self
@@ -1320,7 +1384,7 @@ impl FilePicker {
     /// typing replaces it.
     pub fn edit_location(&mut self) {
         let mut field = TextInput::local()
-            .with_kind(crate::widget::TextInputKind::Name)
+            .with_kind(tilo_ui::widget::TextInputKind::Name)
             .with_plain_chrome()
             .with_accessible_name(tr("widget-filepicker-location"));
         field.set_text(&self.location_text());
@@ -2098,7 +2162,7 @@ impl FilePicker {
             .map(|f| self.filter_display(f))
             .collect();
         let active = labels.get(self.active_filter).cloned().unwrap_or_default();
-        let filter_w = crate::widget::DropdownFace::new(Rect::ZERO, &active)
+        let filter_w = tilo_ui::widget::DropdownFace::new(Rect::ZERO, &active)
             .intrinsic_width(labels.iter().map(String::as_str), text_renderer, theme)
             .max(m.min_button_w);
         if (filter_w - self.filter_w).abs() > f64::EPSILON {
@@ -2415,7 +2479,7 @@ impl FilePicker {
             self.navigate_to(&entry.path);
             return;
         }
-        let now = crate::time::now();
+        let now = tilo_ui::time::now();
         let is_double = matches!(
             self.last_click,
             Some((pi, t)) if pi == i && now.duration_since(t) < tilo_ui_base::gesture::multi_click_interval()
@@ -2501,8 +2565,8 @@ impl Widget for FilePicker {
         self.poll_lookups();
         self.apply_layout_helper();
         self.measure_text(text_renderer, theme);
-        crate::widget::floating_surface::paint_card(scene, transform, self.rect, theme);
-        let sheet = theme.on_ground(crate::widget::floating_surface::card_ground(theme));
+        tilo_ui::widget::floating_surface::paint_card(scene, transform, self.rect, theme);
+        let sheet = theme.on_ground(tilo_ui::widget::floating_surface::card_ground(theme));
         let theme = &sheet;
 
         self.draw_header(scene, transform, text_renderer, theme);
@@ -3150,12 +3214,12 @@ impl FilePicker {
         let keep = footer_button(self.keep_existing_rect, CANCEL_KEY, false)
             .hovered(self.hover_prompt == Some(PickerFocus::KeepExisting))
             .focused(self.has_keyboard_focus && self.focus == Some(PickerFocus::KeepExisting));
-        crate::widget::Button::paint(scene, transform, text_renderer, theme, &keep);
+        tilo_ui::widget::Button::paint(scene, transform, text_renderer, theme, &keep);
         let replace = footer_button(self.replace_rect, REPLACE_KEY, false)
             .role(ButtonRole::Destructive)
             .hovered(self.hover_prompt == Some(PickerFocus::Replace))
             .focused(self.has_keyboard_focus && self.focus == Some(PickerFocus::Replace));
-        crate::widget::Button::paint(scene, transform, text_renderer, theme, &replace);
+        tilo_ui::widget::Button::paint(scene, transform, text_renderer, theme, &replace);
     }
 
     fn draw_header(
@@ -3236,12 +3300,12 @@ impl FilePicker {
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let tokens = &theme.tokens;
         let up_label = tr("widget-filepicker-up");
-        let up = crate::widget::ButtonFace::icon_only(self.up_rect, Icon::ArrowUp, &up_label)
+        let up = tilo_ui::widget::ButtonFace::icon_only(self.up_rect, Icon::ArrowUp, &up_label)
             .role(ButtonRole::Plain)
             .hovered(self.up_rect.contains(self.last_cursor))
             .focused(self.has_keyboard_focus && self.focus == Some(PickerFocus::Up))
             .disabled(!self.can_go_up());
-        crate::widget::Button::paint(scene, transform, text_renderer, theme, &up);
+        tilo_ui::widget::Button::paint(scene, transform, text_renderer, theme, &up);
 
         let bar = self.path_rect();
         let well = RoundedRect::from_rect(bar, f64::from(tokens.radii.control));
@@ -3516,7 +3580,7 @@ impl FilePicker {
                 .get(self.active_filter)
                 .map(|f| self.filter_display(f))
                 .unwrap_or_default();
-            crate::widget::DropdownFace::new(self.filter_rect, &active)
+            tilo_ui::widget::DropdownFace::new(self.filter_rect, &active)
                 .open(self.filter_open)
                 .hovered(self.filter_rect.contains(self.last_cursor))
                 .focused(self.has_keyboard_focus && self.focus == Some(PickerFocus::Filter))
@@ -3526,13 +3590,13 @@ impl FilePicker {
         let cancel = footer_button(self.cancel_rect, CANCEL_KEY, false)
             .hovered(self.hover_button == Some(0))
             .focused(self.has_keyboard_focus && self.focus == Some(PickerFocus::Cancel));
-        crate::widget::Button::paint(scene, transform, text_renderer, theme, &cancel);
+        tilo_ui::widget::Button::paint(scene, transform, text_renderer, theme, &cancel);
         let confirm_key = self.confirm_key();
         let confirm = footer_button(self.open_rect, &confirm_key, true)
             .hovered(self.hover_button == Some(1))
             .focused(self.has_keyboard_focus && self.focus == Some(PickerFocus::Confirm))
             .disabled(!self.can_commit_open());
-        crate::widget::Button::paint(scene, transform, text_renderer, theme, &confirm);
+        tilo_ui::widget::Button::paint(scene, transform, text_renderer, theme, &confirm);
     }
 
     fn draw_filter_menu(
@@ -4041,8 +4105,8 @@ impl FilePicker {
     }
 }
 
-fn footer_button(rect: Rect, label: &str, is_primary: bool) -> crate::widget::ButtonFace<'_> {
-    crate::widget::ButtonFace::new(rect, label).role(if is_primary {
+fn footer_button(rect: Rect, label: &str, is_primary: bool) -> tilo_ui::widget::ButtonFace<'_> {
+    tilo_ui::widget::ButtonFace::new(rect, label).role(if is_primary {
         ButtonRole::Primary
     } else {
         ButtonRole::Secondary
@@ -4051,3 +4115,13 @@ fn footer_button(rect: Rect, label: &str, is_primary: bool) -> crate::widget::Bu
 
 #[cfg(test)]
 mod tests;
+
+include!(concat!(env!("OUT_DIR"), "/component_registry.rs"));
+
+/// The file picker, which a window builds by name beside the toolkit's
+/// (`tilo_ui::component_catalogue::TOOLKIT`).
+pub static COMPONENTS: tilo_ui_base::component::Set = tilo_ui_base::component::Set {
+    entries: generated_entries,
+    parts: GENERATED_PARTS,
+    enums: Vec::new,
+};

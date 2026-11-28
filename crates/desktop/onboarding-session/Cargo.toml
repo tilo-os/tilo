@@ -11,6 +11,7 @@ license.workspace = true
 test-support = []
 
 [dependencies]
+tilo-ui-file-picker = { version = "0.1.0", path = "../../ui/ui-file-picker" }
 anyhow.workspace = true
 automerge.workspace = true
 os-actions = { path = "../../os/os-actions" }

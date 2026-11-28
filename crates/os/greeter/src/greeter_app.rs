@@ -45,10 +45,10 @@ use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::DrawChild;
 use tilo_ui_base::{text_render::NumericStyle, text_render::OpenTypeTag, text_render::TextWeight};
 use tilo_ui_base::{widget::AvatarSize, widget::Spacer, widget::Widget};
+use tilo_ui_secret::{FieldRole, Presentation, SecretKind, SecretPrompt};
 use ui::{
     widget::Avatar, widget::Button, widget::ButtonRole, widget::ControlSize, widget::Dropdown,
-    widget::FieldRole, widget::IconWidget, widget::Presentation, widget::Row, widget::Scrollable,
-    widget::SecretKind, widget::SecretPrompt, widget::Text, widget::TextInput,
+    widget::IconWidget, widget::Row, widget::Scrollable, widget::Text, widget::TextInput,
 };
 
 mod boot_mode;

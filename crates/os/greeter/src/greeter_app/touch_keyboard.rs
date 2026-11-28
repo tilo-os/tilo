@@ -22,7 +22,7 @@ use ui::passcode_keyboard::{PasscodeInput, PasscodeKey, PasscodeKeyboard};
 
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{widget::TaffyTreeExt as _, widget::Widget};
-use ui::{widget::FieldRole, widget::SecretPrompt};
+use tilo_ui_secret::{FieldRole, SecretPrompt};
 use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use zeroize::Zeroizing;

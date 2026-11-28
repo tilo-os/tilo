@@ -2,7 +2,7 @@
 //! accepted, refused or is still being checked; this is how the prompt shows a change of
 //! answer.
 
-use crate::time::Instant;
+use tilo_ui::time::Instant;
 
 use tilo_ui_base::{motion::Attention, motion::CrossFade};
 use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource};
@@ -103,7 +103,7 @@ impl Answer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::time::Duration;
+    use tilo_ui::time::Duration;
     use tilo_ui_base::theme::Theme;
 
     fn at(base: Instant, millis: u64) -> Instant {
@@ -123,7 +123,7 @@ mod tests {
         phase only_an_answer_arrives_and_the_first_line_rests;
         {
             let motion = Theme::dark().motion();
-            let base = crate::time::now();
+            let base = tilo_ui::time::now();
             let mut answer = Answer::default();
 
             answer.observe(line("Press Enter", NoticeTone::Quiet), base, motion);
@@ -161,7 +161,7 @@ mod tests {
         {
             let theme = Theme::dark().with_reduce_motion(true);
             let motion = theme.motion();
-            let base = crate::time::now();
+            let base = tilo_ui::time::now();
             let mut answer = Answer::default();
             answer.observe(line("Press Enter", NoticeTone::Quiet), base, motion);
             answer.observe(line("Wrong", NoticeTone::Error), base, motion);

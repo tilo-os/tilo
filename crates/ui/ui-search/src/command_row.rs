@@ -1,4 +1,4 @@
-//! A [`SearchRow::Command`](crate::search::SearchRow::Command) row: what
+//! A [`SearchRow::Command`](tilo_ui::search::SearchRow::Command) row: what
 //! leads it (artwork, an avatar or an icon), its title over a description
 //! with the query's words set off, and what trails it (an outcome button,
 //! faces, a status pill, keycaps or the selected row's alternative).
@@ -7,8 +7,8 @@ use tilo_sort::CompactSort as _;
 use vello::kurbo::{Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Color;
 
-use crate::color_compat::ColorCompat;
-use crate::search::{ActivationModifier, CommandRow, SearchResult};
+use tilo_ui::color_compat::ColorCompat;
+use tilo_ui::search::{ActivationModifier, CommandRow, SearchResult};
 use tilo_ui_base::icons;
 use tilo_ui_base::num::f32_of_f64;
 use tilo_ui_base::paint::PaintCtx;
@@ -25,7 +25,7 @@ pub(super) struct RowState<'a> {
 
 fn row_ground(theme: &Theme, selected: bool) -> Color {
     if selected {
-        crate::widget::floating_surface::armed_row(theme).0
+        tilo_ui::widget::floating_surface::armed_row(theme).0
     } else {
         tilo_ui_base::chrome::panel_ground(theme)
     }
@@ -76,7 +76,7 @@ pub(super) fn draw(
         SMALL_TEXT_MIN_CONTRAST,
     );
     let label_ink = if selected {
-        crate::widget::floating_surface::armed_row(theme).1
+        tilo_ui::widget::floating_surface::armed_row(theme).1
     } else {
         colors.text_primary
     };
@@ -220,8 +220,8 @@ fn draw_trailing(
     let cy = f64::midpoint(rect.y0, rect.y1);
     let mut right = rect.x1 - 8.0;
     if let Some(outcome) = row.outcome.as_deref() {
-        use crate::widget::button::{Button, ButtonFace, ButtonRole};
-        use crate::widget::control_size::ControlSize;
+        use tilo_ui::widget::ControlSize;
+        use tilo_ui::widget::{Button, ButtonFace, ButtonRole};
         let probe = ButtonFace::new(Rect::ZERO, outcome).control_size(ControlSize::Small);
         let width = probe.intrinsic_width(text_renderer, theme);
         let height = ButtonFace::height(ControlSize::Small, theme);
@@ -243,7 +243,7 @@ fn draw_trailing(
             .faces
             .iter()
             .take(shown)
-            .map(crate::search::RowFace::face)
+            .map(tilo_ui::search::RowFace::face)
             .collect();
         stack.paint(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),
@@ -294,7 +294,8 @@ fn draw_trailing(
         );
         pill.x0 - 8.0
     } else if let Some(labels) = &row.keycaps {
-        let chip_w = crate::widget::InputHint::measure_keycap_labels(labels, text_renderer, theme);
+        let chip_w =
+            tilo_ui::widget::InputHint::measure_keycap_labels(labels, text_renderer, theme);
         let chip_h = 26.0;
         let chip = Rect::new(
             rect.x1 - chip_w - 8.0,
@@ -302,7 +303,7 @@ fn draw_trailing(
             rect.x1 - 8.0,
             cy + chip_h / 2.0,
         );
-        crate::widget::InputHint::paint_keycap_labels_at(
+        tilo_ui::widget::InputHint::paint_keycap_labels_at(
             scene,
             transform,
             Point::new(chip.x0, chip.y0),
@@ -328,7 +329,8 @@ fn draw_trailing(
         };
         let keycaps = tilo_ui_base::keycaps::active();
         let labels = vec![keycaps.key(alternate.modifier.key()), keycaps.key("Enter")];
-        let caps_w = crate::widget::InputHint::measure_keycap_labels(&labels, text_renderer, theme);
+        let caps_w =
+            tilo_ui::widget::InputHint::measure_keycap_labels(&labels, text_renderer, theme);
         let gap = f64::from(theme.tokens.spacing.s1);
         let (label_w, label_h) = text_renderer.measure_style(&alternate.label, None, &style);
         let label_x = rect.x1 - 12.0 - f64::from(label_w);
@@ -341,8 +343,8 @@ fn draw_trailing(
             &style,
         );
         let caps_x = label_x - gap - caps_w;
-        let cap_h = crate::widget::InputHint::keycap_height(theme);
-        crate::widget::InputHint::paint_keycap_labels_at(
+        let cap_h = tilo_ui::widget::InputHint::keycap_height(theme);
+        tilo_ui::widget::InputHint::paint_keycap_labels_at(
             scene,
             transform,
             Point::new(caps_x, cy - cap_h / 2.0),

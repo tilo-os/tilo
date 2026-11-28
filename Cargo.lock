@@ -4960,6 +4960,7 @@ dependencies = [
  "tilo-ui-app",
  "tilo-ui-base",
  "tilo-ui-kms",
+ "tilo-ui-secret",
  "tilo-vello",
  "tilo-winit",
  "tracing",
@@ -15029,8 +15030,11 @@ dependencies = [
  "tilo-ui-app",
  "tilo-ui-base",
  "tilo-ui-charts",
+ "tilo-ui-file-picker",
  "tilo-ui-map",
  "tilo-ui-nav",
+ "tilo-ui-search",
+ "tilo-ui-secret",
  "tilo-workspace-agent",
  "tilo-workspace-emoji",
  "tracing",
@@ -15440,9 +15444,12 @@ dependencies = [
  "tilo-ui-app",
  "tilo-ui-base",
  "tilo-ui-charts",
+ "tilo-ui-file-picker",
  "tilo-ui-graph",
  "tilo-ui-map",
  "tilo-ui-nav",
+ "tilo-ui-search",
+ "tilo-ui-secret",
  "tilo-webview",
  "tracing",
  "workspace-hack",
@@ -18922,6 +18929,7 @@ dependencies = [
  "tilo-test-env",
  "tilo-ui",
  "tilo-ui-base",
+ "tilo-ui-file-picker",
  "tilo-user-identity",
  "tilo-vello",
  "tilo-winit",
@@ -21642,9 +21650,12 @@ dependencies = [
  "tilo-ui-app",
  "tilo-ui-base",
  "tilo-ui-charts",
+ "tilo-ui-file-picker",
  "tilo-ui-map",
  "tilo-ui-nav",
  "tilo-ui-render",
+ "tilo-ui-search",
+ "tilo-ui-secret",
  "tilo-vello",
  "tilo-vello-encoding",
  "tilo-wasm-aot",
@@ -21810,6 +21821,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-ui-file-picker"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "jiff",
+ "serde_json",
+ "tempfile",
+ "tilo-automerge-fork",
+ "tilo-component-scan",
+ "tilo-sort",
+ "tilo-taffy",
+ "tilo-test-env",
+ "tilo-ui",
+ "tilo-ui-base",
+ "tilo-vello",
+ "tilo-winit",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-ui-graph"
 version = "0.1.0"
 dependencies = [
@@ -21939,6 +21970,38 @@ dependencies = [
  "uuid",
  "wgpu-hal",
  "workspace-hack",
+]
+
+[[package]]
+name = "tilo-ui-search"
+version = "0.1.0"
+dependencies = [
+ "tilo-component-scan",
+ "tilo-search",
+ "tilo-sort",
+ "tilo-taffy",
+ "tilo-test-env",
+ "tilo-ui",
+ "tilo-ui-base",
+ "tilo-vello",
+ "tilo-winit",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-ui-secret"
+version = "0.1.0"
+dependencies = [
+ "tilo-automerge-fork",
+ "tilo-component-scan",
+ "tilo-taffy",
+ "tilo-test-env",
+ "tilo-ui",
+ "tilo-ui-base",
+ "tilo-vello",
+ "tilo-winit",
+ "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]

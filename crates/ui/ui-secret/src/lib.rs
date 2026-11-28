@@ -7,7 +7,7 @@
 //! PIN kinds while touch is in use, and Cancel beside a primary button.
 //!
 //! Three presentations of the same body: [`Presentation::Sheet`], the modal sheet a painted host
-//! draws itself ([`super::modal_dialog`]); [`Presentation::Inline`], inside another surface; and
+//! draws itself ([`tilo_ui::widget::modal_dialog`]); [`Presentation::Inline`], inside another surface; and
 //! [`Presentation::DialogBody`], the body of a retained [`ModalDialog`], which draws the title
 //! and actions ([`SecretPrompt::into_dialog`] wires them).
 //!
@@ -34,6 +34,70 @@
 //! prompt.reject("Wrong password");
 //! ```
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::collapsible_if,
+    clippy::default_trait_access,
+    clippy::doc_markdown,
+    clippy::empty_line_after_doc_comments,
+    clippy::format_collect,
+    clippy::format_push_string,
+    clippy::implicit_hasher,
+    clippy::indexing_slicing,
+    clippy::items_after_statements,
+    clippy::items_after_test_module,
+    clippy::large_enum_variant,
+    clippy::large_stack_arrays,
+    clippy::manual_assert_eq,
+    clippy::manual_find,
+    clippy::manual_midpoint,
+    clippy::many_single_char_names,
+    clippy::map_unwrap_or,
+    clippy::match_wildcard_for_single_variants,
+    clippy::missing_errors_doc,
+    clippy::needless_collect,
+    clippy::needless_pass_by_value,
+    clippy::needless_range_loop,
+    clippy::needless_raw_string_hashes,
+    clippy::or_fun_call,
+    clippy::panic_in_result_fn,
+    clippy::redundant_clone,
+    clippy::redundant_closure,
+    clippy::redundant_closure_for_method_calls,
+    clippy::ref_as_ptr,
+    clippy::result_large_err,
+    clippy::semicolon_if_nothing_returned,
+    clippy::significant_drop_in_scrutinee,
+    clippy::significant_drop_tightening,
+    clippy::similar_names,
+    clippy::struct_excessive_bools,
+    clippy::too_many_lines,
+    clippy::type_complexity,
+    clippy::unchecked_time_subtraction,
+    clippy::unicode_not_nfc,
+    clippy::uninlined_format_args,
+    clippy::unnecessary_literal_bound,
+    clippy::unnecessary_wraps,
+    clippy::unreadable_literal,
+    clippy::unused_self,
+    clippy::used_underscore_binding,
+    clippy::useless_conversion,
+    reason = "lint debt these widgets carried in the toolkit, scoped to this target"
+)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::disallowed_methods,
+        clippy::string_slice,
+        clippy::unreachable,
+        clippy::float_cmp,
+        reason = "in a test these are the assertion, not a hazard, and tests may wait on the real clock"
+    )
+)]
+
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -48,10 +112,10 @@ use winit::event::{ElementState, KeyEvent, MouseButton, TouchPhase, WindowEvent}
 use winit::keyboard::{Key, NamedKey};
 use zeroize::Zeroizing;
 
-use crate::passcode_keyboard::{PasscodeInput, PasscodeKey, PasscodeKeyboard};
-use crate::widget::control_size::ControlSize;
-use crate::widget::modal_dialog::{self, ModalAction, ModalLayout, ModalSpec};
-use crate::{
+use tilo_ui::passcode_keyboard::{PasscodeInput, PasscodeKey, PasscodeKeyboard};
+use tilo_ui::widget::ControlSize;
+use tilo_ui::widget::modal_dialog::{self, ModalAction, ModalLayout, ModalSpec};
+use tilo_ui::{
     widget::Button, widget::ButtonFace, widget::ButtonRole, widget::ModalDialog, widget::TextInput,
     widget::TextInputKind,
 };
@@ -1904,7 +1968,7 @@ impl SecretPrompt {
         transform: Affine,
         text: &mut TextRenderer,
         theme: &Theme,
-        now: crate::time::Instant,
+        now: tilo_ui::time::Instant,
     ) {
         self.answer.observe(self.notice_line(), now, theme.motion());
         if let Some(until) = self.answer.deadline() {
@@ -2085,11 +2149,11 @@ impl SecretPrompt {
                 rect.x0 + side,
                 rect.center().y + side / 2.0,
             );
-            crate::widget::Checkbox::paint(
+            tilo_ui::widget::Checkbox::paint(
                 scene,
                 transform,
                 theme,
-                &crate::widget::CheckboxFace::new(check, *checked)
+                &tilo_ui::widget::CheckboxFace::new(check, *checked)
                     .hovered(self.cursor.is_some_and(|point| rect.contains(point)))
                     .focused(self.has_focus && self.focus == Stop::Option),
             );
@@ -2678,3 +2742,13 @@ mod answer;
 #[cfg(test)]
 #[path = "secret_prompt_tests.rs"]
 mod tests;
+
+include!(concat!(env!("OUT_DIR"), "/component_registry.rs"));
+
+/// The secret prompt, which a window builds by name beside the toolkit's
+/// (`tilo_ui::component_catalogue::TOOLKIT`).
+pub static COMPONENTS: tilo_ui_base::component::Set = tilo_ui_base::component::Set {
+    entries: generated_entries,
+    parts: GENERATED_PARTS,
+    enums: Vec::new,
+};

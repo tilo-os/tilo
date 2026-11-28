@@ -1571,7 +1571,7 @@ impl TextInput {
         self.notify_user_change(false);
     }
 
-    pub(super) fn delete_local_selection(&mut self) {
+    pub fn delete_local_selection(&mut self) {
         self.delete_selection();
         self.notify_user_change(false);
     }

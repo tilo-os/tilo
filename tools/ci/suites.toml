@@ -816,7 +816,7 @@ readers = [
 package = "tilolang"
 # The multi-package tests resolve and compile the built-in packages, and the coverage check
 # reads the sources of the toolkit, the editor and the charts for the components they describe.
-inputs = ["apps/tl/", "crates/ui/tilo-rich-edit/", "crates/ui/ui-charts/", "crates/ui/ui-nav/", "crates/ui/ui-map/", "crates/ui/ui-core/"]
+inputs = ["apps/tl/", "crates/ui/tilo-rich-edit/", "crates/ui/ui-charts/", "crates/ui/ui-secret/", "crates/ui/ui-search/", "crates/ui/ui-file-picker/", "crates/ui/ui-nav/", "crates/ui/ui-map/", "crates/ui/ui-core/"]
 readers = [
   "crates/lang/tilolang/tests/it/coverage.rs",
   "crates/lang/tilolang/tests/it/multifile.rs",

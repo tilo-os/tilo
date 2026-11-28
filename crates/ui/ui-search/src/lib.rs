@@ -1,5 +1,69 @@
 //! `SearchResultsView` — the shared results overlay for Tilo global search.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::collapsible_if,
+    clippy::default_trait_access,
+    clippy::doc_markdown,
+    clippy::empty_line_after_doc_comments,
+    clippy::format_collect,
+    clippy::format_push_string,
+    clippy::implicit_hasher,
+    clippy::indexing_slicing,
+    clippy::items_after_statements,
+    clippy::items_after_test_module,
+    clippy::large_enum_variant,
+    clippy::large_stack_arrays,
+    clippy::manual_assert_eq,
+    clippy::manual_find,
+    clippy::manual_midpoint,
+    clippy::many_single_char_names,
+    clippy::map_unwrap_or,
+    clippy::match_wildcard_for_single_variants,
+    clippy::missing_errors_doc,
+    clippy::needless_collect,
+    clippy::needless_pass_by_value,
+    clippy::needless_range_loop,
+    clippy::needless_raw_string_hashes,
+    clippy::or_fun_call,
+    clippy::panic_in_result_fn,
+    clippy::redundant_clone,
+    clippy::redundant_closure,
+    clippy::redundant_closure_for_method_calls,
+    clippy::ref_as_ptr,
+    clippy::result_large_err,
+    clippy::semicolon_if_nothing_returned,
+    clippy::significant_drop_in_scrutinee,
+    clippy::significant_drop_tightening,
+    clippy::similar_names,
+    clippy::struct_excessive_bools,
+    clippy::too_many_lines,
+    clippy::type_complexity,
+    clippy::unchecked_time_subtraction,
+    clippy::unicode_not_nfc,
+    clippy::uninlined_format_args,
+    clippy::unnecessary_literal_bound,
+    clippy::unnecessary_wraps,
+    clippy::unreadable_literal,
+    clippy::unused_self,
+    clippy::used_underscore_binding,
+    clippy::useless_conversion,
+    reason = "lint debt these widgets carried in the toolkit, scoped to this target"
+)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::disallowed_methods,
+        clippy::string_slice,
+        clippy::unreachable,
+        clippy::float_cmp,
+        reason = "in a test these are the assertion, not a hazard, and tests may wait on the real clock"
+    )
+)]
+
 use std::collections::HashMap;
 use tilo_ui_base::widget::ModelPath;
 
@@ -11,13 +75,13 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::color_compat::ColorCompat as _;
-use crate::search::{
+use tilo_ui::color_compat::ColorCompat as _;
+use tilo_ui::search::{
     ActivationModifier, CommandRow, PREVIEW_BODY_LINES, PREVIEW_LINES, SearchGroup, SearchPreview,
     SearchResult, SearchRow,
 };
-use crate::widget::data_table::{text_band, type_line_height};
-use crate::widget::floating_list::{FloatingList, FloatingMetrics, FloatingRow, RowState};
+use tilo_ui::widget::data_table::{text_band, type_line_height};
+use tilo_ui::widget::floating_list::{FloatingList, FloatingMetrics, FloatingRow, RowState};
 use tilo_ui_base::paint::PaintCtx;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
@@ -25,7 +89,6 @@ use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::widget::Widget;
 
-#[path = "search_results/command_row.rs"]
 mod command_row;
 
 const PAD: f64 = tilo_ui_base::tokens::Spacing::BASE.s2 as f64; // card inner padding
@@ -141,7 +204,11 @@ impl FloatingRow for Row {
                 let style = ctx.theme.text(TextRole::Caption);
                 let searching = tilo_ui_base::i18n::widget_format("widget-searching", &[]);
                 let (_, h) = ctx.text.measure_style(&searching, None, &style);
-                let y = crate::widget::text::centered_text_top(row.y0, row.height(), f64::from(h));
+                let y = tilo_ui_base::text_metrics::centered_text_top(
+                    row.y0,
+                    row.height(),
+                    f64::from(h),
+                );
                 ctx.text.draw_style(
                     ctx.scene,
                     &searching,
@@ -250,11 +317,11 @@ fn line_count(n: usize) -> f64 {
 }
 
 /// The number a group's heading shows, when the number is worth reading
-/// ([`super::section::heading_count`]): a group of one row saying "1" restates the row's own
+/// ([`tilo_ui::widget::heading_count`]): a group of one row saying "1" restates the row's own
 /// presence; a group of several says how many, and a group the list cut short says how many it
 /// left out.
 fn heading_count(group: &SearchGroup) -> Option<usize> {
-    super::section::heading_count(group.results.len(), group.total)
+    tilo_ui::widget::heading_count(group.results.len(), group.total)
 }
 
 fn draw_header(
@@ -318,7 +385,7 @@ fn draw_result(
     let theme = ctx.theme;
     let transform = ctx.transform;
     let colors = &theme.tokens.colors;
-    let (armed_fill, selected_ink) = crate::widget::floating_surface::armed_row(theme);
+    let (armed_fill, selected_ink) = tilo_ui::widget::floating_surface::armed_row(theme);
     let lift = RoundedRect::from_rect(
         rect.inflate(0.0, -ROW_LIFT_INSET),
         f64::from(theme.tokens.radii.detail),
@@ -1303,7 +1370,7 @@ impl SearchResultsView {
 
 /// A media row's 16:9 thumbnail: as tall as a large control.
 fn thumbnail_size(theme: &Theme) -> (f64, f64) {
-    let height = crate::widget::ControlSize::Large.height(theme);
+    let height = tilo_ui::widget::ControlSize::Large.height(theme);
     (height * 16.0 / 9.0, height)
 }
 
@@ -1571,7 +1638,7 @@ fn draw_template(
                     y + f64::from(hh),
                 );
                 if mark.width() > 0.0 {
-                    crate::widget::paint_find_match(scene, transform, mark, true, theme);
+                    tilo_ui::widget::paint_find_match(scene, transform, mark, true, theme);
                 }
             }
             line(
@@ -1885,8 +1952,8 @@ impl Widget for SearchResultsView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::SearchRegistry;
-    use crate::testing::dispatch;
+    use tilo_ui::search::SearchRegistry;
+    use tilo_ui::testing::dispatch;
     use tilo_ui_base::presence::PresenceCtx;
 
     fn lum_at(rgba: &[u8], w: u32, x: f64, y: f64) -> f64 {
@@ -2149,7 +2216,7 @@ mod tests {
                 view.set_results(vec![
                     SearchResult::new("Notes", "Design notes", "open").with_preview("An excerpt"),
                     SearchResult::new("Feeds", "Rust Blog", "feed").with_preview(
-                        crate::search::SearchPreview::titled("Rust Blog")
+                        tilo_ui::search::SearchPreview::titled("Rust Blog")
                             .fact("blog.rust-lang.org")
                             .fact("1 unread")
                             .line("Announcing Rust 1.96.1")
@@ -2346,3 +2413,13 @@ mod tests {
         v
     }
 }
+
+include!(concat!(env!("OUT_DIR"), "/component_registry.rs"));
+
+/// The search results, which a window builds by name beside the toolkit's
+/// (`tilo_ui::component_catalogue::TOOLKIT`).
+pub static COMPONENTS: tilo_ui_base::component::Set = tilo_ui_base::component::Set {
+    entries: generated_entries,
+    parts: GENERATED_PARTS,
+    enums: Vec::new,
+};

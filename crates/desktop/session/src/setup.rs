@@ -23,10 +23,10 @@ use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
 use tilo_session_core::surface::{Scroll, ShellSurface, SurfaceLayer};
 use tilo_session_core::surface::{SurfaceIme, SurfaceKey, SurfaceTextInput};
 
+use tilo_app::file_picker::{FilePicker, FilePickerOutcome};
 use tilo_onboarding_session::ceremony::{self, Ceremony, OnboardingEffect};
 use tilo_session_core::surfaces::Published;
 use tilo_ui_base::host_operation::ResourceOperationStart;
-use ui::widget::{FilePicker, FilePickerOutcome};
 
 use crate::clock_wait::{ClockWait, ClockWaitStep};
 use crate::controls::SessionCommand;

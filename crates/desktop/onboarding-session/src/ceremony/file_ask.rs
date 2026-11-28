@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tilo_actions::remote::asked::{FileType, FilesAsked, FilesMode};
-use ui::widget::file_picker::FileFilter;
-use ui::widget::{FilePicker, FilePickerMode};
+use tilo_ui_file_picker::FileFilter;
+use tilo_ui_file_picker::{FilePicker, FilePickerMode};
 
 use crate::t;
 

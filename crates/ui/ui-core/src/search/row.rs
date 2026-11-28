@@ -150,7 +150,7 @@ impl ActivationModifier {
     }
 
     /// The key's name, as the shared keycap legends spell it.
-    pub(crate) fn key(self) -> &'static str {
+    pub fn key(self) -> &'static str {
         match self {
             Self::Shift => "Shift",
             Self::Ctrl => "Ctrl",

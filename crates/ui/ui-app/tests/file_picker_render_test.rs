@@ -27,11 +27,11 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::Color;
 
-use tilo_ui_app::widget::file_picker::{FileFilter, FilePicker, FilePickerMode};
 use tilo_ui_base::presence::PresenceCtx;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Widget;
+use tilo_ui_file_picker::{FileFilter, FilePicker, FilePickerMode};
 
 fn temp_dir() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();

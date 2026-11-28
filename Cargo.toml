@@ -129,6 +129,9 @@ members = [
     "crates/ui/tilo-component-scan",
     "crates/ui/tilo-rich-edit",
     "crates/ui/ui-charts",
+    "crates/ui/ui-secret",
+    "crates/ui/ui-search",
+    "crates/ui/ui-file-picker",
     "crates/ui/ui-nav",
     "crates/ui/ui-map",
     "crates/ui/ui-math",
@@ -1044,8 +1047,34 @@ overflow-checks = true
 # executables, and tilo-ui's unit tests grew from 294 MB to 344 MB. Written
 # here it holds outside CI too: for a backtrace that names its functions in
 # one of these packages' own tests, run them with
-# `--config 'profile.test.package.tilo-ui.strip=false'`.
+# `--config 'profile.test.package.tilo-ui.strip=false'`. The widget crates above the toolkit
+# (tilo-ui-map and the others) were part of it and run as it does.
 [profile.test.package.tilo-ui]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true
+strip = "symbols"
+[profile.test.package.tilo-ui-map]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true
+strip = "symbols"
+[profile.test.package.tilo-ui-nav]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true
+strip = "symbols"
+[profile.test.package.tilo-ui-file-picker]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true
+strip = "symbols"
+[profile.test.package.tilo-ui-search]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true
+strip = "symbols"
+[profile.test.package.tilo-ui-secret]
 opt-level = 2
 debug-assertions = true
 overflow-checks = true

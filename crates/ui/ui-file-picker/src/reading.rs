@@ -91,8 +91,8 @@ fn on_worker<T: Send + 'static>(
     waker: Option<Waker>,
     job: impl FnOnce() -> T + Send + 'static,
 ) -> Option<Pending<T>> {
-    let (send, answer) = crate::wake::waking_channel();
-    crate::background::Background::current()
+    let (send, answer) = tilo_ui::wake::waking_channel();
+    tilo_ui::background::Background::current()
         .spawn(name, move || {
             let _ = send.send(job());
             if let Some(waker) = waker {

@@ -80,6 +80,9 @@ fn every_described_component_settles_its_layout() {
     let registry = Registry::of(&[
         &TOOLKIT,
         &tilo_ui_charts::COMPONENTS,
+        &tilo_ui_secret::COMPONENTS,
+        &tilo_ui_search::COMPONENTS,
+        &tilo_ui_file_picker::COMPONENTS,
         &tilo_ui_nav::COMPONENTS,
         &tilo_ui_map::COMPONENTS,
     ]);
@@ -175,6 +178,9 @@ fn the_gallery_shows_every_described_component() {
     let catalogue = tilo_ui_base::component::Registry::of(&[
         &TOOLKIT,
         &tilo_ui_charts::COMPONENTS,
+        &tilo_ui_secret::COMPONENTS,
+        &tilo_ui_search::COMPONENTS,
+        &tilo_ui_file_picker::COMPONENTS,
         &tilo_ui_nav::COMPONENTS,
         &tilo_ui_map::COMPONENTS,
     ])

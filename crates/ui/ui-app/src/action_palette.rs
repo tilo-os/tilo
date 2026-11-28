@@ -21,8 +21,8 @@ use crate::search::{
     Facet, FacetFilter, PagePoll, PendingToken, SearchCursor, SearchProvider, SearchQuery,
     SearchResult,
 };
+use crate::widget::SearchField;
 use crate::widget::search_request::ScopeDecl;
-use crate::{widget::SearchField, widget::SearchResultsView};
 use tilo_actions::{
     ActionContext, ActionInput, EncodedAction, OperationKind, ResourceSpec, flatten,
 };
@@ -33,6 +33,7 @@ use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::DrawChild;
 use tilo_ui_base::widget::Widget;
 use tilo_ui_base::{text_match::FieldWeight, text_match::ListIndex};
+use tilo_ui_search::SearchResultsView;
 
 /// The group header for the focused app's exported actions.
 pub const ACTIONS_KIND: &str = "Actions";

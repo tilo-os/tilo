@@ -53,6 +53,7 @@ portal = ["native", "tilo-ui/portal"]
 host-portals = ["tilo-ui/host-portals"]
 
 [dependencies]
+tilo-ui-search = { version = "0.1.0", path = "../ui-search" }
 tilo-ui-nav = { version = "0.1.0", path = "../ui-nav" }
 tilo-permissions.workspace = true
 tilo-action-types.workspace = true
@@ -157,6 +158,8 @@ tilo-ui-base = { path = "../ui-base", features = ["test-support"] }
 tilo-rich-edit = { path = "../tilo-rich-edit", features = ["test-support"] }
 # The charts and stat tiles the runner's tests mount, and the registry its component tests build.
 tilo-ui-charts = { path = "../ui-charts", features = ["test-support"] }
+tilo-ui-secret = { path = "../ui-secret", features = ["test-support"] }
+tilo-ui-file-picker = { path = "../ui-file-picker", features = ["test-support"] }
 tilo-ui-nav = { path = "../ui-nav", features = ["test-support"] }
 tilo-ui-map = { path = "../ui-map", features = ["test-support"] }
 # The closure-built action host the driver's job tests answer calls with.

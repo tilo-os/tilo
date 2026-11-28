@@ -39,6 +39,15 @@ pub use tilo_rich_edit as rich_edit;
 /// Charts and plots: lines, bars, pies, distributions, hierarchies, flows, ranges and stat tiles.
 pub use tilo_ui_charts as charts;
 
+/// The secret prompt: the sheet that asks for a password, a passcode or a key.
+pub use tilo_ui_secret as secret_prompt;
+
+/// The search results: the rows, previews and commands system search shows.
+pub use tilo_ui_search as search_results;
+
+/// The file picker: the workspace's places and files, to open or save into.
+pub use tilo_ui_file_picker as file_picker;
+
 /// The window shell: a sidebar of places, an overview, the content and an inspector.
 pub use tilo_ui_nav as nav_shell;
 
@@ -263,6 +272,7 @@ pub mod prelude {
     pub use tilo_ui_base::i18n::LabelKey;
 
     pub use crate::nav_shell::{NavMode, NavPane, NavShell};
+    pub use crate::search_results::SearchResultsView;
     pub use ::collaboration;
     pub use settings_model::{DeviceClass, Scope, SettingsSchema};
     pub use tilo_ui_base::LatestRequest;
@@ -313,8 +323,8 @@ pub mod prelude {
         widget::Filterable, widget::Filtered, widget::FindBar, widget::FindMatch,
         widget::FindOptions, widget::FindScope, widget::Findable, widget::ModelView,
         widget::NavItem, widget::NavList, widget::NavSection, widget::NumberInput,
-        widget::QrWidget, widget::Row, widget::Scrollable, widget::SearchField,
-        widget::SearchResultsView, widget::Slider, widget::Spinner, widget::Stack, widget::Text,
-        widget::TextInput, widget::Toggle, widget::labeled_check, widget::labeled_field,
+        widget::QrWidget, widget::Row, widget::Scrollable, widget::SearchField, widget::Slider,
+        widget::Spinner, widget::Stack, widget::Text, widget::TextInput, widget::Toggle,
+        widget::labeled_check, widget::labeled_field,
     };
 }

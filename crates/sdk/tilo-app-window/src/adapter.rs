@@ -43,6 +43,9 @@ pub fn components() -> &'static tilo_ui_base::component::Registry {
             &ui::component_catalogue::TOOLKIT,
             &tilo_rich_edit::COMPONENTS,
             &tilo_ui_charts::COMPONENTS,
+            &tilo_ui_secret::COMPONENTS,
+            &tilo_ui_search::COMPONENTS,
+            &tilo_ui_file_picker::COMPONENTS,
             &tilo_ui_nav::COMPONENTS,
             &tilo_ui_map::COMPONENTS,
         ])

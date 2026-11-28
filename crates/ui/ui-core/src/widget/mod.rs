@@ -412,12 +412,7 @@ pub use {
     permission_prompt::PROMPT_HEIGHT, permission_prompt::PermissionPrompt,
     permission_prompt::PromptChoice,
 };
-pub mod file_picker;
 pub mod file_table;
-pub use {
-    file_picker::FilePicker, file_picker::FilePickerEntry, file_picker::FilePickerMode,
-    file_picker::FilePickerOutcome,
-};
 pub mod progress_bar;
 pub use {
     progress_bar::ProgressBar, progress_bar::ProgressBarFace, progress_bar::ProgressBarProps,
@@ -501,12 +496,6 @@ pub use {
     modal_dialog::ModalAction, modal_dialog::ModalDialog, modal_dialog::ModalEmphasis,
     modal_dialog::ModalHit, modal_dialog::ModalLayout, modal_dialog::ModalSheet,
     modal_dialog::ModalSpec, modal_dialog::SheetResponse,
-};
-pub mod secret_prompt;
-pub use {
-    secret_prompt::FieldRole, secret_prompt::FieldSpec, secret_prompt::NoticeTone,
-    secret_prompt::Presentation, secret_prompt::PromptOutcome, secret_prompt::SecretAnswer,
-    secret_prompt::SecretKind, secret_prompt::SecretPrompt,
 };
 pub mod toolbar;
 pub use {
@@ -740,8 +729,6 @@ pub use {
     window_search::SearchableWindow, window_search::WindowSearch,
     window_search::WindowSearchRequest, window_search::with_queryable,
 };
-pub mod search_results;
-pub use search_results::SearchResultsView;
 pub mod banner;
 pub use {
     banner::Banner, banner::BannerContent, banner::BannerHit, banner::BannerKind,

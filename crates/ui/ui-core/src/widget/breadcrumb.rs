@@ -73,7 +73,7 @@ impl Breadcrumb {
     }
 
     #[must_use]
-    pub(crate) fn with_role(mut self, role: TextRole) -> Self {
+    pub fn with_role(mut self, role: TextRole) -> Self {
         self.role = role;
         self
     }
@@ -112,7 +112,7 @@ impl Breadcrumb {
     }
 
     #[must_use]
-    pub(crate) fn on_navigate<F: FnMut(usize) + 'static>(mut self, f: F) -> Self {
+    pub fn on_navigate<F: FnMut(usize) + 'static>(mut self, f: F) -> Self {
         self.on_navigate = Some(Box::new(f));
         self
     }
