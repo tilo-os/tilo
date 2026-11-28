@@ -29,16 +29,14 @@
     },
     {
       "id": "places",
-      "said": "The places down the left: the workspace's folder, Recent and Applications",
+      "said": "The places down the left, as the window offers them: the workspace's folder, Applications and Recent",
       "ops": [
         {
-          "click": "Recent"
-        },
-        {
-          "click": "Applications"
-        },
-        {
-          "click": "Files"
+          "press_any": [
+            "Files",
+            "Applications",
+            "Recent"
+          ]
         }
       ]
     },
