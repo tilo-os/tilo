@@ -210,18 +210,9 @@ pub async fn files_refused(
 
 /// The bytes the workspace keeps at the content `reference`.
 pub async fn content_bytes(session: &Session<'_>, workspace: &str, reference: &str) -> Vec<u8> {
-    let (text, failed) = said(
-        &session
-            .tool(
-                workspace,
-                "tilo_get",
-                &serde_json::json!({"content": reference, "offset": 0}),
-            )
-            .await,
-    );
-    assert!(!failed, "the content is kept: {text}");
-    let piece = json_in(&text);
-    unbase64(piece["bytes"].as_str().expect("the bytes"))
+    read_content(session, workspace, reference)
+        .await
+        .unwrap_or_else(|text| panic!("the content is kept: {text}"))
 }
 
 /// The bytes the workspace keeps under the content address `hash`.
@@ -230,21 +221,50 @@ pub async fn content_at_hash(
     workspace: &str,
     hash: &str,
 ) -> Option<Vec<u8>> {
-    let reference = format!("tilo.content:{hash}");
-    let (text, failed) = said(
-        &session
-            .tool(
-                workspace,
-                "tilo_get",
-                &serde_json::json!({"content": reference, "offset": 0}),
-            )
-            .await,
-    );
-    if failed {
-        return None;
+    read_content(session, workspace, &format!("tilo.content:{hash}"))
+        .await
+        .ok()
+}
+
+/// Every byte at the content `reference`, read as `tilo_get` answers it: a piece a call, each
+/// asked at the offset the last one ended at, until the piece reaches the content's size. A
+/// refusal answers its words.
+async fn read_content(
+    session: &Session<'_>,
+    workspace: &str,
+    reference: &str,
+) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    loop {
+        let (text, failed) = said(
+            &session
+                .tool(
+                    workspace,
+                    "tilo_get",
+                    &serde_json::json!({"content": reference, "offset": bytes.len()}),
+                )
+                .await,
+        );
+        if failed {
+            return Err(text);
+        }
+        let piece = json_in(&text);
+        assert_eq!(
+            piece["offset"].as_u64(),
+            Some(bytes.len() as u64),
+            "the piece starts where it was asked: {text}",
+        );
+        let given = unbase64(piece["bytes"].as_str().expect("the bytes"));
+        let size = piece["size"].as_u64().expect("the content's size");
+        assert!(
+            !given.is_empty() || bytes.len() as u64 == size,
+            "a piece short of the content's end carries bytes: {text}",
+        );
+        bytes.extend_from_slice(&given);
+        if bytes.len() as u64 >= size {
+            return Ok(bytes);
+        }
     }
-    let piece = json_in(&text);
-    Some(unbase64(piece["bytes"].as_str()?))
 }
 
 /// The tree `workspace`'s host keeps, or `None` until it holds every record the tree names.
