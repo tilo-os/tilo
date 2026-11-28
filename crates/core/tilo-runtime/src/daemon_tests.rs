@@ -3315,96 +3315,35 @@ fn an_unclaimed_system_daemon_answers_roots_sign_in_then_has_a_person() {
     );
 }
 
-/// The secret a sign-in hands is the one the account's own link is admitted by: it names the
-/// person the daemon's services serve, so none is handed while their part serves another person.
-/// A part later started for the account's person answers it, and the session's link made with
-/// the secret is admitted on the first try.
+/// The account's person's part names its shell secret; the seat that made the person links
+/// before its key is certified, and another account's seat or another start of a pid is refused.
 #[test]
-fn a_sign_in_hands_the_shell_token_only_once_the_part_serves_the_accounts_person() {
-    use crate::seats::{Seat, Seated, Seats};
+#[rustfmt::skip]
+fn the_accounts_person_answers_the_token_and_the_seat_that_made_them_links() {
     use serde_json::json;
     use std::sync::Arc;
-    use tilo_api::daemon::admission::{Admission, Admitted};
-    const DAEMON: u32 = 990;
-    const ADA: u32 = 1000;
-
-    let dir = tempfile::tempdir().unwrap();
-    let keys = tilo_device_identity::IdentityPaths::under(dir.path().join("identity"));
-    keys.ensure_directories().unwrap();
-    let (device, _) = tilo_device_identity::persist::load_or_create_device_key(&keys).unwrap();
-    let place = tilo_device_identity::login::Place::at(dir.path().join("login"), keys);
-    let admission: &'static Admission = Box::leak(Box::new(Admission::new(DAEMON, true)));
-    let answers = crate::device::unclaimed::DeviceOnly::new(device, place);
-    let seats = Arc::new(Seats::new(admission, answers, test_peer));
-    let person = [0x51; 32];
-    let another = [0x52; 32];
-    // Ada's account made this device's person, as the walk's founding does.
-    admission.founded_by(ADA, person).unwrap();
-    let root = Seated::new(
-        Seat {
-            uid: tilo_api::daemon::admission::ROOT,
-            pid: Some(std::process::id()),
-            admitted: Admitted::Device,
-            account: Admitted::Device,
-            app: None,
-            founding: false,
-            linked: false,
-        },
-        Arc::clone(&seats),
-    );
-
-    // The person's part serves another person first, as one started from this computer's own
-    // identity before the account's person is taken up does.
-    let first = Arc::new(Linked::default());
-    first.person(another);
-    seats.serve(Arc::clone(&first) as _);
-    let said = root
-        .act("signed-in", &json!({"uid": ADA}))
-        .expect("the sign-in is answered");
-    assert_eq!(said["shell"], false, "a link is handed already: {said}");
-    assert!(said["token"].is_null(), "a link is handed already: {said}");
-
-    // A part started for Ada answers the secret, and her session's link is admitted as it asks.
-    let serving = Arc::new(Linked::default());
-    serving.person(person);
-    seats.serve(Arc::clone(&serving) as _);
-    let said = root
-        .act("signed-in", &json!({"uid": ADA}))
-        .expect("the sign-in is answered");
-    assert_eq!(said["person"], hex::encode(person), "{said}");
-    let token = said["token"]
-        .as_str()
-        .expect("the sign-in hands the link's secret")
-        .to_owned();
-    let ada = Seated::new(
-        Seat {
-            uid: ADA,
-            pid: Some(std::process::id()),
-            admitted: Admitted::Person(person),
-            account: Admitted::Person(person),
-            app: None,
-            founding: false,
-            linked: false,
-        },
-        Arc::clone(&seats),
-    );
-    let answer = ada
-        .answer(&json!({"native": "shells#link", "token": token}))
-        .expect("a link is the seats' to answer");
-    let tilo_mcp::lines::Answer::InOrder(reply) = answer else {
-        panic!("a link is answered in order");
+    let founded = founded_daemon(false);
+    let sign_in = || {
+        let said = founding_ask(0, &founded.socket, &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "tilo_do", "arguments": {"path": "seats#signed-in", "args": {"uid": founded.uid}}}}));
+        said["result"]["content"][0]["text"].as_str().unwrap_or_default().to_owned()
     };
-    let runtime = tilo_rt::try_app().unwrap();
-    let said = runtime
-        .handle()
-        .block_on(reply)
-        .unwrap()
-        .expect("the link is answered");
-    assert!(
-        said["error"].is_null(),
-        "the first link an account asks: {said}"
-    );
-    assert_eq!(said["shell"], true, "{said}");
+    let other = Arc::new(Linked::default()); other.person([0x52; 32]);
+    founded.native.seats.serve(Arc::clone(&other) as _);
+    assert!(!sign_in().contains("\"token\":\""), "another person's part names a secret");
+    let serving = Arc::new(Linked::default()); serving.person(founded.person);
+    founded.native.seats.serve(Arc::clone(&serving) as _);
+    let token = sign_in().split("\"token\":\"").nth(1).and_then(|r| r.split('"').next()).expect("her part names it").to_owned();
+    let linked = founding_ask(founded.uid, &founded.socket, &json!({"native": "shells#link"}));
+    assert!(linked["error"].is_null(), "the seat that made the person: {linked}");
+    // Another process of her account, with no seat record, is refused:
+    // a_founding_link_is_never_an_apps_or_another_programs, daemon_tests.rs:3551.
+    let refused = founding_ask(1001, &founded.socket, &json!({"native": "shells#link", "token": token}));
+    assert!(refused["error"].as_str().is_some_and(|w| w.contains("does not act")), "{refused}");
+    let record = founded._home.root().join("seats").join(format!("1001-{}.json", std::process::id()));
+    std::fs::write(&record, format!("{{\"uid\":1001,\"pid\":{},\"start\":0,\"person\":\"{}\"}}", std::process::id(), hex::encode(founded.person))).unwrap();
+    let reused = founding_ask(1001, &founded.socket, &json!({"native": "shells#link"}));
+    assert!(reused["error"].as_str().is_some_and(|w| w.contains("no seat")), "{reused}");
 }
 
 /// An action the device does not answer itself is answered by its person's part, not refused as
@@ -3856,31 +3795,6 @@ fn a_shell_link_whose_persons_services_did_not_start_answers_why() {
         why.contains("the device's store could not be opened"),
         "the answer is the failure's own: {why}"
     );
-}
-
-/// The session a sign-in admitted as a founding link founds its person, and asks for the link it
-/// reads and writes their workspaces on before the key this computer made its account is
-/// certified: it is that person's by this daemon's own record of the seat, so its link is admitted
-/// on the first try, and no other program of the account has one.
-#[test]
-fn the_session_that_made_the_person_takes_its_link_before_its_key_is_certified() {
-    use serde_json::json;
-    use std::sync::Arc;
-
-    let founded = founded_daemon(false);
-    let shells = Arc::new(Linked::default());
-    shells.person(founded.person);
-    founded.native.seats.serve(Arc::clone(&shells) as _);
-    let linked = founding_ask(
-        founded.uid,
-        &founded.socket,
-        &json!({"native": "shells#link"}),
-    );
-    assert!(
-        linked["error"].is_null(),
-        "the session that made the person is refused its link: {linked}"
-    );
-    assert_eq!(linked["shell"], true, "{linked}");
 }
 
 /// A computer whose person's part cannot start at all — the store their workspaces are kept in
