@@ -118,6 +118,7 @@ mod tests {
     use std::os::unix::process::ExitStatusExt as _;
     use std::process::{Command, Stdio};
     use std::time::Duration;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     const ROWS: TableDefinition<u64, u64> = TableDefinition::new("rows");
 
@@ -242,7 +243,7 @@ mod tests {
                 .env(CHILD, dir.path())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
-                .spawn()
+                .spawn_locked()
                 .unwrap();
             std::thread::sleep(Duration::from_micros(delay));
             child.kill().unwrap();

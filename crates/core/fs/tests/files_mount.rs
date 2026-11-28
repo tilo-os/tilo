@@ -176,7 +176,7 @@ impl Drop for Mounted {
         let _ = Command::new("fusermount3")
             .args(["-u", "-z"])
             .arg(&self.mount)
-            .status();
+            .status_locked();
     }
 }
 

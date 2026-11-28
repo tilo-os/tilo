@@ -8,6 +8,7 @@ use super::*;
 use std::io::{Read as _, Write as _};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// Where a child this test starts connects: set only in the child.
 const CHILD: &str = "TILO_SOCKET_PEER_TEST_CONNECT";
@@ -36,7 +37,7 @@ fn connected(listener: &crate::Listener, path: &Path) -> (Child, crate::Stream) 
         .env(CHILD, path)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .spawn()
+        .spawn_locked()
         .expect("the test starts a child");
     let (mut stream, _) = listener.accept().expect("the child's connection");
     let mut said = [0_u8; 1];

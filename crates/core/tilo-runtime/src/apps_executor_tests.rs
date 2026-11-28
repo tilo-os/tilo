@@ -81,7 +81,7 @@ tilo_test_env::scenario! {
         assert_eq!(command.payload_root, installed.payload_root);
         assert_eq!(command.package_hash, installed.package_id_hex);
 
-        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let mut child = std::process::Command::new("sleep").arg("30").spawn_locked().unwrap();
         launcher.started(ticket, child.id(), pinned(&child)).unwrap();
         let admitted = launcher
             .admitted(ticket)
@@ -151,7 +151,7 @@ tilo_test_env::scenario! {
         );
         let _ = std::process::Command::new("kill")
             .arg(pid.to_string())
-            .status();
+            .status_locked();
     }
 
     phase a_refused_launch_never_starts_a_process;
@@ -277,7 +277,7 @@ tilo_test_env::scenario! {
             apps(&store, &root, vec![root.join("missing/tilo-launcher")]).ordering_of_the_seat(),
         );
         let launcher = DeviceLauncher(Arc::clone(&apps));
-        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let mut child = std::process::Command::new("sleep").arg("30").spawn_locked().unwrap();
         let adopt = Adopt {
             app: VIEWER.to_owned(),
             workspace: WORKSPACE.to_owned(),

@@ -17,6 +17,7 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionAddress, ActionOutput, InvocationId, InvocationUpdate};
 
 use crate::language::host;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 const PROBE: &str = "so.tilo.probe";
 const ASKS: &str = "session.asks";
@@ -593,7 +594,7 @@ fn connect_in_a_tilo_login_reaches_the_computers_daemon() {
             .env_remove("TILO_RUNTIME_PROFILE")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .spawn()
+            .spawn_locked()
             .unwrap();
         let mut stdin = client.stdin.take().unwrap();
         for request in [
