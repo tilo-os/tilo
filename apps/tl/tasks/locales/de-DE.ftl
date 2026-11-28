@@ -2,6 +2,8 @@
 
 d-so-tilo-tasks = Aufgaben
 
+d-so-tilo-tasks-tagline = Aufgaben des Arbeitsbereichs, als Liste und als Board
+
 d-so-tilo-tasks-keywords = aufgaben, tickets, problemverfolgung, kanban, board, to-do, aufgabenliste, projekte, agentenaufgaben
 
 d-snj4onfb = Person
@@ -750,6 +752,8 @@ d-lvgvolrt-worked_ms = Gearbeitet in ms
 d-y5jf4p7n = Anhalten
     .doc = Sagt, dass die Arbeit an einer Aufgabe aufhörte, und warum, in den Worten, die ihre Person liest.
     .did = Arbeit angehalten
+    .w-it-is-finished-already = Sie ist schon erledigt
+    .w-say-why-it-stopped = Sag, warum sie angehalten hat
 
 d-y5jf4p7n-why = Grund
 
@@ -829,6 +833,16 @@ d-pgzbwzsm = beginnt eine Sitzung
 
 d-tpvjqy5m = Erledigte löschen~present
 
+d-r4h2vkz7 = Anhalten~present
+
+d-m4774i4j = Statuswort
+    .w-backlog = Backlog
+    .w-to-do = Zu tun
+    .w-in-progress = In Arbeit
+    .w-in-review = In Prüfung
+    .w-done = Erledigt
+    .w-cancelled = Verworfen
+
 d-i2mhsb3h = Startseite
     .w-new-task-labelled = Neue Aufgabe mit Etikett { $label }
     .w-new-task-in = Neue Aufgabe in { $name }
@@ -837,7 +851,10 @@ d-i2mhsb3h = Startseite
     .w-tasks = Aufgaben
     .w-projects = Projekte
     .w-labels = Etiketten
-    .w-no-tasks-here = Keine Aufgaben hier
+    .w-no-tasks-yet = Noch keine Aufgaben
+    .w-add-the-first-one-below-a = Schreib unten die erste auf; ein Teilschritt gehört zu einer Aufgabe, auf ihrer Seite.
+    .w-nothing-here-yet = Hier ist noch nichts
+    .w-choose-another-place-in-the-sidebar = Wähle in der Seitenleiste einen anderen Ort, oder leere die Suche, um den Rest zu sehen.
     .w-what-to-do = Was zu tun ist
     .w-from = Aus { $source } { $r }
     .w-from-2 = Aus { $source }
@@ -866,7 +883,18 @@ d-i2mhsb3h = Startseite
 
 d-mikudv5u = Board
     .w-tasks = Aufgaben
+    .w-projects = Projekte
+    .w-labels = Etiketten
     .w-new-task = Neue Aufgabe
+
+d-oepagzoi = Gespräche
+    .w-tasks = Aufgaben
+    .w-projects = Projekte
+    .w-labels = Etiketten
+    .w-nothing-said-yet = Noch nichts gesagt
+    .w-comment-on-a-task-and-its = Kommentiere eine Aufgabe, und ihr Gespräch steht hier.
+
+d-cfs4ddso = Gesprächszeile
 
 d-q4eq7oqv = Zu erledigen
     .w-new-task = Neue Aufgabe
@@ -920,10 +948,19 @@ d-mtmufg3w = Aufgabenseite
 
 d-fxb6wc2q = Projektseite
     .w-what-the-work-goes-towards = Worauf die Arbeit zielt
+    .w-tasks-documents-and-people-for-as = Aufgaben, Dokumente und Personen, solange es weitergeht.
+    .w-tasks-documents-and-people-until-it = Aufgaben, Dokumente und Personen, bis es erledigt ist.
     .w-what-it-is-for = Wofür es gut ist.
     .w-people = Personen
-    .w-add-someone = Jemanden hinzufügen
     .w-remove = Entfernen
+    .w-nobody-yet = Noch niemand.
+    .w-add-someone = Jemanden hinzufügen
+    .w-what-they-do = Was sie tun
+    .w-add = Hinzufügen
+    .w-tasks = Aufgaben
+    .w-nothing-works-towards-this-yet = Noch nichts arbeitet darauf hin.
+    .w-documents = Dokumente
+    .w-no-documents-yet = Noch keine Dokumente.
 
 d-j3fym73f = Kontakt
     .doc = Wer es tut, wenn die Person kein Mitglied ist: jemand, mit dem der Arbeitsbereich in Kontakt steht, aus seinem Adressbuch.

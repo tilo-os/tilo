@@ -537,7 +537,7 @@ fn the_home_list_shows_the_inbox_tasks_of_a_busy_week() {
             "the inbox lists what no day and no project sorts: {names:?}"
         );
         assert!(
-            !shows(&mut app, "No tasks here"),
+            !shows(&mut app, "Nothing here yet"),
             "the inbox has tasks in it: {names:?}"
         );
         for title in [

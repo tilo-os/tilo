@@ -326,7 +326,7 @@ default view task_page for Task
 
 default view project_list for Project
 
-views home (icon: .list), board (icon: .columns_2) for Tasks
+views home (icon: .list), board (icon: .columns_2), threads (icon: .message_square) for Tasks
 
 views project_list (icon: .list), project_board (icon: .columns_2), project_page (icon: .info) for Project
 
@@ -1263,6 +1263,8 @@ action stop(t: Task, why: StoppedWhy, words: Text = "") uses time (
     icon: .square,
     did: "stopped work",
 ) {
+    require not closed(t.status) "It is finished already"
+    require not words.trim().is_empty() "Say why it stopped"
     let w = work_of(t)
     t.work = Work(
         folder: w.folder,
@@ -1443,6 +1445,88 @@ fn places(shared: Bool) -> List<Filter<Task>> {
     } else { out }
 }
 
+/// The places whose badge counts what waits in them: a place whose filter says how much it holds
+/// counts it, and a place of days says nothing while nothing falls on them.
+fn counted_places() -> List<Text> {
+    ["tasks", "inbox", "today", "todos", "nobody_yet", "agent_work", "waiting", "assigned_to_me"]
+}
+
+/// The project the chosen place names, when it names one.
+fn chosen_project(t: Tasks, chosen: Text) -> Option<Project> {
+    t.projects.find(p -> chosen == "project:{p.name}")
+}
+
+/// The label the chosen place names, empty when it names none.
+fn chosen_label(chosen: Text) -> Text {
+    if chosen.starts_with("label:") { chosen.slice(6, chosen.len()) } else { "" }
+}
+
+/// The filter of the chosen place, or the day's when it names no place of its own.
+fn chosen_filter(chosen: Text) -> Filter<Task> {
+    let side = places(workspace.members.people.len() > 1)
+    side.find(f -> f.key == chosen) ?? Task.today
+}
+
+/// The tasks a project holds: the ones filed under it, and the steps under those, which work
+/// towards the same project without naming it.
+fn project_items(t: Tasks, p: Project) -> List<Task> {
+    t.items.filter(x -> x.project == p or t.items.ancestors(x, .parent).any(a -> a.project == p))
+}
+
+/// The tasks the chosen place holds: a project's, a label's, or the place's own filter's.
+fn chosen_items(t: Tasks, chosen: Text) -> List<Task> {
+    let label = chosen_label(chosen)
+    if let p = chosen_project(t, chosen) {
+        project_items(t, p)
+    } else if label != "" {
+        t.items.filter(x -> x.labels.contains(label))
+    } else { t.items.matching(chosen_filter(chosen)) }
+}
+
+/// What the chosen place is called: the label's, the project's, or the place's own name.
+fn chosen_title(t: Tasks, chosen: Text) -> Text {
+    let label = chosen_label(chosen)
+    if label != "" {
+        label
+    } else if let p = chosen_project(t, chosen) { p.name } else { chosen_filter(chosen).label }
+}
+
+/// The sidebar of a window that lists the tasks: the places the app offers, the projects above
+/// them and the labels in use, each naming the key a press chooses through `pick`.
+template view places_side(t: Tasks, chosen: State<Text>, pick: (Text) -> Action) {
+    let side = places(workspace.members.people.len() > 1)
+    let counted = counted_places()
+    ui.NavList(selected: chosen) {
+        for f in side {
+            let badge = if counted.any(k -> k == f.key) { waiting(t.items.matching(f).counted()) }
+            ui.NavItem(f.key, f.label, icon: f.icon, count: badge) {
+                on select: pick(f.key)
+            }
+        }
+        ui.NavSection("Projects", add: new_project(t)) {
+            for p in t.projects {
+                ui.NavItem(
+                    "project:{p.name}",
+                    p.name,
+                    icon: if p.kind == .area { .layers } else { .folder },
+                ) {
+                    on select: pick("project:{p.name}")
+                }
+            }
+        }
+        let labels = t.items.values(.labels)
+        if not labels.is_empty() {
+            ui.NavSection("Labels") {
+                for l in labels {
+                    ui.NavItem("label:{l}", l, icon: .tag) {
+                        on select: pick("label:{l}")
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// The place a task stands in: its project's, or the first of `side` that holds it beside Tasks,
 /// which holds every task and so says nothing of where one belongs; Tasks only when no other does.
 fn place_of(side: List<Filter<Task>>, x: Task) -> Filter<Task> {
@@ -1477,15 +1561,10 @@ view home(t: Tasks) {
             },
         )
         .then(set(opened, x))
-    let side = places(workspace.members.people.len() > 1)
-    let project = t.projects.find(p -> chosen == "project:{p.name}")
-    let label = if chosen.starts_with("label:") { chosen.slice(6, chosen.len()) } else { "" }
-    let place = side.find(f -> f.key == chosen) ?? Task.today
-    let listed = if let p = project {
-        t.items.filter(x -> x.project == p)
-    } else if label != "" {
-        t.items.filter(x -> x.labels.contains(label))
-    } else { t.items.matching(place) }
+    let project = chosen_project(t, chosen)
+    let label = chosen_label(chosen)
+    let place = chosen_filter(chosen)
+    let listed = chosen_items(t, chosen)
     let found = if searched.is_empty() { listed } else { listed.matching(searched) }
     // A place of days groups by day and a project's list folds finished work under its foot.
     let by_day = place.key == "today" or place.key == "upcoming" or project != .none
@@ -1497,21 +1576,12 @@ view home(t: Tasks) {
     let shown = if done_place {
         found.sort_by(x -> changed(x, .status)?.at, desc)
     } else if folds { ordered.sort_by(x -> folded(found, x)) } else { ordered }
-    let title = if label != "" { label } else if let p = project { p.name } else { place.label }
+    let title = chosen_title(t, chosen)
     // What waits here, read from the index: the same cost at three tasks or three thousand.
     let open = found.count(x -> not closed(x.status))
     let all_done = open == 0 and not found.is_empty()
     // The places whose badge counts what waits.
-    let counted: List<Text> = [
-        "tasks",
-        "inbox",
-        "today",
-        "todos",
-        "nobody_yet",
-        "agent_work",
-        "waiting",
-        "assigned_to_me",
-    ]
+    let counted = counted_places()
     let header_count = if label == "" {
         if counted.any(k -> k == chosen) { waiting(found.counted()) }
     } else { found.counted() }
@@ -1520,8 +1590,6 @@ view home(t: Tasks) {
     } else if let p = project {
         "New task in {p.name}"
     } else if in_today { "New task for today" } else { "New task" }
-    // The labels in use, from the index: the same cost at three tasks or three thousand.
-    let labels = t.items.values(.labels)
     // The places, the tasks of one, and the opened task beside them: the list is the window's
     // overview, so the open task's page stands in the content column and the list keeps its
     // place left of it, rather than the page growing out of the row under the list's foot.
@@ -1535,36 +1603,7 @@ view home(t: Tasks) {
     ) {
         on search(q: Text): set(searched, q)
         sidebar: {
-            ui.NavList(selected: chosen) {
-                for f in side {
-                    let badge = if counted.any(k -> k == f.key) {
-                        waiting(t.items.matching(f).counted())
-                    }
-                    ui.NavItem(f.key, f.label, icon: f.icon, count: badge) {
-                        on select: set(chosen, f.key).then(set(opened, .none))
-                    }
-                }
-                ui.NavSection("Projects", add: new_project(t)) {
-                    for p in t.projects {
-                        ui.NavItem(
-                            "project:{p.name}",
-                            p.name,
-                            icon: if p.kind == .area { .layers } else { .folder },
-                        ) {
-                            on select: set(chosen, "project:{p.name}").then(set(opened, .none))
-                        }
-                    }
-                }
-                if not labels.is_empty() {
-                    ui.NavSection("Labels") {
-                        for l in labels {
-                            ui.NavItem("label:{l}", l, icon: .tag) {
-                                on select: set(chosen, "label:{l}").then(set(opened, .none))
-                            }
-                        }
-                    }
-                }
-            }
+            places_side(t, chosen, key -> set(chosen, key).then(set(opened, .none)))
         }
         overview: {
             ui.Docked {
@@ -1589,7 +1628,21 @@ view home(t: Tasks) {
                 if all_done {
                     ui.EmptyState(phrase("tilolang-all-done"), icon: .list_checks, inline: true)
                 } else if shown.is_empty() and opened == .none {
-                    ui.EmptyState("No tasks here", icon: .list_checks)
+                    // A workspace with nothing written yet and a place that holds nothing read
+                    // apart: the first says where tasks come from, the second where the rest are.
+                    if t.items.is_empty() {
+                        ui.EmptyState(
+                            "No tasks yet",
+                            message: "Add the first one below; a step belongs to a task, on its page.",
+                            icon: .list_checks,
+                        )
+                    } else {
+                        ui.EmptyState(
+                            "Nothing here yet",
+                            message: "Choose another place in the sidebar, or clear the search, to see the rest.",
+                            icon: .list_checks,
+                        )
+                    }
                 } else {
                     task_list(shown, by_day, done_place, folds, opened, project)
                 }
@@ -1615,29 +1668,127 @@ fn status_of(key: Text) -> Status {
     } else if key == "todos" { .todo } else if key == "waiting" { .backlog } else { .backlog }
 }
 
-/// Every task on a board of its own, by the column it stands in: what the Issues/Board views show
-/// of the whole workspace.
+/// Every task on a board of its own, by the column it stands in: the workspace's board, narrowed
+/// by the place its sidebar chooses, as the list is.
 view board(t: Tasks) {
-    state opened: Option<Task> = .none
-    on show(x: Task): set(opened, x)
-    std.page(t, canvas: true, fill: true) {
-        ui.Scroll(across: true) {
-            ui.Board(name: "Tasks") {
-                for s in cases(Status) {
-                    let cards = column(.none, s)
-                    ui.BoardList(title: s.label(), count: cards.counted()) {
-                        on drop(moved: Task, at: Int): set_status(moved, s, at)
-                        foot: {
-                            std.add_entry("New task", new_task(tasks, status: .some(s)))
-                        }
-                        for x in cards {
-                            task_card(x, .none)
+    state chosen: Text = "tasks"
+    // What the bar's search holds: it narrows the chosen place's cards.
+    state searched: Text = ""
+    let project = chosen_project(t, chosen)
+    let listed = chosen_items(t, chosen)
+    let found = if searched.is_empty() { listed } else { listed.matching(searched) }
+    ui.NavShell(content_kind: .page, sidebar_title: "Tasks", title: chosen_title(t, chosen)) {
+        on search(q: Text): set(searched, q)
+        sidebar: {
+            places_side(t, chosen, key -> set(chosen, key))
+        }
+        content: {
+            ui.Scroll {
+                page(full, fill: true) {
+                    stack(gap: .group, fill: true) {
+                        ui.Scroll(across: true) {
+                            ui.Board(name: "Tasks") {
+                                for s in cases(Status) {
+                                    // A step under a task of the same place stands with it, never
+                                    // as a card of its own.
+                                    let cards = found.filter(
+                                        x -> x.status == s and x.parent == .none,
+                                    )
+                                    ui.BoardList(title: s.label(), count: cards.counted()) {
+                                        on drop(moved: Task, at: Int): set_status(moved, s, at)
+                                        foot: {
+                                            std.add_entry(
+                                                "New task",
+                                                new_task(
+                                                    t,
+                                                    p: project,
+                                                    status: .some(s),
+                                                    due: if chosen == "today" { today },
+                                                ),
+                                            )
+                                        }
+                                        for x in cards {
+                                            task_card(x, project)
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
         }
     }
+}
+
+/// What was said in the workspace, by task: the tasks of the chosen place something was said
+/// about, the one said about last first, each opening its task.
+view threads(t: Tasks) {
+    state chosen: Text = "tasks"
+    // What the bar's search holds: it narrows the chosen place's tasks.
+    state searched: Text = ""
+    let listed = chosen_items(t, chosen)
+    let found = if searched.is_empty() { listed } else { listed.matching(searched) }
+    let spoken = commented(found)
+    ui.NavShell(
+        content_kind: .list,
+        sidebar_title: "Tasks",
+        title: chosen_title(t, chosen),
+        count: spoken.counted(),
+    ) {
+        on search(q: Text): set(searched, q)
+        sidebar: {
+            places_side(t, chosen, key -> set(chosen, key))
+        }
+        content: {
+            if spoken.is_empty() {
+                ui.EmptyState(
+                    "Nothing said yet",
+                    message: "Comment on a task, and its conversation stands here.",
+                    icon: .message_square,
+                )
+            } else {
+                ui.Scroll {
+                    page {
+                        stack(gap: .tight) {
+                            for c in spoken {
+                                thread_item(c)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The remark said about each task of `listing` most recently, the one said about last first:
+/// what the threads window lists, one row a task, read in a single pass over what was said.
+fn commented(listing: List<Task>) -> List<discussion.Comment> {
+    let out: List<discussion.Comment> = []
+    for c in discussion.comments.items {
+        if let about = created(c)?.from {
+            if [about].of(Task).any(x -> listing.contains(x)) {
+                // A later remark about a task takes that task's place at the top.
+                out = [[c], out.filter(x -> created(x)?.from != about)].flat_map(x -> x)
+            }
+        }
+    }
+    out
+}
+
+/// One task with a conversation: what it is called, who said the latest of it, and what they
+/// said. Pressing it opens the task.
+view thread_item(c: discussion.Comment) {
+    let about = created(c)?.from
+    let said = meta(c).title
+    let words = if let who = created(c)?.who { "{who.name()}: {said}" } else { said }
+    ui.ListRow(
+        if let a = about { meta(a).title } else { said },
+        item: about,
+        secondary: words,
+        icon: .message_square,
+    )
 }
 
 /// What there is to do, on its own as a place shows it: the open tasks, due soonest first and
@@ -1936,7 +2087,7 @@ template view task_body(t: Task) {
                     }
                 }
             }
-            if t.waiting_for != "" {
+            if t.waiting_for != "" and not closed(t.status) {
                 row(gap: .related, align: .center) {
                     ui.Icon(.hourglass, size: .small)
                     ui.Text(
@@ -2104,6 +2255,8 @@ template view task_body(t: Task) {
 /// A project's page: what it is, who is involved in it, its tasks and its documents.
 view project_page(p: Project) {
     state whom: Text
+    state doing: Text
+    let working = project_items(tasks, p)
     std.document(p) {
         stack(gap: .group) {
             stack(gap: .related) {
@@ -2115,8 +2268,17 @@ view project_page(p: Project) {
                     title: true,
                     fill: 1.0,
                 )
-                // Whether it is a project or an area is the field's own chip.
+                // Whether it is a project or an area is the field's own chip, and what the one
+                // the project is says of the work it holds.
                 facts(p)
+                ui.Text(
+                    if p.kind == .area {
+                        "Tasks, documents and people, for as long as it goes on."
+                    } else {
+                        "Tasks, documents and people, until it is done."
+                    },
+                    secondary: true,
+                )
                 ui.BlockEditor(bind: p.notes, placeholder: "What it is for.")
             }
             section("People") {
@@ -2130,12 +2292,67 @@ view project_page(p: Project) {
                         }
                     }
                 }
-                ui.TextInput(bind: whom, placeholder: "Add someone") {
-                    on submit: involve(p, whom).then(set(whom, ""))
+                if p.people.is_empty() {
+                    ui.Text("Nobody yet.", secondary: true)
+                }
+                // Someone is involved by name and by what they do there: the role is read as it
+                // stands when they are added, and both fields clear for the next person.
+                row(gap: .related) {
+                    ui.TextInput(bind: whom, placeholder: "Add someone", fill: 1.0) {
+                        on submit: involve(p, whom, doing).then(set(whom, "")).then(set(doing, ""))
+                    }
+                    ui.TextInput(bind: doing, placeholder: "What they do", fill: 1.0) {
+                        on submit: involve(p, whom, doing).then(set(whom, "")).then(set(doing, ""))
+                    }
+                    ui.Button("Add", icon: .plus) {
+                        on press: involve(p, whom, doing).then(set(whom, "")).then(set(doing, ""))
+                    }
+                }
+            }
+            section("Tasks") {
+                if working.is_empty() {
+                    ui.Text("Nothing works towards this yet.", secondary: true)
+                } else {
+                    stack(gap: .tight) {
+                        for x in working {
+                            ui.ListRow(
+                                x.title,
+                                item: x,
+                                secondary: status_word(x.status),
+                                value: "#{x.number}",
+                            )
+                        }
+                    }
+                }
+            }
+            section("Documents") {
+                let documents = documents_of(working)
+                if documents.is_empty() {
+                    ui.Text("No documents yet.", secondary: true)
+                } else {
+                    stack(gap: .tight) {
+                        for d in documents {
+                            std.linked_row(d)
+                        }
+                    }
                 }
             }
             std.linked(p)
             std.history(p)
         }
     }
+}
+
+/// What names the tasks working towards a project, each once: the documents that go with the
+/// work, read from the workspace's own links rather than a copy kept beside them.
+fn documents_of(working: List<Task>) -> List<host.Resource> {
+    let out: List<host.Resource> = []
+    for x in working {
+        for l in linked(x) {
+            if l.how == .mention and not out.contains(l.of) {
+                out = out + [l.of]
+            }
+        }
+    }
+    out
 }

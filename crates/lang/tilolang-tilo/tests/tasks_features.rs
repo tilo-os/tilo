@@ -499,7 +499,7 @@ fn a_session_begins_only_where_the_task_may_still_be_worked() {
             vec![
                 one.clone(),
                 case(&ada, "StoppedWhy", "lost_worker"),
-                Value::text(""),
+                Value::text("the worker went away"),
             ],
         );
     }
@@ -789,31 +789,105 @@ fn a_projects_page_shows_its_people() {
         vec![made.clone(), Value::text("Bo"), Value::text("")],
     );
     ada.commit();
-    let view_id = ada
-        .host
-        .package(APP)
-        .unwrap()
-        .meta
-        .views
-        .iter()
-        .find(|view| view.name == "project_page")
-        .unwrap()
-        .id
-        .clone();
-    let view = ada
-        .host
-        .runtime()
-        .open_view(
-            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
-            &view_id,
-            vec![made],
-        )
-        .unwrap();
+    let view = project_page(&ada, &made);
     let shown = format!("{:?}", view.tree());
     assert!(
         shown.contains("Bo"),
         "the project's people are on its page: {shown}"
     );
+}
+
+/// A project's page, drawn: what it is, who is involved in it and what each of them does, the
+/// work that goes towards it, and the documents that work names.
+fn project_page(ada: &Replica, project: &Value) -> tilolang_runtime::ViewInstance {
+    let view_id = ada.view_id(APP, "project_page");
+    ada.host
+        .runtime()
+        .open_view(
+            &crate::fixtures::person(&ada.name),
+            &view_id,
+            vec![project.clone()],
+        )
+        .unwrap()
+}
+
+#[test]
+fn a_projects_page_says_what_each_person_does_and_the_work_that_goes_towards_it() {
+    let (ada, root) = workspace();
+    let made = plan(&ada, &root, "Launch");
+    ada.commit();
+    let shown = format!("{:?}", project_page(&ada, &made).tree());
+    assert!(
+        shown.contains("Nobody yet."),
+        "a project nobody is involved in says so: {shown}"
+    );
+
+    let post = call(
+        &ada,
+        "add_to",
+        vec![made.clone(), Value::text("Write the launch post"), none()],
+    );
+    let step = call(
+        &ada,
+        "add_subtask",
+        vec![post.clone(), Value::text("Outline")],
+    );
+    // The step works towards the project through the task it stands under, without naming it.
+    call(&ada, "unfile", vec![step]);
+    call(
+        &ada,
+        "involve",
+        vec![made.clone(), Value::text("Bo"), Value::text("writes it")],
+    );
+    ada.commit();
+    // A note that names the work is a document the project holds, read from the workspace's
+    // links, never a copy kept on the project.
+    let Value::Ref(post_at) = &post else {
+        panic!("a task: {post:?}")
+    };
+    let (mark, title) = tilolang_tilo::instance::link_of(&ada.host, &post_at.target);
+    let to_post =
+        tilolang_runtime::rich::Reference::of_mark(&mark).expect("a reference to the task");
+    let mut body = tilolang_runtime::rich::RichValue::from_text("The plan of ");
+    body.push_reference(&title, &to_post);
+    let notebook = Value::resource(&ada.host.root_of("so.tilo.notes").unwrap());
+    let note = ada.call(
+        "so.tilo.notes",
+        "new_note",
+        vec![notebook, Value::text("The launch plan")],
+    );
+    ada.commit();
+    let Value::Ref(note_at) = &note else {
+        panic!("a note: {note:?}")
+    };
+    let mut written = ada.host.open_resource(&note_at.target, None).unwrap();
+    written.poll_patches().unwrap();
+    let editor = key_of(&written, "ui.BlockEditor", &|_| true);
+    written
+        .edit(&editor, &Value::Rich(body))
+        .expect("the note's body edits");
+    written.poll_patches().unwrap();
+    ada.commit();
+
+    let shown = format!("{:?}", project_page(&ada, &made).tree());
+    for wanted in [
+        "writes it",
+        "Outline",
+        "The launch plan",
+        "Nothing works towards this yet.",
+    ] {
+        if wanted == "Nothing works towards this yet." {
+            assert!(
+                !shown.contains(wanted),
+                "the project holds work, so it does not say it holds none: {shown}"
+            );
+        } else {
+            assert!(
+                shown.contains(wanted),
+                "the project's page shows {wanted}: {shown}"
+            );
+        }
+    }
 }
 
 #[test]

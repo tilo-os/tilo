@@ -319,8 +319,18 @@ tilo_test_env::scenario! {
             })
             .collect();
         assert!(
-            said.iter().any(|title| title == "No tasks here"),
-            "the place says it holds nothing: {said:?}"
+            said.iter().any(|title| title == "Nothing here yet"),
+            "the place says it holds nothing, and where the rest are: {said:?}"
+        );
+        let where_the_rest =
+            view.tree()
+                .of_kind("ui.EmptyState")
+                .into_iter()
+                .find(|node| node.props.get("title") == Some(&Value::text("Nothing here yet")))
+                .and_then(|node| node.props.get("message").cloned());
+        assert!(
+            matches!(&where_the_rest, Some(Value::Text(message)) if message.contains("sidebar")),
+            "the empty place says the other places hold the rest: {where_the_rest:?}"
         );
         assert!(
             !said
@@ -331,6 +341,35 @@ tilo_test_env::scenario! {
         assert!(
             home_list_rows(&mut view).is_empty(),
             "a place that holds nothing draws no list"
+        );
+    }
+
+    phase an_empty_workspace_says_where_tasks_come_from;
+    // A workspace with nothing written yet says so, and says where the first task is typed; the
+    // entry it points at stands under it, so the words and the control agree.
+    {
+        let (ada, _root) = workspace();
+        ada.commit();
+        let view = ada.view(APP);
+        let state = view
+            .tree()
+            .of_kind("ui.EmptyState")
+            .into_iter()
+            .find(|node| node.props.get("title") == Some(&Value::text("No tasks yet")))
+            .unwrap_or_else(|| panic!("an empty workspace says so: {:#?}", view.tree()));
+        match state.props.get("message") {
+            Some(Value::Text(message)) => assert!(
+                message.contains("below"),
+                "it says where the first one is typed: {message:?}"
+            ),
+            other => panic!("the empty state says how to start: {other:?}"),
+        }
+        assert!(
+            view.tree()
+                .of_kind("ui.TextInput")
+                .into_iter()
+                .any(|input| input.props.get("entry") == Some(&Value::Bool(true))),
+            "the entry that adds the first task stands in the same window"
         );
     }
 

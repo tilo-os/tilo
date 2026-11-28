@@ -3245,6 +3245,211 @@ tilo_test_env::scenario! {
     }
 }
 
+/// The Tasks window with the view `at` of its tabs shown: 0 the list, 1 the board, 2 the
+/// threads.
+fn at_view(ada: &Replica, at: i64) -> ViewInstance {
+    let mut view = ada.view(APP);
+    view.poll_patches().unwrap();
+    let tabs = key_of(&view, "ui.ViewTabs", &|_| true);
+    view.fire_with(&tabs, "change", Some(&Value::Int(at)))
+        .unwrap();
+    view.poll_patches().unwrap();
+    view
+}
+
+/// What the person `ada` says about `about`: a comment in the Discussion app, made from the task
+/// it is about, as the thread under a task's page makes one.
+fn said_about(ada: &Replica, about: &Value, said: &str) {
+    let all = Value::resource(&ada.host.root_of("so.tilo.lang.discussion").unwrap());
+    let meta = ada.host.package("so.tilo.lang.discussion").unwrap().meta;
+    let id = meta
+        .actions
+        .iter()
+        .find(|action| action.name == "comment")
+        .unwrap_or_else(|| panic!("Discussion's comment"))
+        .id
+        .clone();
+    let at = crate::fixtures::target(about);
+    let asked = tilolang_runtime::ActionRef::new(
+        id,
+        vec![
+            all,
+            Value::Rich(tilolang_runtime::rich::RichValue::from_text(said)),
+        ],
+    )
+    .made_from(Some(&at));
+    match ada
+        .host
+        .runtime()
+        .invoke_action(&crate::fixtures::person(&ada.name), asked)
+    {
+        Ok(InvokeOutcome::Done(_)) => {}
+        other => panic!("a comment: {other:?}"),
+    }
+}
+
+/// The titles of the rows a window shows, in the order they stand.
+fn shown_rows(view: &ViewInstance) -> Vec<(String, String)> {
+    view.tree()
+        .of_kind("ui.ListRow")
+        .into_iter()
+        .filter_map(
+            |row| match (row.props.get("title"), row.props.get("secondary")) {
+                (Some(Value::Text(title)), Some(Value::Text(secondary))) => {
+                    Some((title.clone(), secondary.clone()))
+                }
+                (Some(Value::Text(title)), _) => Some((title.clone(), String::new())),
+                _ => None,
+            },
+        )
+        .collect()
+}
+
+#[test]
+fn the_threads_view_lists_what_was_said_about_a_task_last_first() {
+    let (ada, root) = workspace();
+    let van = call(&ada, "new_task", create(&root, "Book the van"));
+    let boxes = call(&ada, "new_task", create(&root, "Order boxes"));
+    let books = call(&ada, "new_task", create(&root, "Pack the books"));
+    ada.commit();
+    said_about(&ada, &van, "Mia has the van for Tuesday.");
+    said_about(&ada, &books, "The tape is here already.");
+    ada.commit();
+    // Said about last: the boxes' remark is the newest.
+    said_about(&ada, &boxes, "The tape arrives on Thursday.");
+    ada.commit();
+    let view = at_view(&ada, 2);
+    assert_eq!(
+        shown_rows(&view),
+        [
+            (
+                "Order boxes".to_owned(),
+                "ada: The tape arrives on Thursday.".to_owned()
+            ),
+            (
+                "Pack the books".to_owned(),
+                "ada: The tape is here already.".to_owned()
+            ),
+            (
+                "Book the van".to_owned(),
+                "ada: Mia has the van for Tuesday.".to_owned()
+            ),
+        ],
+        "the tasks something was said about, the one said about last first, each saying who said \
+         what"
+    );
+    let shell = view
+        .tree()
+        .first_of_kind("ui.NavShell")
+        .expect("the window's shell");
+    assert_eq!(
+        shell.props.get("count"),
+        Some(&Value::Int(3)),
+        "the window counts the conversations it holds"
+    );
+}
+
+#[test]
+fn the_board_and_the_threads_follow_the_place_the_sidebar_chooses() {
+    let (ada, root) = workspace();
+    let project = call(&ada, "new_project", vec![root.clone()]);
+    call(
+        &ada,
+        "rename",
+        vec![project.clone(), Value::text("Groceries")],
+    );
+    let milk = call(&ada, "new_task", create(&root, "Buy oat milk"));
+    call(&ada, "file", vec![milk.clone(), project]);
+    let haircut = call(&ada, "new_task", create(&root, "Book a haircut"));
+    call(&ada, "label", vec![haircut.clone(), Value::text("errand")]);
+    ada.commit();
+    let ids = |ts: &[&Value]| ts.iter().map(|t| target(t)).collect::<Vec<_>>();
+    let mut board = at_view(&ada, 1);
+    assert_eq!(
+        lists(&board)[0].2,
+        ids(&[&milk, &haircut]),
+        "the workspace's board holds every task"
+    );
+    // The board's sidebar is the window's places: choosing one narrows the cards it holds.
+    go_to(&mut board, "Groceries");
+    assert_eq!(
+        lists(&board)[0].2,
+        ids(&[&milk]),
+        "a project's board holds its tasks: {:?}",
+        lists(&board)
+    );
+    go_to(&mut board, "errand");
+    assert_eq!(
+        lists(&board)[0].2,
+        ids(&[&haircut]),
+        "a label's board holds the tasks it is on"
+    );
+    assert!(
+        board
+            .tree()
+            .of_kind("ui.NavItem")
+            .into_iter()
+            .any(|item| item.props.get("label") == Some(&Value::text("Inbox"))),
+        "the board's sidebar offers the app's places"
+    );
+    // The threads are narrowed by the same place: only a task something was said about stands.
+    said_about(&ada, &milk, "Oat milk is on the list.");
+    ada.commit();
+    let mut threads = at_view(&ada, 2);
+    go_to(&mut threads, "errand");
+    assert!(
+        shown_rows(&threads).is_empty(),
+        "the errand's task has nothing said about it: {:?}",
+        shown_rows(&threads)
+    );
+    go_to(&mut threads, "Groceries");
+    assert_eq!(
+        shown_rows(&threads)
+            .into_iter()
+            .map(|(title, _)| title)
+            .collect::<Vec<_>>(),
+        ["Buy oat milk"],
+        "the project's place holds the one task something was said about"
+    );
+}
+
+#[test]
+fn a_finished_task_is_not_stopped_and_a_stop_says_why() {
+    let (ada, root) = workspace();
+    let done = call(&ada, "new_task", create(&root, "Water the plants"));
+    call(&ada, "check", vec![done.clone()]);
+    let refused = |action: &str, args: Vec<Value>| {
+        let meta = &ada.host.package(APP).unwrap().meta;
+        let id = crate::fixtures::action_id(meta, action);
+        match ada
+            .host
+            .runtime()
+            .invoke_action(&crate::fixtures::person(&ada.name), (id.as_str(), args))
+        {
+            Ok(outcome) => !matches!(outcome, InvokeOutcome::Done(_)),
+            Err(_) => true,
+        }
+    };
+    let why = |name: &str| case(&ada, "StoppedWhy", name);
+    assert!(
+        refused(
+            "stop",
+            vec![done, why("failed"), Value::text("the build failed")],
+        ),
+        "a finished task is not stopped"
+    );
+    let open = call(&ada, "new_task", create(&root, "Book the van"));
+    assert!(
+        refused("stop", vec![open.clone(), why("failed"), Value::text("")]),
+        "a stop says why it stopped"
+    );
+    call(
+        &ada,
+        "stop",
+        vec![open, why("failed"), Value::text("the build failed")],
+    );
+}
+
 /// A name in the code, as a control's binding spells it: lowercase words joined by underscores,
 /// or one lowercase word (`draft`, `step`). A person hears it read out as though the app's code
 /// were the word for what they are typing in.

@@ -2240,7 +2240,7 @@ mod cases {
             let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
             assert_eq!(
                 text_prop(of_kind(v.tree(), "ui.EmptyState")[0], "title"),
-                "No tasks here"
+                "No tasks yet"
             );
             // One New task, the window's primary button: the host places it from the declaration,
             // the view draws no button of it, and it carries the key the action declares.

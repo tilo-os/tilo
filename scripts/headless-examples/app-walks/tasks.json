@@ -26,7 +26,7 @@
         },
         {
           "must": [
-            "No tasks here"
+            "No tasks yet"
           ]
         },
         {
@@ -418,6 +418,46 @@
           ]
         }
       ]
+    },
+    {
+      "id": "places",
+      "said": "See the same work on the board, and the tasks that said something in their own view",
+      "ops": [
+        {
+          "press_any": [
+            "Board"
+          ]
+        },
+        {
+          "must": [
+            "Backlog"
+          ]
+        },
+        {
+          "press_any": [
+            "Threads"
+          ]
+        },
+        {
+          "must": [
+            "Nothing said yet"
+          ]
+        },
+        {
+          "press_any": [
+            "Home"
+          ]
+        },
+        {
+          "select_row": "Upcoming"
+        },
+        {
+          "must": [
+            "Call the landlord"
+          ]
+        }
+      ],
+      "dark": true
     },
     {
       "id": "search",
