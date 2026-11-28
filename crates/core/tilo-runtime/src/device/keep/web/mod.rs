@@ -81,44 +81,44 @@ impl Web {
         let contact = site
             .or(public_origin)
             .map_or_else(|| format!("https://{addr}"), str::to_owned);
+        let (Some(workspaces), Ok(runtime)) =
+            (&self.workspaces, tokio::runtime::Handle::try_current())
+        else {
+            return;
+        };
+        // What a person's assistant told them reaches the browsers they
+        // subscribed, and the closed apps of theirs that take web push, while no
+        // device of theirs is looking.
+        let mut outside: Vec<Arc<dyn tilo_app_host::agents::telling::Outside>> = Vec::new();
         match crate::device::keep::web_push::WebPush::open(state, &contact) {
-            Ok(push) => {
-                // What a person's assistant told them reaches the same
-                // browsers, and the closed apps of theirs that take web
-                // push, while no device of theirs is looking.
-                if let (Some(workspaces), Ok(runtime)) =
-                    (&self.workspaces, tokio::runtime::Handle::try_current())
-                {
-                    let push = push.telling(workspaces.clone());
-                    let teller = tilo_app_host::agents::telling::Teller::new(
-                        workspaces.clone(),
-                        Arc::new(push),
-                    );
-                    // An app of theirs that is closed hears of it through
-                    // Apple's push service, where this server's configuration
-                    // names a key for that.
-                    let named = self.context.closed_apps.as_ref();
-                    #[cfg(test)]
-                    let through = self.context.apple_through.get().cloned();
-                    #[cfg(not(test))]
-                    let through = None;
-                    let apple = crate::device::keep::apple_push::ApplePush::open_through(
-                        named,
-                        workspaces.clone(),
-                        through,
-                    );
-                    let teller = if let Some(apple) = apple {
-                        teller.also(Arc::new(apple))
-                    } else {
-                        teller
-                    };
-                    runtime.spawn(teller.run());
-                }
-            }
+            Ok(push) => outside.push(Arc::new(push.telling(workspaces.clone()))),
             Err(error) => {
                 tracing::warn!(%error, "this host tells nobody outside Tilo that a question waits");
             }
         }
+        // An app of theirs that is closed hears of it through Apple's push
+        // service, where this server's configuration names a key for that: a
+        // notice, and a turn of theirs shown as a live activity.
+        let named = self.context.closed_apps.as_ref();
+        #[cfg(test)]
+        let through = self.context.apple_through.get().cloned();
+        #[cfg(not(test))]
+        let through = None;
+        if let Some(apple) = crate::device::keep::apple_push::ApplePush::open_through(
+            named,
+            workspaces.clone(),
+            through,
+        ) {
+            outside.push(Arc::new(apple));
+        }
+        let Some(first) = outside.pop() else {
+            return;
+        };
+        let mut teller = tilo_app_host::agents::telling::Teller::new(workspaces.clone(), first);
+        for more in outside {
+            teller = teller.also(more);
+        }
+        runtime.spawn(teller.run());
     }
 }
 

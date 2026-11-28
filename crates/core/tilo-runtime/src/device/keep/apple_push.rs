@@ -24,6 +24,7 @@
 //! server starts, read here and never written, printed or logged. Without
 //! one nothing is sent, and the server says so once.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
@@ -40,6 +41,7 @@ use ring::rand::SystemRandom;
 use serde::{Deserialize, Serialize};
 use tilo_lock::MutexRecover as _;
 use tilo_person_services::person_telling::Told;
+use tilo_person_services::{LivePhase, LiveTurn};
 
 use tilo_person_services::push_addresses::{PushAddress, PushEnvironment, PushKind};
 use tilo_server_protocol::config::ApplePushKey;
@@ -58,6 +60,12 @@ const PORT: u16 = 443;
 const ALERT_KEY: &str = "TOLD_WAITS";
 /// What the system groups the notifications of a person's assistant under.
 const THREAD: &str = "assistant";
+/// What a live activity is called on one device, as its attributes say it.
+const LIVE_ATTRIBUTES: &str = "TiloLiveTurn";
+/// The suffix Apple's service takes for a live activity of an app.
+const LIVE_TOPIC: &str = ".push-type.liveactivity";
+/// How long a live activity's end stays on the lock screen, in seconds.
+const LIVE_DISMISS_SECS: u64 = 60;
 /// How long Apple's service keeps a push for a device that is off: as long
 /// as the sender for browsers has a browser's kept.
 const TTL_SECS: u64 = 10 * 60;
@@ -132,6 +140,16 @@ struct Inner {
     signed: std::sync::Mutex<Option<(String, u64)>>,
     production: tokio::sync::Mutex<Option<Sender>>,
     development: tokio::sync::Mutex<Option<Sender>>,
+    /// What each live activity was last sent, by the person whose turn it is
+    /// and the turn's id.
+    live: std::sync::Mutex<HashMap<String, LiveSent>>,
+}
+
+/// Where a live activity of a person's turn stands where it was last sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LiveSent {
+    phase: LivePhase,
+    step: u32,
 }
 
 /// What a push is.
@@ -140,6 +158,8 @@ enum Push<'a> {
     Alert { name: &'a str },
     /// One that shows nothing: a thing shown before waits no more.
     Gone,
+    /// A live activity: it starts, changes, or ends.
+    Live,
 }
 
 /// What Apple's service did with a push.
@@ -288,6 +308,108 @@ fn alert(told: &Told, name: &str, enc: Option<String>) -> Vec<u8> {
     push.to_string().into_bytes()
 }
 
+/// What a push of `turn` says to the device at `address` alone, encrypted for
+/// that device's key: who works, what on and what it said. None where the
+/// words may not leave the host.
+fn live_sealed(turn: &LiveTurn, address: &PushAddress) -> Option<String> {
+    if !turn.outside {
+        return None;
+    }
+    let plain = serde_json::to_vec(&serde_json::json!({
+        "from": clip(&turn.agent, MAX_NAME_BYTES),
+        "asked": &turn.asked,
+        "words": &turn.said,
+        // Where a press leads is sealed with the words: it names the workspace.
+        "opens": live_opens(turn),
+    }))
+    .ok()?;
+    if plain.len() > MAX_SEALED {
+        return None;
+    }
+    let (p256dh, auth) = address.subscription_key().ok()?;
+    let device = PushSubscription {
+        endpoint: String::new(),
+        p256dh,
+        auth,
+    };
+    let message = crate::device::keep::web_push::encrypt(&device, &plain).ok()?;
+    Some(STANDARD.encode(message))
+}
+
+/// Where a press on `turn`'s live activity leads: the app's own address for the
+/// conversation, which the app opens at its site.
+fn live_opens(turn: &LiveTurn) -> String {
+    let (app, record) = turn
+        .conversation
+        .split_once('/')
+        .unwrap_or((turn.conversation.as_str(), ""));
+    let escaped = |text: &str| {
+        use std::fmt::Write as _;
+        text.bytes().fold(String::new(), |mut out, byte| {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+                out.push(char::from(byte));
+            } else {
+                let _ = write!(out, "%{byte:02X}");
+            }
+            out
+        })
+    };
+    format!(
+        "tilo-shell://turn?workspace={}&app={}&record={}",
+        escaped(&turn.workspace),
+        escaped(app),
+        escaped(record)
+    )
+}
+
+/// What the live activity of `turn` says to the device alone, with what Apple
+/// reads and, where the words may leave the host, the part sealed for the
+/// device.
+fn live_state(turn: &LiveTurn, name: &str, enc: Option<String>) -> serde_json::Value {
+    let mut state = serde_json::json!({
+        "phase": turn.phase,
+        "step": turn.step,
+        "steps": turn.steps,
+        "name": name,
+    });
+    if let (Some(enc), Some(fields)) = (enc, state.as_object_mut()) {
+        fields.insert("enc".to_owned(), enc.into());
+    }
+    state
+}
+
+/// The push that `event`s the live activity of `turn` on the device, known to
+/// it as `name`, at `now_secs`.
+fn live_push(
+    event: &str,
+    turn: &LiveTurn,
+    name: &str,
+    enc: Option<String>,
+    now_secs: u64,
+) -> Vec<u8> {
+    let mut aps = serde_json::json!({
+        "timestamp": now_secs,
+        "event": event,
+        "content-state": live_state(turn, name, enc),
+    });
+    if let Some(fields) = aps.as_object_mut() {
+        if event == "start" {
+            fields.insert(
+                "attributes-type".to_owned(),
+                LIVE_ATTRIBUTES.to_owned().into(),
+            );
+            fields.insert("attributes".to_owned(), serde_json::json!({"name": name}));
+        }
+        if event == "end" {
+            fields.insert(
+                "dismissal-date".to_owned(),
+                now_secs.saturating_add(LIVE_DISMISS_SECS).into(),
+            );
+        }
+    }
+    serde_json::json!({"aps": aps}).to_string().into_bytes()
+}
+
 /// Open a connection to `reached` that pushes are sent on.
 async fn connect(reached: &Reached, tls: &Arc<rustls::ClientConfig>) -> Result<Sender, String> {
     let dialled = tokio::net::TcpStream::connect((reached.name.as_str(), reached.port));
@@ -399,6 +521,7 @@ impl ApplePush {
                 signed: std::sync::Mutex::default(),
                 production: tokio::sync::Mutex::default(),
                 development: tokio::sync::Mutex::default(),
+                live: std::sync::Mutex::default(),
             }),
         })
     }
@@ -484,9 +607,29 @@ impl ApplePush {
             format!("{}:{}", reached.name, reached.port)
         };
         let (kind, priority) = match push {
-            Push::Alert { .. } => ("alert", "10"),
+            Push::Alert { .. } | Push::Live => ("alert", "10"),
             Push::Gone => ("background", "5"),
         };
+        if matches!(push, Push::Live) {
+            // Apple's service takes a live activity under the app's own topic,
+            // suffixed: the token names the activity, not a notice.
+            let topic = format!("{}{LIVE_TOPIC}", address.topic);
+            let request = hyper::Request::builder()
+                .method(hyper::Method::POST)
+                .uri(format!("https://{authority}/3/device/{}", address.token))
+                .header("authorization", format!("bearer {bearer}"))
+                .header("apns-topic", topic)
+                .header("apns-push-type", "liveactivity")
+                .header("apns-priority", "10")
+                .header(
+                    "apns-expiration",
+                    now_secs.saturating_add(TTL_SECS).to_string(),
+                )
+                .header("content-type", "application/json");
+            return request
+                .body(Full::new(Bytes::from(body)))
+                .map_err(|error| error.to_string());
+        }
         let mut request = hyper::Request::builder()
             .method(hyper::Method::POST)
             .uri(format!("https://{authority}/3/device/{}", address.token))
@@ -646,6 +789,74 @@ impl ApplePush {
             }
         }
     }
+
+    /// Follow `turn`, a turn of `person`'s own, on as many of their devices as
+    /// show live activities: one starts where it runs, changes as it goes, and
+    /// ends where it got to. A device is told once what it already shows.
+    async fn follow_live(&self, person: &[u8; 32], turn: &LiveTurn) {
+        let services = tilo_person_services::PersonServices::of(&self.inner.workspaces);
+        let who = hex::encode(person);
+        for address in services.push_addresses(person) {
+            if address.kind != PushKind::Apns || !self.inner.topics.contains(&address.topic) {
+                continue;
+            }
+            let Some(live) = &address.live else {
+                continue;
+            };
+            let Some(name) = name_for(&address, &turn.id) else {
+                continue;
+            };
+            // Each device is told once what it already shows; what one device
+            // took is no reason to tell or not tell another.
+            let key = format!("{who}/{}/{}", turn.id, address.reached_as());
+            let last = self.inner.live.lock_recover().get(&key).copied();
+            // An activity is updated under the token it hands over once it runs.
+            // A token of another turn is no token for this one.
+            let update = (!live.update.is_empty() && live.turn == name).then_some(());
+            // A turn that ended before this device heard of it starts none.
+            let event = if turn.phase.is_over() {
+                match last {
+                    Some(before) if !before.phase.is_over() && update.is_some() => Some("end"),
+                    _ => None,
+                }
+            } else {
+                match last {
+                    None => Some("start"),
+                    Some(before) if before.phase == turn.phase && before.step == turn.step => None,
+                    Some(_) if update.is_some() => Some("update"),
+                    Some(_) => None,
+                }
+            };
+            let Some(event) = event else {
+                continue;
+            };
+            let now_secs = tilo_clock::unix_now_ms() / 1000;
+            let body = live_push(event, turn, &name, live_sealed(turn, &address), now_secs);
+            // The push that starts an activity goes to the push-to-start token;
+            // the ones that change and end it go to the token it runs under.
+            let mut device = address.clone();
+            device.token = if event == "start" {
+                live.start.clone()
+            } else {
+                live.update.clone()
+            };
+            let answer = self.post(&device, &Push::Live, body).await;
+            if self.took(person, &device, answer) {
+                let mut sent = self.inner.live.lock_recover();
+                if turn.phase.is_over() {
+                    sent.remove(&key);
+                } else {
+                    sent.insert(
+                        key,
+                        LiveSent {
+                            phase: turn.phase,
+                            step: turn.step,
+                        },
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// What a person's assistant told them, pushed to the apps of theirs that
@@ -667,6 +878,11 @@ impl tilo_app_host::agents::telling::Outside for ApplePush {
     ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
         let push = self.clone();
         Box::pin(async move { push.gone(&person, &ids).await })
+    }
+
+    fn live(&self, person: [u8; 32], turn: LiveTurn) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        let push = self.clone();
+        Box::pin(async move { push.follow_live(&person, &turn).await })
     }
 }
 

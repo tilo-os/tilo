@@ -94,6 +94,23 @@ pub struct PushKey {
     pub auth: String,
 }
 
+/// Where the asking device's live activities are reached: the token Apple's
+/// service gives an app for starting one while it is closed, and, once one
+/// runs, the token that activity is updated and ended under.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LiveAddress {
+    /// The push-to-start token Apple's service gave the app on this device, in hex.
+    pub start: String,
+    /// The token of the live activity that runs now, in hex, where one does.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub update: String,
+    /// The name that activity has on this device ([`PushAddress`]'s name for its
+    /// turn): what ties the token to the turn it shows.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub turn: String,
+}
+
 /// Where the asking device is reached: what [`REGISTER`] takes. It names
 /// no device: the address is kept for the device that hands it over.
 ///
@@ -113,6 +130,9 @@ pub enum Register {
         topic: String,
         /// The key the words of a push to this device are encrypted for.
         key: PushKey,
+        /// Where the app's live activities are reached, where it shows any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        live: Option<LiveAddress>,
     },
     /// The web push endpoint the device subscribed with.
     WebPush {
@@ -187,6 +207,9 @@ pub struct PushAddress {
     /// The app the token was given to.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub topic: String,
+    /// Where the app's live activities are reached, where it shows any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live: Option<LiveAddress>,
     /// The device's P-256 public key, uncompressed, in hex.
     pub p256dh: String,
     /// The device's secret for the agreement, in hex.
@@ -262,12 +285,13 @@ fn person_named(name: &std::ffi::OsStr) -> Option<[u8; 32]> {
 impl Register {
     /// This, as the address of `device` handed over at `now_ms`.
     fn checked(self, device: &[u8; 32], now_ms: u64) -> Result<PushAddress, String> {
-        let (kind, token, endpoint, environment, topic, key) = match self {
+        let (kind, token, endpoint, environment, topic, key, live) = match self {
             Self::Apns {
                 token,
                 environment,
                 topic,
                 key,
+                live,
             } => {
                 let token = token.trim().to_ascii_lowercase();
                 // A token becomes a part of the address a push is sent to: hex
@@ -279,6 +303,7 @@ impl Register {
                         "An address is the push service's token for the device, in hex".to_owned(),
                     );
                 }
+                let live = live.map(LiveAddress::checked).transpose()?;
                 let topic = topic.trim();
                 let named = !topic.is_empty()
                     && topic.len() <= MAX_TOPIC_BYTES
@@ -295,6 +320,7 @@ impl Register {
                     Some(environment),
                     topic.to_owned(),
                     key,
+                    live,
                 )
             }
             Self::WebPush { endpoint, key } => {
@@ -319,6 +345,7 @@ impl Register {
                     None,
                     String::new(),
                     key,
+                    None,
                 )
             }
         };
@@ -337,10 +364,50 @@ impl Register {
             endpoint,
             environment,
             topic,
+            live,
             p256dh,
             auth,
             at_ms: now_ms,
             shown: Vec::new(),
+        })
+    }
+}
+
+impl LiveAddress {
+    /// This as it is kept: the tokens in hex, and the name that ties the update
+    /// token to the turn it shows.
+    fn checked(self) -> Result<Self, String> {
+        let hex = |text: &str| {
+            let text = text.trim().to_ascii_lowercase();
+            (MIN_TOKEN_HEX..=MAX_TOKEN_HEX)
+                .contains(&text.len())
+                .then_some(text)
+                .filter(|text| text.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        };
+        let Some(start) = hex(&self.start) else {
+            return Err(
+                "A live activity starts from the push-to-start token Apple's service gave the app, \
+                 in hex"
+                    .to_owned(),
+            );
+        };
+        let update = self.update.trim().to_ascii_lowercase();
+        if !update.is_empty() && hex(&update).is_none() {
+            return Err("A live activity is updated by the token in hex it runs under".to_owned());
+        }
+        let turn = self.turn.trim();
+        let named = turn.len() <= MAX_TOPIC_BYTES
+            && turn
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+        Ok(Self {
+            start,
+            update,
+            turn: if named {
+                turn.to_owned()
+            } else {
+                String::new()
+            },
         })
     }
 }
@@ -460,6 +527,11 @@ impl crate::PersonServices {
             .find(|known| known.device == address.device && known.reached_as() == reach)
         {
             address.shown.clone_from(&known.shown);
+            // An app that hands over its address without its live activities this
+            // time keeps the ones this device handed over before.
+            if address.live.is_none() {
+                address.live.clone_from(&known.live);
+            }
         }
         stay.insert(0, address);
         let over = stay.split_off(MAX_ADDRESSES.min(stay.len()));

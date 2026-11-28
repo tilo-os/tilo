@@ -17,6 +17,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tilo_person_services::LiveTurn;
 use tilo_person_services::PersonServices;
 use tilo_person_services::person_telling::Told;
 
@@ -46,6 +47,13 @@ pub trait Outside: Send + Sync {
         ids: Vec<String>,
     ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
         drop(ids);
+        Box::pin(async {})
+    }
+
+    /// Follow `turn`, a turn of `person`'s own, as far as what tells outside
+    /// Tilo can show one: a live activity on a device of theirs. Nothing
+    /// follows where it shows none.
+    fn live(&self, _person: [u8; 32], _turn: LiveTurn) -> Pin<Box<dyn Future<Output = ()> + Send>> {
         Box::pin(async {})
     }
 }
@@ -141,7 +149,9 @@ impl Teller {
         // What waited while this host was down is still owed.
         let known = PersonServices::of(&self.workspaces).people_told();
         self.waited.lock_recover().extend(known);
-        let mut moved = PersonServices::of(&self.workspaces).told_changes();
+        let services = PersonServices::of(&self.workspaces);
+        let mut moved = services.told_changes();
+        let mut live = services.live_changes();
         loop {
             let now_ms = tilo_clock::unix_now_ms();
             let wait = self.step(now_ms).await.map_or(IDLE, |at| {
@@ -149,6 +159,11 @@ impl Teller {
             });
             tokio::select! {
                 changed = moved.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                }
+                changed = live.changed() => {
                     if changed.is_err() {
                         return;
                     }
@@ -164,7 +179,9 @@ impl Teller {
     pub async fn step(&self, now_ms: u64) -> Option<u64> {
         let people: Vec<[u8; 32]> = {
             let mut waited = self.waited.lock_recover();
-            waited.extend(PersonServices::of(&self.workspaces).told_changed_people());
+            let services = PersonServices::of(&self.workspaces);
+            waited.extend(services.told_changed_people());
+            waited.extend(services.live_changed_people());
             waited.iter().copied().collect()
         };
         let services = PersonServices::of(&self.workspaces);
@@ -203,6 +220,13 @@ impl Teller {
                 }
             }
             self.take_back(person, &over).await;
+            // A turn of theirs runs, or ended: what shows a live activity is
+            // told where it stands, once for each time it moved.
+            for turn in services.live_turns(&person) {
+                for outside in &self.outside {
+                    outside.live(person, turn.clone()).await;
+                }
+            }
             if !waits {
                 self.waited.lock_recover().remove(&person);
             }
