@@ -267,10 +267,7 @@ impl WorkspaceDocuments {
         messages: &[NeighbourMsg],
     ) -> Result<(), String> {
         if let Some(link) = self.direct.link(workspace_id) {
-            for message in messages {
-                link.carry(author, message)?;
-            }
-            return Ok(());
+            return link.carry_all(author, messages).map(drop);
         }
         let mut frames = Vec::new();
         for message in messages {

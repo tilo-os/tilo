@@ -2184,23 +2184,42 @@ impl DirectSync {
     ///
     /// The store could not keep it; nothing went out.
     pub fn carry(&self, from: [u8; 32], message: &NeighbourMsg) -> Result<bool, String> {
+        self.carry_all(from, std::slice::from_ref(message))
+            .map(|carried| carried.first().copied().unwrap_or(false))
+    }
+
+    /// [`Self::carry`] each of `messages`, `from`'s, in order: the store keeps them all with one
+    /// sync, so an action that wrote several documents waits for the disk once, and each it did
+    /// not hold already then goes out, in the order given. Returns whether each went out.
+    ///
+    /// # Errors
+    ///
+    /// The store could not keep them; nothing went out. Those kept before the one that failed
+    /// are served as the store serves every frame it keeps.
+    pub fn carry_all(
+        &self,
+        from: [u8; 32],
+        messages: &[NeighbourMsg],
+    ) -> Result<Vec<bool>, String> {
         #[cfg(not(target_arch = "wasm32"))]
-        if !self
-            .keep(message, false)
-            .map_err(|error| error.to_string())?
-        {
-            return Ok(false);
+        let kept = self.keep_all(messages).map_err(|error| error.to_string())?;
+        #[cfg(target_arch = "wasm32")]
+        let kept = vec![true; messages.len()];
+        for (message, kept) in messages.iter().zip(&kept) {
+            if !kept {
+                continue;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if from == self.device() {
+                self.note_own(message);
+            }
+            self.outgoing(Authored {
+                from,
+                message: message.clone(),
+                published: false,
+            });
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        if from == self.device() {
-            self.note_own(message);
-        }
-        self.outgoing(Authored {
-            from,
-            message: message.clone(),
-            published: false,
-        });
-        Ok(true)
+        Ok(kept)
     }
 
     /// Note `message`, this device's own write, as pending at its store until
@@ -5024,8 +5043,58 @@ impl DirectSync {
         let Ok(workspace) = self.0.replica.id() else {
             return Ok(true);
         };
-        // A sealed compaction's writes go once every device with its record's keys checked it:
-        // the checks reach this device in the workspace's own document, any message later.
+        self.retire_checked(store, workspace);
+        let Ok(frame) = Frame::of(message) else {
+            return Ok(true);
+        };
+        let retained = if from_link {
+            store.retain_from_link(workspace, &frame)
+        } else {
+            store.retain(workspace, &frame)
+        };
+        retained.map(|retained| {
+            matches!(
+                retained,
+                crate::store::Retained::New | crate::store::Retained::Beside
+            )
+        })
+    }
+
+    /// [`Self::keep`] each of `messages`, this device's own, with one sync for all of their
+    /// frames. Returns, for each, whether the store did not hold it already.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn keep_all(&self, messages: &[NeighbourMsg]) -> Result<Vec<bool>, StoreError> {
+        let Some(store) = &self.0.store else {
+            return Ok(vec![true; messages.len()]);
+        };
+        let Ok(workspace) = self.0.replica.id() else {
+            return Ok(vec![true; messages.len()]);
+        };
+        self.retire_checked(store, workspace);
+        let frames: Vec<Option<Frame>> = messages
+            .iter()
+            .map(|message| Frame::of(message).ok())
+            .collect();
+        let kept: Vec<Frame> = frames.iter().flatten().cloned().collect();
+        let mut retained = store.retain_all(workspace, &kept)?.into_iter();
+        Ok(frames
+            .iter()
+            .map(|frame| {
+                frame.is_none()
+                    || retained.next().is_some_and(|retained| {
+                        matches!(
+                            retained,
+                            crate::store::Retained::New | crate::store::Retained::Beside
+                        )
+                    })
+            })
+            .collect())
+    }
+
+    /// Let go of the writes of each sealed compaction every device with its record's keys has
+    /// checked: the checks reach this device in the workspace's own document, any message later.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn retire_checked(&self, store: &Store, workspace: WorkspaceId) {
         let unchecked = store.unchecked(workspace);
         if !unchecked.is_empty() {
             let checked: Vec<_> = {
@@ -5044,20 +5113,6 @@ impl DirectSync {
                 store.retire_checked(workspace, checkpoint);
             }
         }
-        let Ok(frame) = Frame::of(message) else {
-            return Ok(true);
-        };
-        let retained = if from_link {
-            store.retain_from_link(workspace, &frame)
-        } else {
-            store.retain(workspace, &frame)
-        };
-        retained.map(|retained| {
-            matches!(
-                retained,
-                crate::store::Retained::New | crate::store::Retained::Beside
-            )
-        })
     }
 
     fn workspace(&self) -> Result<WorkspaceId, String> {
