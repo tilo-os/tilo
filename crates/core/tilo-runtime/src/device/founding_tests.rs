@@ -178,11 +178,18 @@ const PLAIN_CONNECTION_TEST: &str =
     "device::founding_tests::a_plain_connection_to_a_founding_daemon_prints_a_device_ticket";
 
 /// The same computer, founded while its daemon serves, reached the way `tilo` and the SDKs reach
-/// it: a plain connection rather than the tools above. It is the person the daemon serves, so
-/// `tilo device add` has its ticket printed for it rather than refused for an agent the
-/// workspace keeps none of.
+/// it: a plain connection rather than the tools above. A program of the person's is never their
+/// own act, so `tilo device add`'s call waits on their asking card instead of printing a ticket,
+/// and the program's own answer is refused: only their yes, on their own session, issues it.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one program's call, from the socket to its person's yes and back, read top to bottom"
+)]
 fn a_plain_connection_to_a_founding_daemon_prints_a_device_ticket() {
+    use tilo_actions::remote::Caller;
+    use tilo_actions::remote::asked::{Offer, Resolve};
+
     let Some(profile) = isolated_root(PLAIN_CONNECTION_TEST) else {
         return;
     };
@@ -205,8 +212,11 @@ fn a_plain_connection_to_a_founding_daemon_prints_a_device_ticket() {
         .expect("the person's services run");
 
     let began = std::time::Instant::now();
+    let calls = tilo_rt::app()
+        .handle()
+        .block_on(async { tilo_api::calls::Calls::connect(Some(socket.as_path()), None).await })
+        .unwrap_or_else(|error| panic!("no plain connection to the daemon: {error:#}"));
     let printed = tilo_rt::app().handle().block_on(async {
-        let calls = tilo_api::calls::Calls::connect(Some(socket.as_path()), None).await?;
         // The list first, on the same connection: a plain connection acts where the account
         // enters, named by no workspace.
         calls.founded_workspace().await?;
@@ -222,15 +232,89 @@ fn a_plain_connection_to_a_founding_daemon_prints_a_device_ticket() {
     });
     let printed = printed.unwrap_or_else(|error| {
         panic!(
-            "the person's own connection printed no ticket after {:?}: {error:#}",
+            "the person's own connection was refused after {:?}: {error:#}",
             began.elapsed()
         )
     });
     assert!(
-        printed["result"]["ticket"]
+        printed["result"]["ticket"].is_null(),
+        "a program of the person's printed a ticket itself: {printed}"
+    );
+
+    // The call waits in their asked record, on the device that keeps their root.
+    let services = running
+        .services(Duration::from_secs(120))
+        .expect("the person's services");
+    let store = services
+        .workspaces()
+        .asked_store()
+        .expect("the device keeps asked records");
+    let invocation = printed["invocation"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the waiting call names no invocation: {printed}"));
+    let waited = std::time::Instant::now();
+    let at = loop {
+        if let Some(at) = store.record(invocation) {
+            break at;
+        }
+        assert!(
+            waited.elapsed() < Duration::from_secs(30),
+            "the call waits in no asked record: {printed}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+
+    // Their root-only asks are answered from the moment this device serves them, which the
+    // person's part starts doing as it serves.
+    let served = std::time::Instant::now();
+    while !services.serves_at_root() {
+        assert!(
+            served.elapsed() < Duration::from_secs(60),
+            "this device keeps the root it founded and does not serve it: {printed}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
+    // The program answers no question of its own: its resolve is refused.
+    let refused = tilo_rt::app()
+        .handle()
+        .block_on(calls.answer_asked(&format!("{}/{}", at.workspace, at.record), true))
+        .expect_err("a program answers no question of its own");
+    assert!(
+        refused
+            .to_string()
+            .contains(tilo_actions::remote::asked::CONFIRMED_BY_THE_SYSTEM),
+        "{refused:#}"
+    );
+
+    // Their yes, answered where their own session answers it, runs the call the ask kept.
+    let cert = services.workspaces().device_cert().clone();
+    let person = Caller::authenticated(cert.user_public_key, cert.device_public_key);
+    let yes = Resolve {
+        resolution: Offer::Approve,
+        ..Resolve::default()
+    };
+    let taken = tilo_rt::app()
+        .handle()
+        .block_on(store.resolve(&at, &person, &yes));
+    taken
+        .expect("decided at once")
+        .expect("the person's yes is taken");
+
+    // And the ticket comes back to the call that waited for it.
+    let followed = tilo_rt::app()
+        .handle()
+        .block_on(calls.invocation(None, invocation, 60));
+    let followed = followed.expect("the call that waited is followed");
+    assert_eq!(
+        followed["status"], "ok",
+        "the call the person's yes ran did not end: {followed}"
+    );
+    assert!(
+        followed["result"]["ticket"]
             .as_str()
             .is_some_and(|ticket| !ticket.is_empty()),
-        "the daemon answered with no ticket: {printed}"
+        "the person's yes issued no ticket: {followed}"
     );
     running.stop().unwrap();
     drop(environment);
