@@ -3,39 +3,39 @@
   "assets": [
     {
       "file": "dark-display-1-text-1.png",
-      "sha256": "f50014d9b74d826fc3cb6a374b2d04606fd65d66f7ef77a85736ed5975882b5e",
-      "bytes": 413684,
-      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/f50014d9b74d826fc3cb6a374b2d04606fd65d66f7ef77a85736ed5975882b5e/dark-display-1-text-1.png"
+      "sha256": "04bc60eddd5a22017404aa912b8925fa48789096f4a880ce4aba5de8b72c64c4",
+      "bytes": 402819,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/04bc60eddd5a22017404aa912b8925fa48789096f4a880ce4aba5de8b72c64c4/dark-display-1-text-1.png"
     },
     {
       "file": "dark-display-1_25-text-1.png",
-      "sha256": "2c113731542e23eb49d99bfaee9c112293e6aed69cf444c0133d2b236aca4a5a",
-      "bytes": 547603,
-      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/2c113731542e23eb49d99bfaee9c112293e6aed69cf444c0133d2b236aca4a5a/dark-display-1_25-text-1.png"
+      "sha256": "aa6128f551f175388c0453326f323dcff9ad58ee2a641dfaedb2604b0f28b404",
+      "bytes": 553284,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/aa6128f551f175388c0453326f323dcff9ad58ee2a641dfaedb2604b0f28b404/dark-display-1_25-text-1.png"
     },
     {
       "file": "dark-display-1_5-text-1_25.png",
-      "sha256": "66a65ae8ea5c7e88f7b6fb36ae74e8bdae89824ec7426dba6d5c1be2c2de8d30",
-      "bytes": 888638,
-      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/66a65ae8ea5c7e88f7b6fb36ae74e8bdae89824ec7426dba6d5c1be2c2de8d30/dark-display-1_5-text-1_25.png"
+      "sha256": "d36f45f99a64841cf8dbe1f89574930486f95955fbecd989f4b4a64af669b4ab",
+      "bytes": 881498,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/d36f45f99a64841cf8dbe1f89574930486f95955fbecd989f4b4a64af669b4ab/dark-display-1_5-text-1_25.png"
     },
     {
       "file": "light-display-1-text-1.png",
-      "sha256": "f8aade7c1ff10212c85a89936afea3d122f97afedfc6f20c95187461d43a8cb3",
-      "bytes": 416728,
-      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/f8aade7c1ff10212c85a89936afea3d122f97afedfc6f20c95187461d43a8cb3/light-display-1-text-1.png"
+      "sha256": "82b8d8e1d600fb857bc8acb16cf2d2b756170fabc50cc4d4e2d13971abb4ef77",
+      "bytes": 405958,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/82b8d8e1d600fb857bc8acb16cf2d2b756170fabc50cc4d4e2d13971abb4ef77/light-display-1-text-1.png"
     },
     {
       "file": "light-display-1_25-text-1.png",
-      "sha256": "904ddd755bd88e8b41a7d4704358e509ee994e7db496c23a70b2ed9832d629cc",
-      "bytes": 550175,
-      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/904ddd755bd88e8b41a7d4704358e509ee994e7db496c23a70b2ed9832d629cc/light-display-1_25-text-1.png"
+      "sha256": "665460b0e38ddc976f882c471f0546f86330911e9960b07214d684524e032385",
+      "bytes": 556125,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/665460b0e38ddc976f882c471f0546f86330911e9960b07214d684524e032385/light-display-1_25-text-1.png"
     },
     {
       "file": "light-display-1_5-text-1_25.png",
-      "sha256": "608b57720f85b7eae63f14a780712f0d3af3a55248084c39c2fd2c4184fd02bc",
-      "bytes": 894241,
-      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/608b57720f85b7eae63f14a780712f0d3af3a55248084c39c2fd2c4184fd02bc/light-display-1_5-text-1_25.png"
+      "sha256": "0a654e6d6a85aef0bc2f3c27edf4aa8f6d7012ec952c8ab7c3c0bc97fea0e30a",
+      "bytes": 887472,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/0a654e6d6a85aef0bc2f3c27edf4aa8f6d7012ec952c8ab7c3c0bc97fea0e30a/light-display-1_5-text-1_25.png"
     }
   ]
 }

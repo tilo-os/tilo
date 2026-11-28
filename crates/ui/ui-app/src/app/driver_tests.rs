@@ -1001,3 +1001,22 @@ fn a_named_control_with_no_laid_out_place_is_no_target_and_is_never_pressed_at_t
         "the click names what it could not reach, and presses nothing: {error}"
     );
 }
+
+#[test]
+fn a_line_of_text_stands_on_a_device_pixel_row_at_every_scale() {
+    // A body line's baseline falls between pixels in layout (14 px × 1.45 leading).
+    for scale in [1.0, 1.5, 2.0] {
+        let text = Box::new(crate::widget::Text::new("HHHH"));
+        let mut driver = Driver::new(State::new(), text, (120, 40));
+        driver.set_input_scale(scale).unwrap();
+        let pixels = driver.render_rgba();
+        let width = (120.0 * scale) as usize;
+        let mut ink = vec![0u32; pixels.len() / 4 / width];
+        for (i, red) in pixels.iter().step_by(4).enumerate() {
+            ink[i / width] += u32::from(red.abs_diff(pixels[0]));
+        }
+        let full = *ink.iter().max().unwrap();
+        let foot = ink.iter().rposition(|&row| row * 4 > full).unwrap();
+        assert!(ink[foot + 1] * 10 < ink[foot], "{scale}×: {ink:?}");
+    }
+}

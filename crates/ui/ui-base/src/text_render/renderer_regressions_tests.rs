@@ -272,7 +272,7 @@ tilo_test_env::scenario! {
                 glyphs.len() == 1
                     && glyphs[0].id == u32::from(expected_id)
                     && (glyphs[0].x - marker.0.x).abs() < 0.001
-                    && (glyphs[0].y - (marker.1 + marker.0.y)).abs() < 0.001
+                    && (glyphs[0].y - (marker.1.round() + marker.0.y)).abs() < 0.001
             })
             .collect();
         assert_eq!(hyphen_runs.len(), 1);
@@ -614,7 +614,8 @@ fn shaped_origins(buffer: &cosmic_text::Buffer) -> Vec<(u32, f32, f32)> {
         .layout_runs()
         .flat_map(|run| {
             run.glyphs.iter().map(move |g| {
-                let baseline = run.line_y + g.y;
+                // Painted on the device row nearest its shaped line: whole pixels at 1×.
+                let baseline = run.line_y.round() + g.y;
                 (
                     u32::from(g.glyph_id),
                     g.x + g.font_size * g.x_offset,

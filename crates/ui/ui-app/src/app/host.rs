@@ -411,6 +411,8 @@ fn redraw_culled_widgets(
     culled: &mut tilo_ui_base::draw_cull::Scenes,
     drawn: &DrawnFrame,
 ) {
+    // Drawn again on the display's pixels, as the frame's own pass drew them (its transform's scale).
+    let _grid = tilo_ui_base::widget::layout::enter_device_scale(drawn.transform.as_coeffs()[0]);
     let widgets = &mut culled.widgets;
     tilo_ui_base::part_paint::backdrop::forget_nested(widgets);
     widgets.reset();

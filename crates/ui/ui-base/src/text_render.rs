@@ -383,6 +383,27 @@ pub(crate) fn glyph_paint_origin(
     )
 }
 
+/// How far a line set at `line_y` moves to stand on the nearest row of device pixels: its
+/// baseline is rounded once, where its glyphs are drawn, and nowhere else. A transform that
+/// carries the display's scale paints in device pixels; any other paints in logical ones, for a
+/// host to place on the display's grid (a widget's retained face).
+fn baseline_shift(transform: Affine, line_y: f32) -> f32 {
+    let [_, 0.0, 0.0, scale, _, offset] = transform.as_coeffs() else {
+        return 0.0;
+    };
+    if scale <= 0.0 {
+        return 0.0;
+    }
+    let display = f64::from(crate::widget::layout::device_scale());
+    let rows = if (scale - display).abs() < 1e-9 {
+        1.0
+    } else {
+        display
+    };
+    let device = (scale * f64::from(line_y) + offset) * rows;
+    crate::num::f32_of_f64((device.round() - device) / rows / scale)
+}
+
 pub(crate) fn hanging_glyph_x(
     run: &cosmic_text::LayoutRun<'_>,
     glyph: &cosmic_text::LayoutGlyph,
@@ -1612,6 +1633,8 @@ struct GlyphRun {
     font_weight: Weight,
     size: f32,
     glyphs: Vec<vello::Glyph>,
+    /// The baseline of the line the run sits on.
+    line_y: f32,
     normalized_coords: Vec<vello::NormalizedCoord>,
     /// The characters the run sets, kept only while [`present_text`] is on.
     text: Option<std::sync::Arc<str>>,
@@ -2987,6 +3010,7 @@ impl TextRenderer {
                         font_weight,
                         size: f32::from_bits(size),
                         glyphs: std::mem::take(&mut glyphs),
+                        line_y: run.line_y,
                         normalized_coords: self.normalized_coords(
                             face_id,
                             &variations,
@@ -3016,6 +3040,7 @@ impl TextRenderer {
                     font_weight,
                     size: f32::from_bits(size),
                     glyphs,
+                    line_y: run.line_y,
                     normalized_coords: self.normalized_coords(face_id, &variations, font_weight),
                     text: span_text(span),
                 });
@@ -3032,6 +3057,7 @@ impl TextRenderer {
                         x: hyphen.x,
                         y: run.line_y + hyphen.y,
                     }],
+                    line_y: run.line_y,
                     normalized_coords: self.normalized_coords(
                         hyphen.font_id,
                         &variations,
@@ -3132,6 +3158,7 @@ impl TextRenderer {
             let Some(font) = self.vello_font(run.face_id, run.font_weight) else {
                 continue;
             };
+            let shift = baseline_shift(transform, run.line_y);
             scene
                 .draw_glyphs(&font)
                 .text(run.text.clone())
@@ -3141,7 +3168,10 @@ impl TextRenderer {
                 .transform(transform)
                 .draw(
                     StyleRef::Fill(vello::peniko::Fill::NonZero),
-                    run.glyphs.iter().copied(),
+                    run.glyphs.iter().map(|g| vello::Glyph {
+                        y: g.y + shift,
+                        ..*g
+                    }),
                 );
         }
     }
@@ -3579,7 +3609,7 @@ impl TextRenderer {
             return;
         }
 
-        let line_y = batch.line_y;
+        let line_y = batch.line_y + baseline_shift(transform, batch.line_y);
         let vello_glyphs = batch.glyphs.iter().map(|g| {
             let (x, y) = glyph_paint_origin(g, g.x, line_y);
             vello::Glyph {

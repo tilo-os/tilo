@@ -10,6 +10,8 @@ use vello::kurbo::{Affine, Rect, Vec2};
 pub struct CachedPaint {
     scene: Scene,
     rect: Rect,
+    /// The display's device scale it was painted for: its text stands on that grid.
+    grid: f32,
 }
 
 impl CachedPaint {
@@ -18,13 +20,14 @@ impl CachedPaint {
         self.rect == Rect::ZERO
     }
 
-    /// Whether `rect` has another size than the face was painted at. Exact
-    /// on purpose: this detects a change for the cache, it does not compare
+    /// Whether `rect` has another size than the face was painted at, or the display another
+    /// scale. Exact on purpose: this detects a change for the cache, it does not compare
     /// numbers that need a tolerance.
     #[must_use]
     pub fn resized(&self, rect: Rect) -> bool {
         rect.width().to_bits() != self.rect.width().to_bits()
             || rect.height().to_bits() != self.rect.height().to_bits()
+            || self.grid.to_bits() != crate::widget::layout::device_scale().to_bits()
     }
 
     pub fn append(&self, out: &mut Scene, transform: Affine, rect: Rect) {
@@ -39,6 +42,7 @@ impl CachedPaint {
     pub fn repaint(&mut self, rect: Rect) -> &mut Scene {
         self.scene.reset();
         self.rect = rect;
+        self.grid = crate::widget::layout::device_scale();
         &mut self.scene
     }
 }
