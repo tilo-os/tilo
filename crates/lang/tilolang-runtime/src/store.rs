@@ -1080,6 +1080,21 @@ pub trait PagedItems: std::fmt::Debug {
     /// The item at `index`, `None` past the end.
     fn get(&self, index: usize) -> Option<Rc<str>>;
 
+    /// Whether every place before [`Self::len`] answers [`Self::get`]: a listing a store froze
+    /// before its reader read the items, or one a store stopped answering partway, counts places
+    /// it cannot show, and a reader of it reads the collection as it stands instead
+    /// ([`crate::colls`]).
+    fn answers(&self) -> bool {
+        true
+    }
+
+    /// Why the listing cannot answer a place it counts, when the store said: what a reader that
+    /// indexes such a place tells, rather than that the place is out of range. `None` when the
+    /// listing answers every place it counts.
+    fn unread(&self) -> Option<String> {
+        None
+    }
+
     /// Where the item `id` is, found by what orders it (a page or two), not by reading the
     /// items one by one: `Some(None)` when it is not in the listing, `None` when this listing
     /// cannot say so.
@@ -1158,6 +1173,18 @@ impl Listing {
             Some(paged) => paged.get(index),
             None => self.held.get(index).cloned(),
         }
+    }
+
+    /// Whether every place before [`Self::len`] answers [`Self::get`]: a listing a store froze
+    /// before its reader read the items, or one a store stopped answering partway, counts places
+    /// it cannot show.
+    pub fn answers(&self) -> bool {
+        self.paged.as_ref().is_none_or(|paged| paged.answers())
+    }
+
+    /// Why the listing cannot answer a place it counts, when the store said ([`PagedItems::unread`]).
+    pub fn unread(&self) -> Option<String> {
+        self.paged.as_ref().and_then(|paged| paged.unread())
     }
 
     pub fn first(&self) -> Option<Rc<str>> {

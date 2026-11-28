@@ -7,8 +7,40 @@ use tilolang_tilo::resources::ResourceStore;
 
 const SOURCE: &str = include_str!("../../tilolang/tests/fixtures/todo.tl");
 
+/// [`SOURCE`], with an action that reads the list, adds to it, and then walks what it read: the
+/// action holds the collection it read while its own write moves the store on past it.
+const SOURCE_WALKING: &str = concat!(
+    include_str!("../../tilolang/tests/fixtures/todo.tl"),
+    r#"
+/// Adds an item and walks the list it read before adding it.
+action add_then_walk(list: TodoList) -> Int {
+    let items = list.items
+    list.items.insert(Todo(title: "walked"))
+    let seen = 0
+    for item in items {
+        seen = seen + 1
+    }
+    return seen
+}
+
+/// Walks the list.
+action walk(list: TodoList) -> Int {
+    let seen = 0
+    for item in list.items {
+        seen = seen + 1
+    }
+    return seen
+}
+"#,
+);
+
 fn compile() -> tilolang::Compiled {
     tilolang::compile_package(SOURCE, &tilolang::IdsLock::new(), &[])
+        .unwrap_or_else(|errors| panic!("{errors:#?}"))
+}
+
+fn compile_walking() -> tilolang::Compiled {
+    tilolang::compile_package(SOURCE_WALKING, &tilolang::IdsLock::new(), &[])
         .unwrap_or_else(|errors| panic!("{errors:#?}"))
 }
 
@@ -78,6 +110,11 @@ struct Todo {
 impl Todo {
     fn new() -> Self {
         Self::over(ResourceStore::in_memory(), compile())
+    }
+
+    /// The todo package that also walks a collection it read and then wrote.
+    fn walking() -> Self {
+        Self::over(ResourceStore::in_memory(), compile_walking())
     }
 
     /// The package `compiled` run over `store`.
@@ -164,6 +201,89 @@ fn what_an_action_writes_is_read_listed_and_shown() {
     assert_eq!(t.rt.read(&milk, "done").unwrap(), Value::Bool(true));
     view.poll_patches().unwrap();
     assert_eq!(heading(view.tree()), "Groceries (1 open)");
+}
+
+#[test]
+fn a_run_that_writes_what_it_reads_walks_the_collection_as_it_stands() {
+    let t = Todo::walking();
+    for title in ["a", "b", "c", "d", "e", "f", "g", "h", "i"] {
+        t.add(title);
+    }
+    match t.call("add_then_walk", vec![Value::resource(&t.list)]) {
+        InvokeOutcome::Done(Value::Int(seen)) => {
+            assert_eq!(seen, 10, "the nine it read and the one it added");
+        }
+        other => panic!("add_then_walk answered {other:?}"),
+    }
+    assert_eq!(
+        titles(t.view().tree()).len(),
+        10,
+        "the item it added is in the list"
+    );
+}
+
+/// What a workspace says when it cannot answer a page of a collection's items: a read that
+/// failed, in its own words.
+const WHY_UNREAD: &str = "the person's workspace could not be read here";
+
+/// A workspace whose daemon stops answering one page of a collection's items, its index still
+/// counting them.
+struct FailingQuery {
+    port: std::rc::Rc<dyn tilo_resource_store::Port>,
+    /// Whether the next page read fails, and then answers again.
+    fail: std::cell::Cell<bool>,
+}
+
+impl tilo_resource_store::Port for FailingQuery {
+    fn command(
+        &self,
+        command: collab_types::store::wire::Command,
+    ) -> Result<collab_types::store::wire::Reply, String> {
+        if self.fail.get() && matches!(command, collab_types::store::wire::Command::Query(_)) {
+            self.fail.set(false);
+            return Err(WHY_UNREAD.to_owned());
+        }
+        self.port.command(command)
+    }
+
+    fn declare(&self, schema: tilo_resource_store::Schema) {
+        self.port.declare(schema);
+    }
+
+    fn set_record_reader(&self, reader: std::sync::Arc<dyn tilo_resource_store::RecordReader>) {
+        self.port.set_record_reader(reader);
+    }
+}
+
+/// A run that walks a collection the store cannot answer a page of says what failed, in the
+/// store's words: the places the listing counts are not reported as out of range.
+#[test]
+fn a_collection_the_store_cannot_answer_is_reported_rather_than_indexed() {
+    let port = std::rc::Rc::new(FailingQuery {
+        port: std::rc::Rc::new(tilo_resource_store::LocalPort::in_memory()),
+        fail: std::cell::Cell::new(false),
+    });
+    let t = Todo::over(ResourceStore::new(port.clone()), compile_walking());
+    t.add("milk");
+    t.add("eggs");
+    port.fail.set(true);
+    let walk = t
+        .meta
+        .actions
+        .iter()
+        .find(|held| held.name == "walk")
+        .expect("the package walks the list")
+        .id
+        .clone();
+    let said =
+        t.rt.invoke_action(&me(), (walk.as_str(), vec![Value::resource(&t.list)]))
+            .expect_err("a page the store cannot answer fails the run")
+            .to_string();
+    assert!(said.contains(WHY_UNREAD), "the store's own words: {said}");
+    assert!(
+        !said.contains("out of range"),
+        "never a place out of range: {said}"
+    );
 }
 
 #[test]

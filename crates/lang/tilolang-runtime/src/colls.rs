@@ -331,11 +331,16 @@ impl Core {
     }
 
     /// The listing of `coll`: the one it was first read as outside a view, the one this view
-    /// run read already, else the store's.
+    /// run read already, else the store's. A listing it holds that counts places it cannot show
+    /// — a store froze it with a write before the run read its items, or stopped answering it
+    /// partway — is left for the collection as it stands.
     pub(crate) fn coll_listing(&self, coll: &Rc<CollRef>) -> Result<Rc<Listing>, String> {
         if let Some(pin) = &coll.pinned.0 {
             if let Some(listing) = pin.get() {
-                return Ok(Rc::clone(listing));
+                if listing.answers() {
+                    return Ok(Rc::clone(listing));
+                }
+                return self.whole_listing(coll);
             }
             // An action that writes the collection while it walks it walks what it read.
             let listing = if self.frames.borrow().run().is_some_and(|run| run.journaled) {
@@ -346,19 +351,52 @@ impl Core {
             let _ = pin.set(Rc::clone(&listing));
             return Ok(listing);
         }
-        if let Some(vs) = self.frames.borrow().view()
-            && let Some((_, listing)) = vs
-                .listings
-                .iter()
-                .find(|(held, _)| Rc::ptr_eq(held, coll) || **held == **coll)
-        {
-            return Ok(Rc::clone(listing));
+        let held = {
+            let frames = self.frames.borrow();
+            frames.view().and_then(|vs| {
+                vs.listings
+                    .iter()
+                    .find(|(held, _)| Rc::ptr_eq(held, coll) || **held == **coll)
+                    .map(|(_, listing)| Rc::clone(listing))
+            })
+        };
+        if let Some(listing) = held {
+            if listing.answers() {
+                return Ok(listing);
+            }
+            let listing = self.whole_listing(coll)?;
+            if let Some(vs) = self.frames.borrow_mut().view_mut()
+                && let Some((_, held)) = vs
+                    .listings
+                    .iter_mut()
+                    .find(|(held, _)| Rc::ptr_eq(held, coll) || **held == **coll)
+            {
+                *held = Rc::clone(&listing);
+            }
+            return Ok(listing);
         }
         let listing = listing_of(&**self.store.borrow(), coll).map_err(|e| e.to_string())?;
         if let Some(vs) = self.frames.borrow_mut().view_mut() {
             vs.listings.push((Rc::clone(coll), Rc::clone(&listing)));
         }
         Ok(listing)
+    }
+
+    /// The listing of `coll` read as it stands: the store's, or the items of it the store answers
+    /// where it cannot read the rest. What a run reads where a listing it holds counts places it
+    /// cannot show ([`Listing::answers`]): it shows the collection there is rather than a length
+    /// it cannot index.
+    fn whole_listing(&self, coll: &Rc<CollRef>) -> Result<Rc<Listing>, String> {
+        let listing = listing_of(&**self.store.borrow(), coll).map_err(|e| e.to_string())?;
+        if listing.answers() {
+            return Ok(listing);
+        }
+        // The store cannot read the places it counts, and said why: a reader hears what failed,
+        // never a place out of range and never a collection short of the items it holds.
+        if let Some(why) = listing.unread() {
+            return Err(why);
+        }
+        Ok(Rc::new(Listing::from_items(listing.items())))
     }
 
     /// The listing of `coll` in a run that journals its reads: the store's, with each read the
@@ -822,6 +860,11 @@ impl Core {
     pub(crate) fn coll_get(&self, coll: &Rc<CollRef>, index: usize) -> HResult<Value> {
         let listing = self.coll_listing(coll)?;
         let Some(id) = listing.get(index) else {
+            // A listing that counts a place it cannot show says why, when the store said: what
+            // failed is the read, never the view's place.
+            if let Some(why) = listing.unread() {
+                return trap(why);
+            }
             return trap(format!(
                 "list index {index} out of range for length {}",
                 listing.len()
@@ -1086,6 +1129,19 @@ impl crate::store::PagedItems for JournaledItems {
 
     fn len_is_exact(&self) -> bool {
         self.len_read().1
+    }
+
+    fn answers(&self) -> bool {
+        // A journal that holds every item answers every place; one that holds only some has the
+        // store's listing answer the rest, which is where a place it counts may not.
+        self.read.borrow().whole().is_some() || self.live.answers()
+    }
+
+    fn unread(&self) -> Option<String> {
+        if self.read.borrow().whole().is_some() {
+            return None;
+        }
+        self.live.unread()
     }
 
     fn get(&self, index: usize) -> Option<Rc<str>> {

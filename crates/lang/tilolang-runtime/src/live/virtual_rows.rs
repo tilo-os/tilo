@@ -270,6 +270,14 @@ impl crate::store::PagedItems for KeptRows {
         self.base.len_is_exact()
     }
 
+    fn answers(&self) -> bool {
+        self.base.answers()
+    }
+
+    fn unread(&self) -> Option<String> {
+        self.base.unread()
+    }
+
     fn get(&self, index: usize) -> Option<Rc<str>> {
         let before = self.before(index);
         if let Some((place, item)) = self.kept.get(before)

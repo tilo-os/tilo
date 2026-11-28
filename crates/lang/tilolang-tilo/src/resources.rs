@@ -4935,8 +4935,19 @@ impl ResourceStore {
     ) -> (Rc<Listing>, Rc<Pages>) {
         let filters = self.held_in(at, field, filters);
         let key = format!("{kind}#{}#{field}#{filters:?}#{order:?}", id_of(at));
-        if let Some((listing, pages)) = self.inner.listings.borrow().get(&key) {
-            return (Rc::clone(listing), Rc::clone(pages));
+        // A listing that stopped answering — a write froze it before its reader read the items,
+        // or the store could not answer a page — is read again rather than handed out counting
+        // places it cannot show.
+        let cached = {
+            let listings = self.inner.listings.borrow();
+            listings
+                .get(&key)
+                .map(|(listing, pages)| (Rc::clone(listing), Rc::clone(pages)))
+        };
+        if let Some((listing, pages)) = cached
+            && pages.answers()
+        {
+            return (listing, pages);
         }
         let query = Query {
             kind: kind.to_owned(),
@@ -4956,6 +4967,7 @@ impl ResourceStore {
             len: StdCell::new(None),
             far: RefCell::default(),
             before: RefCell::default(),
+            failed: RefCell::default(),
         });
         let listing = Rc::new(Listing::paged(Rc::clone(&pages) as Rc<dyn PagedItems>));
         self.inner
@@ -5439,6 +5451,9 @@ struct Pages {
     /// Once a write moved the store on past it, where each resource the write named stood in
     /// it, by item, `None` for one it did not hold: the listing as it read before the write.
     before: RefCell<Option<HashMap<String, Option<usize>>>>,
+    /// Why the store could not answer a page of it, when it could not: a reader that indexes a
+    /// place it counts says this, rather than that the place is out of range.
+    failed: RefCell<Option<String>>,
 }
 
 impl std::fmt::Debug for Pages {
@@ -5477,6 +5492,16 @@ impl Pages {
         *self.before.borrow_mut() = Some(before);
     }
 
+    /// Note that the store could not answer a page of the listing: a reader that indexes a place
+    /// it counts says so, and the listing is read again rather than handed out as it is.
+    fn fail(&self, why: String) {
+        self.done.set(true);
+        let mut failed = self.failed.borrow_mut();
+        if failed.is_none() {
+            *failed = Some(why);
+        }
+    }
+
     /// Where `id` stood before the write that froze the listing, when it named it.
     #[allow(
         clippy::option_option,
@@ -5500,11 +5525,19 @@ impl Pages {
         let Some(inner) = self.store.upgrade() else {
             return;
         };
-        let Ok(Reply::Page(page)) = inner.port.command(Command::PageAt {
+        let page = match inner.port.command(Command::PageAt {
             query: self.query.clone(),
             at,
-        }) else {
-            return;
+        }) {
+            Ok(Reply::Page(page)) => page,
+            Ok(other) => {
+                return self.fail(format!(
+                    "the collection's items could not be read: the store answered {other:?}"
+                ));
+            }
+            Err(why) => {
+                return self.fail(format!("the collection's items could not be read: {why}"));
+            }
         };
         let mut cache = inner.cache.borrow_mut();
         let mut far = self.far.borrow_mut();
@@ -5561,9 +5594,18 @@ impl Pages {
         };
         let mut query = self.query.clone();
         query.after.clone_from(&self.next.borrow());
-        let Ok(Reply::Page(page)) = inner.port.command(Command::Query(query)) else {
-            self.done.set(true);
-            return false;
+        let page = match inner.port.command(Command::Query(query)) {
+            Ok(Reply::Page(page)) => page,
+            Ok(other) => {
+                self.fail(format!(
+                    "the collection's items could not be read: the store answered {other:?}"
+                ));
+                return false;
+            }
+            Err(why) => {
+                self.fail(format!("the collection's items could not be read: {why}"));
+                return false;
+            }
         };
         let mut cache = inner.cache.borrow_mut();
         let mut ids = self.ids.borrow_mut();
@@ -5623,6 +5665,29 @@ impl PagedItems for Pages {
         }
         self.page_at(index);
         self.far.borrow().get(&index).cloned()
+    }
+
+    /// Whether every place the listing counts answers from what it read: one a write froze
+    /// before its reader read the items, or one the store stopped answering, counts places it
+    /// cannot show.
+    fn answers(&self) -> bool {
+        if self.failed.borrow().is_some() {
+            return false;
+        }
+        if !self.frozen() && !self.done.get() {
+            return true;
+        }
+        let len = PagedItems::len(self);
+        let ids = self.ids.borrow();
+        if ids.len() >= len {
+            return true;
+        }
+        let far = self.far.borrow();
+        (0..len).all(|at| ids.get(at).is_some() || far.contains_key(&at))
+    }
+
+    fn unread(&self) -> Option<String> {
+        self.failed.borrow().clone()
     }
 
     /// Where the item is: among the pages read so far, or as the store's index has it. What a
@@ -5731,6 +5796,14 @@ impl PagedItems for WrittenOver {
 
     fn len_is_exact(&self) -> bool {
         self.base.len_is_exact()
+    }
+
+    fn answers(&self) -> bool {
+        self.base.answers()
+    }
+
+    fn unread(&self) -> Option<String> {
+        self.base.unread()
     }
 
     fn get(&self, index: usize) -> Option<Rc<str>> {
