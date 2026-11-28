@@ -279,6 +279,7 @@ pub struct Portal {
     input_captures: input_capture::InputCaptures,
     shortcuts: global_shortcuts::Shortcuts,
     clipboards: clipboard::Clipboards,
+    spooler: Arc<dyn print::Spooler>,
     chosen: std::sync::Arc<tilo_dialogs::chosen::ChosenTable>,
 }
 
@@ -330,8 +331,17 @@ impl Portal {
             remotes,
             input_captures,
             sessions,
+            spooler: Arc::new(print::Cups),
             chosen,
         }
+    }
+
+    /// The same, printing through `spooler`: a test's own, which records the jobs instead of
+    /// sending them to this machine's queue.
+    #[must_use]
+    pub fn with_spooler(mut self, spooler: Arc<dyn print::Spooler>) -> Self {
+        self.spooler = spooler;
+        self
     }
 
     /// The same, sharing screens through `streams`.
@@ -615,7 +625,7 @@ impl Portal {
         server
             .at(
                 OBJECT_PATH,
-                print::Print::new(self.clone(), Arc::new(print::Cups)),
+                print::Print::new(self.clone(), Arc::clone(&self.spooler)),
             )
             .await?;
         server.at(OBJECT_PATH, usb::Usb::new(self.clone())).await?;

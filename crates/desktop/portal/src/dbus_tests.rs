@@ -10,6 +10,7 @@ use tilo_test_env::PrivateBus;
 use zbus::zvariant::{ObjectPath, OwnedValue};
 
 use crate::auth::FRONTEND_BUS_NAME;
+use crate::print::{PRINT_QUESTION, PrintJob, Spooler};
 use crate::{BUS_NAME, OBJECT_PATH, Portal, PortalAuthenticator, PortalCaller, question_handle};
 
 /// A session bus of its own, stopped on drop, which the beds here connect
@@ -50,6 +51,14 @@ async fn bed() -> Bed {
 /// [`bed`], with `capture` in place of the session's screenshots and
 /// picks.
 async fn bed_with(capture: Arc<dyn crate::Capture>) -> Bed {
+    bed_with_spooler(capture, Arc::new(crate::print::Cups)).await
+}
+
+/// [`bed_with`], printing through `spooler` instead of this machine's queue.
+async fn bed_with_spooler(
+    capture: Arc<dyn crate::Capture>,
+    spooler: Arc<dyn crate::print::Spooler>,
+) -> Bed {
     let bus = SessionBus::start();
     let backend = bus.connect().await;
     let (asks, questions) = tilo_service::asks::channel();
@@ -77,6 +86,7 @@ async fn bed_with(capture: Arc<dyn crate::Capture>) -> Bed {
         std::sync::Arc::new(tilo_dialogs::chosen::ChosenTable::new()),
     )
     .with_capture(capture)
+    .with_spooler(spooler)
     .with_consents(crate::consent::Consents::new(
         asks,
         tilo_peer_state::DeviceGrants::unkept(),
@@ -535,6 +545,371 @@ async fn print_is_served_as_its_interface_declares() {
         malformed.is_err(),
         "a body that does not decode is an error"
     );
+}
+
+/// A print system that records the jobs instead of sending them anywhere.
+#[derive(Default)]
+struct RecordingSpooler {
+    destinations: Vec<String>,
+    jobs: std::sync::Mutex<Vec<PrintJob>>,
+}
+
+impl RecordingSpooler {
+    fn with_destinations(destinations: &[&str]) -> Self {
+        Self {
+            destinations: destinations.iter().map(|name| (*name).to_owned()).collect(),
+            jobs: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn jobs(&self) -> Vec<PrintJob> {
+        self.jobs.lock().expect("the recorded jobs").clone()
+    }
+}
+
+impl Spooler for RecordingSpooler {
+    fn destinations(&self) -> Vec<String> {
+        self.destinations.clone()
+    }
+
+    fn submit(&self, job: PrintJob) -> Result<String, String> {
+        self.jobs.lock().expect("the recorded jobs").push(job);
+        Ok("recorded-1".to_owned())
+    }
+}
+
+/// `PreparePrint` for `request`, as the frontend calls it.
+async fn prepare_print(from: &zbus::Connection, request: &str, title: &str) -> zbus::Result<Reply> {
+    let options = HashMap::<String, OwnedValue>::new();
+    prepare_print_with(from, request, title, options.clone(), options).await
+}
+
+/// [`prepare_print`] with the app's `settings` and `page_setup`.
+async fn prepare_print_with(
+    from: &zbus::Connection,
+    request: &str,
+    title: &str,
+    settings: HashMap<String, OwnedValue>,
+    page_setup: HashMap<String, OwnedValue>,
+) -> zbus::Result<Reply> {
+    from.call_method(
+        Some(BUS_NAME),
+        OBJECT_PATH,
+        Some("org.freedesktop.impl.portal.Print"),
+        "PreparePrint",
+        &(
+            ObjectPath::try_from(request).expect("request path"),
+            "org.example.Editor",
+            "",
+            title,
+            settings,
+            page_setup,
+            HashMap::<String, OwnedValue>::new(),
+        ),
+    )
+    .await?
+    .body()
+    .deserialize()
+}
+
+/// `Print` of `bytes` for `request`, as the frontend calls it.
+async fn print_document(
+    from: &zbus::Connection,
+    request: &str,
+    title: &str,
+    bytes: &[u8],
+    options: HashMap<String, OwnedValue>,
+) -> zbus::Result<Reply> {
+    let (_file, fd) = document_fd(bytes);
+    from.call_method(
+        Some(BUS_NAME),
+        OBJECT_PATH,
+        Some("org.freedesktop.impl.portal.Print"),
+        "Print",
+        &(
+            ObjectPath::try_from(request).expect("request path"),
+            "org.example.Editor",
+            "",
+            title,
+            fd,
+            options,
+        ),
+    )
+    .await?
+    .body()
+    .deserialize()
+}
+
+/// The bytes of a document behind a real descriptor, and the file that keeps them alive.
+fn document_fd(bytes: &[u8]) -> (tempfile::NamedTempFile, zbus::zvariant::OwnedFd) {
+    use std::io::{Seek as _, SeekFrom, Write as _};
+    let mut file = tempfile::NamedTempFile::new().expect("a document");
+    file.write_all(bytes).expect("the document's bytes");
+    file.flush().expect("flushed");
+    file.as_file_mut()
+        .seek(SeekFrom::Start(0))
+        .expect("rewound");
+    let duplicate = file
+        .as_file()
+        .try_clone()
+        .expect("a copy of its descriptor");
+    (
+        file,
+        zbus::zvariant::OwnedFd::from(std::os::fd::OwnedFd::from(duplicate)),
+    )
+}
+
+/// The token `PreparePrint` answered with.
+fn token_of(results: &HashMap<String, OwnedValue>) -> u32 {
+    let token = results.get("token").expect("a token");
+    u32::try_from(token.clone()).expect("a token is a u32")
+}
+
+/// One answer to the print question that picks `choice`, with `copies` typed for it.
+fn answer_print(choice: usize, copies: &str) -> Answer {
+    Answer {
+        choice: Some(choice),
+        values: vec![zeroize::Zeroizing::new(copies.to_owned())],
+        ..Answer::default()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_printed_document_reaches_the_spooler_once_through_its_descriptor() {
+    let spooler = Arc::new(RecordingSpooler::with_destinations(&["Office_LaserJet"]));
+    let bed = bed_with_spooler(Arc::new(crate::NoCapture), spooler.clone()).await;
+    let handle = question_handle(REQUEST);
+    let answering = async {
+        asked(&bed.questions, &handle).await;
+        let question = bed
+            .questions
+            .question(&handle)
+            .expect("the printer is asked");
+        assert_eq!(question.kind, PRINT_QUESTION);
+        assert_eq!(
+            question.details["printers"],
+            serde_json::json!(["Office_LaserJet"])
+        );
+        assert!(bed.questions.answer(&handle, answer_print(0, "2")));
+    };
+    let (reply, ()) = tokio::join!(
+        prepare_print(&bed.frontend, REQUEST, "Quarterly report"),
+        answering
+    );
+    let (response, results) = reply.expect("replied");
+    assert_eq!(response, 0, "the job is prepared: {results:?}");
+    let token = token_of(&results);
+    assert_ne!(token, 0, "zero would mean no token");
+
+    let options = HashMap::from([("token".to_owned(), OwnedValue::from(token))]);
+    let (response, _) = print_document(
+        &bed.frontend,
+        REQUEST,
+        "Quarterly report",
+        b"%PDF-1.7\nthe quarterly report\n",
+        options.clone(),
+    )
+    .await
+    .expect("replied");
+    assert_eq!(response, 0, "the job is printed");
+    let jobs = spooler.jobs();
+    assert_eq!(jobs.len(), 1, "one job reached the spooler: {jobs:?}");
+    assert_eq!(jobs[0].document, b"%PDF-1.7\nthe quarterly report\n");
+    assert_eq!(jobs[0].destination, "Office_LaserJet");
+    assert_eq!(jobs[0].copies, 2, "the copies the person chose");
+    assert_eq!(jobs[0].title, "Quarterly report");
+
+    // The token is single use: a second print finds nothing to redeem.
+    let (response, _) = print_document(
+        &bed.frontend,
+        REQUEST,
+        "Quarterly report",
+        b"%PDF-1.7\nthe quarterly report\n",
+        options,
+    )
+    .await
+    .expect("replied");
+    assert_eq!(
+        response, 2,
+        "a replayed token is refused and prints nothing"
+    );
+    assert_eq!(spooler.jobs().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_denied_print_never_reaches_the_spooler() {
+    let spooler = Arc::new(RecordingSpooler::with_destinations(&["Office_LaserJet"]));
+    let bed = bed_with_spooler(Arc::new(crate::NoCapture), spooler.clone()).await;
+    let handle = question_handle(REQUEST);
+    let answering = async {
+        asked(&bed.questions, &handle).await;
+        assert!(bed.questions.decline(&handle));
+    };
+    let (reply, ()) = tokio::join!(
+        print_document(
+            &bed.frontend,
+            REQUEST,
+            "Secret",
+            b"%PDF-1.7\nsecret\n",
+            HashMap::new()
+        ),
+        answering
+    );
+    let (response, _) = reply.expect("replied");
+    assert_eq!(response, 1, "a denied request reports user-cancelled");
+    assert!(spooler.jobs().is_empty(), "nothing was spooled");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_token_nobody_was_given_is_refused_and_asks_nobody() {
+    let spooler = Arc::new(RecordingSpooler::with_destinations(&["Office_LaserJet"]));
+    let bed = bed_with_spooler(Arc::new(crate::NoCapture), spooler.clone()).await;
+    let options = HashMap::from([("token".to_owned(), OwnedValue::from(4242_u32))]);
+    let (response, _) = print_document(&bed.frontend, REQUEST, "Report", b"%PDF-1.7\nx\n", options)
+        .await
+        .expect("replied");
+    assert_eq!(
+        response, 2,
+        "an unknown token is refused, never taken as no token"
+    );
+    assert!(spooler.jobs().is_empty());
+    assert!(
+        bed.questions.pending().is_empty(),
+        "a refused token prints to no default quietly"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_destination_the_app_names_never_reaches_the_spooler() {
+    let spooler = Arc::new(RecordingSpooler::with_destinations(&[
+        "Office_LaserJet",
+        "Studio_Inkjet",
+    ]));
+    let bed = bed_with_spooler(Arc::new(crate::NoCapture), spooler.clone()).await;
+    let handle = question_handle(REQUEST);
+    let answering = async {
+        asked(&bed.questions, &handle).await;
+        let question = bed
+            .questions
+            .question(&handle)
+            .expect("the printer is asked");
+        assert_eq!(
+            question.details["printers"],
+            serde_json::json!(["Office_LaserJet", "Studio_Inkjet"]),
+            "the app's made-up destination is not one offered"
+        );
+        assert!(bed.questions.answer(&handle, Answer::default()));
+    };
+    let mut options = HashMap::new();
+    options.insert(
+        "printer".to_owned(),
+        OwnedValue::from(zbus::zvariant::Str::from("../../etc/cups/printers.conf")),
+    );
+    let (reply, ()) = tokio::join!(
+        print_document(&bed.frontend, REQUEST, "x", b"%PDF-1.7\nx\n", options),
+        answering
+    );
+    let (response, _) = reply.expect("replied");
+    assert_eq!(response, 0, "the job still goes to a real printer");
+    let jobs = spooler.jobs();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].destination, "Office_LaserJet");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_document_without_a_usable_title_is_named_in_the_queue() {
+    let spooler = Arc::new(RecordingSpooler::with_destinations(&["Office_LaserJet"]));
+    let bed = bed_with_spooler(Arc::new(crate::NoCapture), spooler.clone()).await;
+    let handle = question_handle(REQUEST);
+    let answering = async {
+        asked(&bed.questions, &handle).await;
+        assert!(bed.questions.answer(&handle, Answer::default()));
+    };
+    let (reply, ()) = tokio::join!(prepare_print(&bed.frontend, REQUEST, ""), answering);
+    let (response, results) = reply.expect("replied");
+    assert_eq!(response, 0);
+    let token = token_of(&results);
+    let options = HashMap::from([("token".to_owned(), OwnedValue::from(token))]);
+    let (response, _) =
+        print_document(&bed.frontend, REQUEST, " \u{7} ", b"%PDF-1.7\nx\n", options)
+            .await
+            .expect("replied");
+    assert_eq!(response, 0);
+    let jobs = spooler.jobs();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].title, "Document");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_printer_the_app_asked_for_is_offered_first_and_prepared() {
+    let spooler = Arc::new(RecordingSpooler::with_destinations(&[
+        "Office_LaserJet",
+        "Studio_Inkjet",
+    ]));
+    let bed = bed_with_spooler(Arc::new(crate::NoCapture), spooler.clone()).await;
+    let handle = question_handle(REQUEST);
+    let answering = async {
+        asked(&bed.questions, &handle).await;
+        let question = bed
+            .questions
+            .question(&handle)
+            .expect("the printer is asked");
+        assert_eq!(
+            question.details["selected"],
+            serde_json::json!(1),
+            "the printer the app asked for is preselected"
+        );
+        assert_eq!(
+            question.details["copies"],
+            serde_json::json!(3),
+            "the copies the app asked for are offered"
+        );
+        assert!(bed.questions.answer(&handle, answer_print(1, "3")));
+    };
+    let settings = HashMap::from([
+        (
+            "printer".to_owned(),
+            OwnedValue::from(zbus::zvariant::Str::from("Studio_Inkjet")),
+        ),
+        (
+            "n-copies".to_owned(),
+            OwnedValue::from(zbus::zvariant::Str::from("3")),
+        ),
+    ]);
+    let page_setup = HashMap::from([(
+        "paper".to_owned(),
+        OwnedValue::from(zbus::zvariant::Str::from("A4")),
+    )]);
+    let (reply, ()) = tokio::join!(
+        prepare_print_with(&bed.frontend, REQUEST, "Report", settings, page_setup),
+        answering
+    );
+    let (response, results) = reply.expect("replied");
+    assert_eq!(response, 0);
+    let prepared: HashMap<String, String> = results["settings"]
+        .clone()
+        .try_into()
+        .expect("the settings as decided");
+    assert_eq!(prepared["printer"], "Studio_Inkjet");
+    assert_eq!(prepared["n-copies"], "3");
+    let echoed: HashMap<String, String> = results["page-setup"]
+        .clone()
+        .try_into()
+        .expect("the page setup back");
+    assert_eq!(
+        echoed["paper"], "A4",
+        "what the app sent comes back as it sent it"
+    );
+
+    let options = HashMap::from([("token".to_owned(), OwnedValue::from(token_of(&results)))]);
+    let (response, _) = print_document(&bed.frontend, REQUEST, "Report", b"%PDF-1.7\nx\n", options)
+        .await
+        .expect("replied");
+    assert_eq!(response, 0);
+    let jobs = spooler.jobs();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].destination, "Studio_Inkjet");
+    assert_eq!(jobs[0].copies, 3);
 }
 
 #[tokio::test(flavor = "multi_thread")]

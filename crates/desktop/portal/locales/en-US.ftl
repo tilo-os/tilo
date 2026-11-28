@@ -14,3 +14,8 @@ so-tilo-portal-shortcut-unbind = Unbind the app's shortcut
 so-tilo-portal-inhibition-end = End the app's hold
 so-tilo-portal-remote-control-end = Stop the app controlling this computer
 so-tilo-portal-restore-forget = Forget the remembered share
+
+## Printing
+
+# The queue's name for a document whose title was empty or unusable.
+print-untitled-document = Document

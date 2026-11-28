@@ -256,6 +256,11 @@ pub fn sanitise_title(raw: &str) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
+/// What a job with no usable title is called in the queue, as the person reads it.
+fn untitled() -> String {
+    crate::i18n::t("print-untitled-document")
+}
+
 fn is_unsafe_title_char(c: char) -> bool {
     c.is_control()
         || matches!(
@@ -546,7 +551,7 @@ impl Print {
             }
             let requested = option::<String>(&settings, "printer");
             let copies = clamp_copies(copies_of(&settings));
-            let title = sanitise_title(&title).unwrap_or_default();
+            let title = sanitise_title(&title).unwrap_or_else(untitled);
             let choosing = self.choose(&auth.caller, path, title, requested.as_deref(), copies);
             let (destination, copies) = self
                 .portal
@@ -587,7 +592,7 @@ impl Print {
             if lockdown::current_policy().disable_printing {
                 return Err(Ended::Cancelled);
             }
-            let title = sanitise_title(&title).unwrap_or_default();
+            let title = sanitise_title(&title).unwrap_or_else(untitled);
             // A token that does not redeem is refused, never taken as no
             // token: a replayed one must not print to the default.
             let (destination, copies) = match option::<u32>(&options, "token") {

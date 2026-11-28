@@ -14,3 +14,8 @@ so-tilo-portal-shortcut-unbind = Das Tastenkürzel der App lösen
 so-tilo-portal-inhibition-end = Die Sperre der App beenden
 so-tilo-portal-remote-control-end = Die App diesen Computer nicht mehr steuern lassen
 so-tilo-portal-restore-forget = Die gemerkte Freigabe vergessen
+
+## Drucken
+
+# Der Name, den die Warteschlange einem Dokument ohne brauchbaren Titel gibt.
+print-untitled-document = Dokument
