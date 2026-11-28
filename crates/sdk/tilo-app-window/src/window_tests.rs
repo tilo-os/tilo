@@ -4700,7 +4700,10 @@ fn an_empty_states_offered_action_answers_a_pointer_press() {
         .find(|(id, _)| *id == node)
         .and_then(|(_, described)| described.bounds())
         .expect("the state's action is described where it stands");
-    let (x, y) = ((bounds.x0 + bounds.x1) / 2.0, (bounds.y0 + bounds.y1) / 2.0);
+    let (x, y) = (
+        f64::midpoint(bounds.x0, bounds.x1),
+        f64::midpoint(bounds.y0, bounds.y1),
+    );
     harness.click_at(x, y);
     drawn_window(&mut harness).flush();
     assert!(
@@ -4749,7 +4752,10 @@ fn a_states_offered_action_inside_a_scrolling_page_answers_a_pointer_press() {
         .find(|(id, _)| *id == node)
         .and_then(|(_, described)| described.bounds())
         .expect("the state's action is described where it stands");
-    let (x, y) = ((bounds.x0 + bounds.x1) / 2.0, (bounds.y0 + bounds.y1) / 2.0);
+    let (x, y) = (
+        f64::midpoint(bounds.x0, bounds.x1),
+        f64::midpoint(bounds.y0, bounds.y1),
+    );
     harness.click_at(x, y);
     drawn_window(&mut harness).flush();
     assert!(

@@ -691,3 +691,48 @@ fn a_window_describes_the_words_it_says_after_its_controls() {
         said.rect
     );
 }
+
+/// The widget whose test id is `id`, where it stands.
+fn rect_of(app: &App, id: &str) -> vello::kurbo::Rect {
+    let mut pending: Vec<&dyn tilo_ui_base::widget::Widget> = vec![app.root_widget.as_ref()];
+    while let Some(widget) = pending.pop() {
+        if widget.test_id() == Some(id) {
+            return widget.get_rect();
+        }
+        pending.extend(widget.children());
+    }
+    panic!("{id} is in the tree");
+}
+
+/// A window whose header row draws its action: the control is offered where the row draws it, so
+/// a person's press, aimed at the place the window says the control stands, reaches it.
+#[test]
+fn a_header_actions_place_is_where_the_row_draws_it() {
+    let button = crate::widget::Button::new("new-shortcut", "New shortcut");
+    let identified = tilo_ui_base::widget::Identified::new(Box::new(button), doing());
+    let shell = crate::widget::NavShell::new()
+        .sidebar(crate::testing::TestLeaf::fill("sidebar").boxed().0)
+        .content(crate::testing::TestLeaf::fill("content").boxed().0)
+        .content_header(
+            "Overview",
+            vec![Box::new(identified) as crate::widget::Element],
+        );
+    let mut app = app_with_root(crate::State::new(), Box::new(shell));
+    layout(&mut app);
+
+    let controls = app.window_controls();
+    let control = controls
+        .iter()
+        .find(|control| control.identity.as_deref() == Some(doing().as_str()))
+        .unwrap_or_else(|| panic!("the window offers its header action: {controls:?}"));
+    let drawn = rect_of(&app, "new-shortcut");
+    let (x, y, width, height) = control.rect;
+    assert!(
+        (x - drawn.x0).abs() < 1.0
+            && (y - drawn.y0).abs() < 1.0
+            && (width - drawn.width()).abs() < 1.0
+            && (height - drawn.height()).abs() < 1.0,
+        "the action is offered where the row draws it: offered {:?}, drawn {drawn:?}",
+        control.rect
+    );
+}
