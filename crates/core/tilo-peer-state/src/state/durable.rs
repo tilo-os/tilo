@@ -19,25 +19,27 @@ use automerge::transaction::Transactable as _;
 /// stored bumps this: a build refuses state of another version by name
 /// rather than reading it as this one's, except the versions from 10 on,
 /// which it brings up ([`brought_up`]).
-pub const DURABLE_VERSION: u32 = 21;
+pub const DURABLE_VERSION: u32 = 22;
 
-/// The version before [`DURABLE_VERSION`]: the same layout, whose waiting writes may not be a
-/// message of a kind this build appends ([`NeighbourMsg::WorkspaceApps`]), so a build that reads
-/// none refuses a state that carries one rather than reading its writes wrong ([`brought_up`]).
-pub(super) const PREVIOUS: u32 = 20;
+/// The version before [`DURABLE_VERSION`]: the same layout and bytes, from before a reader set
+/// could stay on its device (`@device:`, [`collab_types::stays_on_device`]). Such a set's
+/// documents are never stored, and every set's id, name and key group derive as before, so it
+/// comes up relabelled ([`brought_up`]).
+pub(super) const PREVIOUS: u32 = 21;
 
 /// The oldest version before [`PREVIOUS`] that reads as this build's layout once its version is
-/// relabelled: version 20 differs only in the message a waiting write may be, which this build
+/// relabelled: version 21 stores the same bytes; version 20 differs only in the message a waiting write may be, which this build
 /// appends; version 19 stores the same bytes, naming the types its claims hold by the crates
 /// they live in now; versions 18 and 17 add only content messages a build before them never
 /// wrote, version 15 only a certificate marker, and version 14 only the mark a removed device's
 /// governance row carries ([`brought_up`]).
 pub(super) const RELABELLED: u32 = 14;
 
-/// `bytes`, a durable state, in this build's layout: versions 20 ([`PREVIOUS`]) to 14
+/// `bytes`, a durable state, in this build's layout: versions 21 ([`PREVIOUS`]) to 14
 /// ([`RELABELLED`]) relabelled, any other as it is, for [`Durable::read`] to read or refuse.
 ///
-/// Version 20 differs from this one only in what a write waiting to be sent may be: this build
+/// Version 21 is this build's layout under another number: a reader set that stays on its device
+/// names its documents apart, and none of them is stored. Version 20 differs from this one only in what a write waiting to be sent may be: this build
 /// appends the apps a workspace runs ([`NeighbourMsg::WorkspaceApps`]), which version 20's builds
 /// refuse, and a message version 20 wrote reads the same here. Version 19 is this build's layout
 /// under another number: the types its claims name moved below
