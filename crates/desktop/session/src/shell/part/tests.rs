@@ -397,6 +397,46 @@ fn the_bars_faces_are_who_is_here_and_the_button_opens_the_roster() {
     );
 }
 
+/// While the device's daemon has not said which workspace is the person's, the bar stands at once
+/// and its workspace and people show the toolkit's waiting state where they stand, naming no
+/// workspace; once the answer is read, they are the person's.
+#[test]
+fn the_bar_waits_for_the_persons_workspace_and_then_names_it() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let (mut part, link) = part_with(LayoutReading {
+        person: "Pat".to_owned(),
+        waiting: true,
+        ..LayoutReading::default()
+    });
+    for _ in 0..6 {
+        part.prepare_frame();
+    }
+    assert!(
+        part.says("Loading"),
+        "the workspace's parts wait: {:?}",
+        part.accessible_labels()
+    );
+    assert!(
+        !part.says("Workspaces"),
+        "no workspace is named before the answer: {:?}",
+        part.accessible_labels()
+    );
+    link.publish_layout(reading());
+    for _ in 0..6 {
+        part.prepare_frame();
+    }
+    assert!(
+        part.says("Home"),
+        "the person's workspace is named: {:?}",
+        part.accessible_labels()
+    );
+    assert!(
+        !part.says("Loading"),
+        "nothing waits once the answer is read: {:?}",
+        part.accessible_labels()
+    );
+}
+
 /// What one discrete change costs the bar: printed per kind of change, for the record
 /// of its frame budget; each must land in one turn.
 #[test]
@@ -901,6 +941,7 @@ fn one_window_layout() -> LayoutReading {
     LayoutReading {
         person: "Pat".to_owned(),
         front: String::new(),
+        waiting: false,
         people: Vec::new(),
         queries: Vec::new(),
         recents: Vec::new(),

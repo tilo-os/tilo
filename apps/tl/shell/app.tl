@@ -424,7 +424,11 @@ view workspace_menu(narrow: Bool, compact: Bool, wide: Bool) {
     state renamed: Text = ""
     let name = if front_workspace_name() != "" { front_workspace_name() } else { "Workspaces" }
     let current = layout.workspaces.find(w -> w.current)
-    if renaming != "" {
+    if layout.waiting {
+        // Which workspace is the person's is still the daemon's to say: no name stands here
+        // that may not be theirs.
+        ui.Skeleton(.chip)
+    } else if renaming != "" {
         ui.TextInput(
             bind: renamed,
             placeholder: layout.workspaces.find(w -> w.key == renaming)?.name ?? "Workspace name",

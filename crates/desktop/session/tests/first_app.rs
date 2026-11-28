@@ -37,10 +37,12 @@ const SESSIONS: u32 = 20;
 
 #[test]
 fn a_fresh_sessions_first_app_opens_in_the_seed_workspace_named_workspace() {
-    let ada = Person::new("Ada");
     for at in 0..SESSIONS {
+        // Each session is a person's first computer: one let into an account that already has a
+        // workspace opens in that one, once its copy arrives, not in one of its own.
+        let person = Person::new("Ada");
         let label = format!("fresh session {at}");
-        let mut device = ada.device(&label);
+        let mut device = person.device(&label);
         device.install_passwords();
         device.start();
         // The first thing this session does is open an app, while its workspace is still being

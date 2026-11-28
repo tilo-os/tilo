@@ -118,6 +118,11 @@ pub struct LayoutReading {
     /// none. It is this device's own, read off its shell, never a change of the layout.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub front: String,
+    /// Whether the workspace the person is in is not known yet: a device that keeps none asked its
+    /// daemon, and until it answers the reading holds no workspace, row, window or person, so the
+    /// shell draws what stands on its own and the toolkit's waiting state where these will.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub waiting: bool,
     /// The others here in the workspace in front.
     pub people: Vec<LayoutPersonReading>,
     pub workspaces: Vec<LayoutWorkspaceReading>,

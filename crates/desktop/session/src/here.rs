@@ -16,6 +16,20 @@ impl Shared {
     #[cfg(target_os = "linux")]
     pub(crate) fn layout_reading(&self) -> tilo_session_core::shell::LayoutReading {
         let mut reading = self.layout.borrow().reading();
+        // The workspace the shell started with stands only until the device's daemon says which
+        // workspace is the person's: its layout is never theirs, so none of it is drawn, and a
+        // layout that may not be theirs never flashes before the one that is.
+        if self
+            .personal
+            .as_ref()
+            .is_some_and(|personal| personal.borrow().seed().is_some())
+        {
+            return tilo_session_core::shell::LayoutReading {
+                person: reading.person,
+                waiting: true,
+                ..Default::default()
+            };
+        }
         if let Some(sync) = &self.sync {
             reading.people = self
                 .handle

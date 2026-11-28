@@ -20,6 +20,10 @@ type Layout (origin: session.layout) {
     /// session reads it off this device's shell, so it is never a change of the layout, and a press
     /// that brings a window forward asks the session (`session.activate`).
     front: Text merge register
+    /// Whether the workspace the person is in is not known yet: a device that keeps none asked
+    /// its daemon which is theirs. Until it answers the layout holds no workspace, row, window or
+    /// person, and the views draw the toolkit's waiting state where those stand.
+    waiting: Bool merge register
     /// The others here in the workspace in front.
     people: Collection<LayoutPerson>
     workspaces: Collection<LayoutWorkspace>

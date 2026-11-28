@@ -16,7 +16,10 @@ use tilo.workspace as workspace
 /// technology. With nobody here it is the people button's own glyph.
 view people_button() {
     let people = layout.people
-    if people.is_empty() {
+    if layout.waiting {
+        // Who is here is read in the person's workspace, which the daemon has not named yet.
+        ui.Skeleton(.chip)
+    } else if people.is_empty() {
         ui.Button(
             "People",
             icon: .users,

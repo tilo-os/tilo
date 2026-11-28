@@ -271,6 +271,8 @@ d-oomdh5mi = Layout
        *[other] Layouts
     }
 
+d-oomdh5mi-filter-waiting = Wartet
+
 d-q7rxwd72 = Platz der Leiste
     .doc = Wie viel Platz die obere Leiste hat: für das Menü des fokussierten Fensters und für ihre Teile.
 
@@ -1327,6 +1329,9 @@ d-hwz6gayi = Fensterreihe
 
 d-k4p3z4ee = Vorn
     .doc = Die Leiste, deren Fenster auf diesem Gerät die Tastatur hat, nach ihrem Schlüssel; leer für keine.
+
+d-hro7k2jr = Wartet
+    .doc = Ob der Arbeitsbereich der Person noch nicht bekannt ist: Ein Gerät, das keinen hält, hat seinen Daemon gefragt, welcher ihrer ist. Bis er antwortet, hält das Layout keinen Arbeitsbereich, keine Reihe, kein Fenster und keine Person, und die Ansichten zeigen dort den Wartezustand des Toolkits.
 
 d-uykuo63i = Person
     .doc = Die Person an diesem Gerät, mit ihrem Namen.

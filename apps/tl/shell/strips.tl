@@ -177,6 +177,10 @@ view strips_view(a: Layout, lists: Bool) {
                 workspace_rows(a, workspace.key, lists, space.compact, fill(1))
             }
         }
+    } else if a.waiting {
+        // The person's workspace is on its way: its windows stand here once it is, and nothing
+        // that may not be theirs is drawn before.
+        ui.Skeleton(.page)
     } else {
         // A shell the session has published no workspace of yet: it holds nothing to draw.
         scroll(axis: .both) {

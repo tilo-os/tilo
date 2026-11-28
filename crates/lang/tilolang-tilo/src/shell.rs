@@ -503,9 +503,12 @@ impl LayoutWriter {
         let front = ty
             .field("front")
             .map(|field| (field.to_owned(), text(&reading.front)));
+        let waiting = ty
+            .field("waiting")
+            .map(|field| (field.to_owned(), Value::Bool(reading.waiting)));
         let mut writes: Vec<OriginWrite> = self
             .mirror
-            .set(root, person.into_iter().chain(front))
+            .set(root, person.into_iter().chain(front).chain(waiting))
             .into_iter()
             .collect();
         // Each collection of the root, from the reading's items of its kind.

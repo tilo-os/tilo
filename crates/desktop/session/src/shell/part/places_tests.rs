@@ -100,6 +100,7 @@ fn layout(record: &str, shows: &str, shown_as: &str) -> LayoutReading {
     LayoutReading {
         person: "Pat".to_owned(),
         front: String::new(),
+        waiting: false,
         people: Vec::new(),
         queries: Vec::new(),
         recents: Vec::new(),
