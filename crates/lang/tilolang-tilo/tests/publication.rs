@@ -133,6 +133,11 @@ action search(v: Video, query: Text) {
 action rename(n: Note, title: Text) {
     n.title = title
 }
+
+/// Clears the title as the field is left: the view's own step, no command of a person's.
+agents action left(n: Note) {
+    n.title = ""
+}
 "#;
 
 tilo_test_env::scenario! {
@@ -173,6 +178,9 @@ tilo_test_env::scenario! {
                 .next()
                 .is_none()
         );
+        // An `agents action` is offered to agents and code, never on a person's lists.
+        assert!(rename.reaches_people());
+        assert_eq!(spec("left", "Note").audience(), tilo_actions::Audience::Agents);
         // And the surface publishes it on the verb itself, so a holder admits a queued effect
         // only from the verb whose code declares the capability it names.
         let action = meta

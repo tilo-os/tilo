@@ -1812,7 +1812,7 @@ action typed_address(p: Page, typed: Text) -> Answer uses page {
 }
 
 /// The person left the address without Enter: the extension hears of it.
-action address_left(p: Page) -> Answer uses page {
+agents action address_left(p: Page) -> Answer uses page {
     page_answered(page.call(json.encode(Ask(op: "address_left"))))
 }
 

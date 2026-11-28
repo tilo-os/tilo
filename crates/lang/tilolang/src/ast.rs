@@ -511,6 +511,9 @@ pub enum ActionRole {
     /// `opened action`: never offered; what opening a resource of its type does, wherever it is
     /// opened from, run as the person who opened it.
     Opened,
+    /// `agents action`: offered to agents and code, never on a person's lists: a step a view
+    /// runs itself, which is no command of a person's.
+    Agents,
 }
 
 impl ActionRole {
@@ -521,6 +524,7 @@ impl ActionRole {
             Self::Migration => "migration",
             Self::Initial => "initial",
             Self::Opened => "opened",
+            Self::Agents => "agents",
         }
     }
 }

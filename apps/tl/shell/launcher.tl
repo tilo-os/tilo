@@ -279,7 +279,7 @@ action choose_launcher_row_as(packed: Text, current: Bool) {
 /// rows it shows and the search resource an agent or a script reads say what the person typed,
 /// not what they typed before. An empty field asks nothing of the search, which keeps its last
 /// query until the next one is typed.
-action launcher_query(text: Text) {
+agents action launcher_query(text: Text) {
     if text != "" { session.search(query: text) }
 }
 

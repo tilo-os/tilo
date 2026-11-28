@@ -639,7 +639,7 @@ action add_subtask(t: Task, title: Text) -> Task uses time (
 
 /// Takes away the subtask the entry left empty: a field that began one and was left blank is no
 /// step of the work, so nothing empty stands under the task.
-action remove_empty_step(t: Task) (did: "removed an empty step") {
+agents action remove_empty_step(t: Task) (did: "removed an empty step") {
     for x in tasks.items.filter(x -> x.parent == t and x.title.trim().is_empty()) {
         tasks.items.remove(x)
     }

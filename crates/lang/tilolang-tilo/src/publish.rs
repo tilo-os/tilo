@@ -498,6 +498,9 @@ fn described(
     if is_destructive(action) {
         spec = spec.destructive();
     }
+    if action.role.as_deref() == Some("agents") {
+        spec = spec.for_audience(tilo_actions::Audience::Agents);
+    }
     // What a change of it says it by: the id the declaration keeps, which is not the name it is
     // published under.
     action.id.clone_into(&mut spec.type_mut().declared);
