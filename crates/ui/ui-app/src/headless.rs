@@ -37,7 +37,7 @@ pub use crate::app::driver::viewport;
 #[cfg(feature = "model")]
 pub use crate::app::driver::FollowedView;
 pub use crate::app::driver::{
-    Driver, DriverInputs, FrameOptions, Framed, OwedSettle, WINDOW_PARTS, WindowBarNotice,
+    Driver, DriverInputs, FrameOptions, Framed, OwedSettle, Painted, WINDOW_PARTS, WindowBarNotice,
     WindowBarNoticeButton,
 };
 #[cfg(feature = "model")]

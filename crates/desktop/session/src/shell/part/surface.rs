@@ -358,8 +358,9 @@ impl ShellSurface for ShellPart {
         }
         // The frame laid the style's own chrome out: the room it leaves the person's widgets is
         // measured from it and the views run once more with it, so a widget never stands under
-        // the bar or the dock — not on a first frame, and not while either changes size.
-        if self.measure_room() && self.turn() {
+        // the bar or the dock — not on a first frame, and not while either changes size. Only a
+        // frame that drew can have moved the chrome: a pass that drew nothing reads no tree.
+        if drew && self.measure_room() && self.turn() {
             drew |= self.draw();
         }
         // What the person's wheel or fingers asked of the row in front is the pan the desktop

@@ -829,3 +829,212 @@ fn open_phase_lines(segment: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
+
+/// TEMPORARY probe: the session's idle pass, its phases, and the pass that shows a window.
+#[test]
+fn probe_idle_pass() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let (_programs, session) = session_beside_launcher();
+    let ada = Person::new("Ada");
+    let mut device = ada.device("Ada's probe laptop");
+    device.run_session(session);
+    install_tl(&device);
+    let trusted = install_runtimes(&device);
+    device.env("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE", trusted);
+    let dir = device.directory().to_path_buf();
+    device.env("TILO_FRAME_TRACE", dir.join("frames.csv"));
+    device.env("TILO_FRAME_WARMUP_MS", "0");
+    device.start();
+    tilo_test_env::wait_for(format!("{} showing a workspace", device.label), || {
+        device.showing().filter(|showing| !showing.is_empty())
+    });
+    std::thread::sleep(std::time::Duration::from_secs(4));
+    let after = device.log().lines().count();
+    device.open("so.tilo.notes");
+    device.wait_for_window("so.tilo.notes");
+    let segment = tilo_test_env::wait_for("notes first frame", || {
+        let log = device.log();
+        let segment = log.lines().skip(after).collect::<Vec<_>>().join("\n");
+        segment
+            .lines()
+            .any(|line| line.contains("application first frame presented"))
+            .then_some(segment)
+    });
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    device.stop();
+    let trace = std::fs::read_to_string(dir.join("frames.csv")).unwrap_or_default();
+    report_trace(&trace);
+    println!("--- the open's lines");
+    for line in segment.lines() {
+        if line.contains("tilo::launch_latency")
+            || line.contains("APP-STARTUP")
+            || line.contains("startup-")
+        {
+            println!("    {line}");
+        }
+    }
+}
+
+/// TEMPORARY: print what the trace says of the idle ticks and of the painted ones.
+fn report_trace(trace: &str) {
+    let mut lines = trace.lines();
+    let Some(header) = lines.next() else {
+        println!("no trace");
+        return;
+    };
+    let columns: Vec<&str> = header.split(',').collect();
+    let at = |name: &str| columns.iter().position(|column| *column == name);
+    let (seq, start, period, input, pump, layout, scene, submit, sleep, painted, reasons) = (
+        at("seq"),
+        at("start_us"),
+        at("period_us"),
+        at("input_us"),
+        at("pump_us"),
+        at("layout_us"),
+        at("scene_us"),
+        at("submit_us"),
+        at("sleep_us"),
+        at("painted"),
+        at("paint_reasons"),
+    );
+    let (surfaces, after, step, step_us) = (
+        at("surfaces_us"),
+        at("after_us"),
+        at("pump_step"),
+        at("pump_step_us"),
+    );
+    let Some((
+        seq,
+        start,
+        period,
+        input,
+        pump,
+        layout,
+        scene,
+        submit,
+        sleep,
+        painted,
+        reasons,
+        surfaces,
+        after,
+        step,
+        step_us,
+    )) = (|| {
+        Some((
+            seq?, start?, period?, input?, pump?, layout?, scene?, submit?, sleep?, painted?,
+            reasons?, surfaces?, after?, step?, step_us?,
+        ))
+    })()
+    else {
+        println!("trace header unknown: {header}");
+        return;
+    };
+    let mut rows = Vec::new();
+    for line in lines {
+        let fields: Vec<&str> = line.split(',').collect();
+        let number =
+            |index: usize| -> u64 { fields.get(index).and_then(|v| v.parse().ok()).unwrap_or(0) };
+        rows.push((
+            number(seq),
+            number(start),
+            number(period),
+            number(input),
+            number(pump),
+            number(layout),
+            number(scene),
+            number(submit),
+            number(sleep),
+            fields.get(painted).copied().unwrap_or("0") == "1",
+            fields.get(reasons).copied().unwrap_or("").to_owned(),
+            number(surfaces),
+            number(after),
+            fields.get(step).copied().unwrap_or("").to_owned(),
+            number(step_us),
+        ));
+    }
+    let count = rows.len();
+    println!("--- trace rows {count}");
+    let painted_count = rows.iter().filter(|row| row.9).count();
+    println!("--- painted {painted_count}");
+    let mut reasons_by: std::collections::BTreeMap<&str, u64> = std::collections::BTreeMap::new();
+    for row in &rows {
+        if row.9 {
+            for reason in row.10.split('+').filter(|r| !r.is_empty()) {
+                *reasons_by.entry(reason).or_default() += 1;
+            }
+        }
+    }
+    println!("--- paint reasons {reasons_by:?}");
+    let mut steps: std::collections::BTreeMap<&str, (u64, u64, u64)> =
+        std::collections::BTreeMap::new();
+    for row in &rows {
+        let entry = steps.entry(row.13.as_str()).or_default();
+        entry.0 += 1;
+        entry.1 += row.14;
+        entry.2 = entry.2.max(row.14);
+    }
+    let mut by_sum: Vec<(&str, (u64, u64, u64))> = steps.into_iter().collect();
+    by_sum.sort_by(|a, b| b.1.1.cmp(&a.1.1));
+    for (name, (count, sum, max)) in by_sum {
+        println!("--- pump step {name:?}: {count} ticks, sum {sum} us, max {max} us");
+    }
+    let painted_rows: Vec<_> = rows.iter().filter(|row| row.9).collect();
+    let phase = |name: &str,
+                 pick: &dyn Fn(
+        &(
+            u64,
+            u64,
+            u64,
+            u64,
+            u64,
+            u64,
+            u64,
+            u64,
+            u64,
+            bool,
+            String,
+            u64,
+            u64,
+            String,
+            u64,
+        ),
+    ) -> u64| {
+        let mut values: Vec<u64> = painted_rows.iter().map(|row| pick(row)).collect();
+        values.sort_unstable();
+        let quantile = |q: f64| -> u64 {
+            if values.is_empty() {
+                return 0;
+            }
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                clippy::cast_precision_loss
+            )]
+            let index = ((values.len() as f64 - 1.0) * q).round() as usize;
+            values[index]
+        };
+        println!(
+            "--- painted {name}: n {} p50 {} p95 {} max {}",
+            values.len(),
+            quantile(0.5),
+            quantile(0.95),
+            quantile(1.0)
+        );
+    };
+    phase("input", &|row| row.3);
+    phase("pump", &|row| row.4);
+    phase("layout", &|row| row.5);
+    phase("scene", &|row| row.6);
+    phase("submit", &|row| row.7);
+    phase("surfaces", &|row| row.11);
+    phase("after", &|row| row.12);
+    phase("period", &|row| row.2);
+    for row in &rows {
+        if row.9 && (row.4 > 8_000 || row.11 > 8_000) {
+            println!(
+                "--- tick seq {} period {} input {} pump {} ({:?} {}) layout {} scene {} submit {} surfaces {} after {}",
+                row.0, row.2, row.3, row.4, row.13, row.14, row.5, row.6, row.7, row.11, row.12
+            );
+        }
+    }
+}

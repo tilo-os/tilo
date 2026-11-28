@@ -196,12 +196,53 @@ pub struct FrameOptions {
     pub content_height: bool,
 }
 
+/// What the frames a host has not read yet drew, for a host whose target keeps the pixels it
+/// presented ([`Driver::draws_only_damage`]).
+#[derive(Clone, Debug, Default)]
+pub enum Painted {
+    /// No frame ran since the host last read them: its target shows what it showed.
+    #[default]
+    Nothing,
+    /// A frame repainted the surface whole: the host repaints all of it.
+    Whole,
+    /// The frames changed where these regions are, in the surface's scene pixels.
+    Damage(Vec<vello::kurbo::Rect>),
+}
+
+impl Painted {
+    /// What this and the frame `next` (`None`: a whole frame) painted together.
+    #[must_use]
+    fn and(self, next: Option<Vec<vello::kurbo::Rect>>) -> Self {
+        match (self, next) {
+            (Self::Whole, _) => Self::Whole,
+            (painted, None) => {
+                let _ = painted;
+                Self::Whole
+            }
+            (Self::Nothing, Some(regions)) => Self::Damage(regions),
+            (Self::Damage(mut drawn), Some(regions)) => {
+                drawn.extend(regions);
+                Self::Damage(drawn)
+            }
+        }
+    }
+}
+
 /// An [`App`] run on a surface with no display. See the module documentation.
 pub struct Driver {
     app: Box<App>,
     surface: Surface,
     scene: Scene,
     damage: SurfaceDamage,
+    /// What the frames run since the host last took them drew, for a host whose target keeps
+    /// the pixels it presented ([`Self::draws_only_damage`]).
+    painted: Painted,
+    /// Whether the host keeps the pixels it presented, so a frame draws only its damage
+    /// ([`Self::draws_only_damage`]).
+    draws_damage_only: bool,
+    /// The next frame repaints the whole surface: the host's target is new, or its pixels are
+    /// not the ones the frames before painted ([`Self::repaint_whole`]).
+    whole_frame: bool,
     touch: tilo_ui_base::interaction::TouchPointerEmulator,
     /// Concrete type of the root when it was mounted through [`Driver::for_root`]; checks
     /// [`Driver::root`].
@@ -288,6 +329,9 @@ impl Driver {
             scene: Scene::new(),
             // A window of its own paints members' pointers and activity over the widgets.
             damage: SurfaceDamage::default().painting_peers(),
+            painted: Painted::Nothing,
+            draws_damage_only: false,
+            whole_frame: false,
             touch: tilo_ui_base::interaction::TouchPointerEmulator::default(),
             root_type: None,
             window_app: None,
@@ -546,7 +590,19 @@ impl Driver {
         // What the widgets' update moves — a pan, a fade, a closure that answers what it waits for —
         // advances in the surface frame's own model pump, which a window runs before it synchronizes.
         let mut again = true;
+        let mut passes = 0u32;
         for _ in 0..tilo_ui_base::widget::SETTLE_FRAMES {
+            // A frame that settles over more than one pass draws whole: the target keeps the last
+            // pass's pixels alone, so damage planned against the pass before describes nothing of
+            // what stands there now. A host that said its target is new draws whole too
+            // ([`Self::repaint_whole`]).
+            let whole = std::mem::take(&mut self.whole_frame) || passes > 0;
+            if whole {
+                self.damage.repaint_whole("a frame that settled");
+            }
+            self.damage
+                .set_drawing_only_damage(self.draws_damage_only && !whole);
+            passes = passes.saturating_add(1);
             // The bar first, as a window's frame refreshes it: its height is part of the app's
             // top inset.
             if self.bar_at_rest {
@@ -597,7 +653,11 @@ impl Driver {
                 break;
             }
         }
-        let _ = self.damage.take();
+        // What the frames run here changed, for a host that keeps the pixels it presented: a
+        // frame that had to repaint whole leaves none, and the host repaints all of it. Frames
+        // the host has not read yet stand together, so none of what they drew goes unpresented.
+        let painted = std::mem::take(&mut self.painted);
+        self.painted = painted.and(self.damage.take());
         // The semantics, and the placing of every widget far from any view they read, are built
         // when something reads them ([`Self::semantic_tree`]), as a window builds them when an
         // assistive technology asks: never on every frame, where a walk of every widget costs a
@@ -609,10 +669,12 @@ impl Driver {
         if let Some(serve) = self.peer.as_ref().map(|peer| peer.serve)
             && serve(self)
         {
+            self.whole_frame = true;
             return self.run_frame();
         }
         #[cfg(feature = "model")]
         if self.decide_unasked() {
+            self.whole_frame = true;
             return self.run_frame();
         }
         again
@@ -1102,6 +1164,32 @@ impl Driver {
     #[must_use]
     pub fn scene(&self) -> &Scene {
         &self.scene
+    }
+
+    /// Draw only the damage each frame brings, for a host whose target keeps the pixels it
+    /// presented: the scene then holds what that damage needs alone, and the host repaints
+    /// [`Self::take_painted_damage`]'s regions of it over those pixels.
+    pub fn draws_only_damage(&mut self, only: bool) {
+        if self.draws_damage_only == only {
+            return;
+        }
+        self.draws_damage_only = only;
+        // What the frames before drew describes nothing of the pixels a host that stopped
+        // drawing so describes: the next frame repaints the surface whole.
+        self.whole_frame = !only;
+    }
+
+    /// The next frame repaints the whole surface: the host's target is new (another size, another
+    /// buffer), so what damage the frames before took says nothing of what it shows.
+    pub fn repaint_whole(&mut self) {
+        self.whole_frame = true;
+    }
+
+    /// What the frames run since the last take drew, in the surface's scene pixels: what a host
+    /// that keeps the pixels it presented repaints of [`Self::scene`], or the whole of it when one
+    /// of those frames repainted the surface whole.
+    pub fn take_painted_damage(&mut self) -> Painted {
+        std::mem::take(&mut self.painted)
     }
 
     /// Frames run since construction.

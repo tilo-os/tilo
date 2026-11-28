@@ -180,8 +180,10 @@ pub struct WidgetSurface {
     host: Driver,
     placement: Placement,
     frames: Frames,
-    /// The frame the layer shows, to know what of the next one changed.
-    retained: RetainedFrames,
+    /// The next frame repaints the surface whole: the target holds pixels of a frame other than
+    /// the last one drawn (a new size, its material), so the damage the frames before took
+    /// describes nothing of it.
+    whole: bool,
     /// The parts the compositor poses, below the rest of the tree.
     lifted: Vec<LiftedLayer>,
     /// Moves whenever the layer may show pixels of another frame entirely.
@@ -265,13 +267,16 @@ impl WidgetSurface {
         host.track_scene_parts(true);
         // What only fades, grows or moves is posed by the compositor rather than drawn again.
         host.lift_parts(true);
+        // The frames are presented over the pixels of the last one ([`Frames`]): a frame draws
+        // what it changed alone, and the target is repainted where it changed.
+        host.draws_only_damage(true);
         let _ = host.set_input_scale(placement.scale);
         let size = placement.physical_size();
         Self {
             host,
             placement,
             frames: Frames::new(size),
-            retained: RetainedFrames::default(),
+            whole: true,
             lifted: Vec::new(),
             generation: 0,
             scene: vello::Scene::new(),
@@ -550,9 +555,10 @@ impl WidgetSurface {
         let size = placement.physical_size();
         if size != before.physical_size() {
             self.frames.resize(size);
-            // What the tree drew for the old size says nothing of this one.
+            // What the tree drew for the old size says nothing of this one: the next frame
+            // draws whole, and the target is repainted all of it.
             self.generation = self.generation.wrapping_add(1);
-            self.retained.forget();
+            self.whole = true;
         }
         self.owe();
     }
@@ -994,6 +1000,9 @@ impl ShellSurface for WidgetSurface {
                     image.texels.1,
                 ));
                 self.owed = Owed::Material;
+                // Its material is drawn again where it lies, not only where a widget changed:
+                // the frame that takes the images draws whole.
+                self.whole = true;
             }
         }
         self.owe();
@@ -1233,6 +1242,12 @@ impl ShellSurface for WidgetSurface {
         // frame came out the same waits for the next display frame too, rather than asking for
         // the next turn of the loop at once and keeping the loop busy until it ends.
         self.cadence.drawn(now);
+        // The target's pixels are not the ones the frames before painted (a new size, its
+        // material): this frame draws the whole tree again, and the target is repainted all of
+        // it.
+        if std::mem::take(&mut self.whole) {
+            self.host.repaint_whole();
+        }
         // A surface draws its material with the image it has when it draws:
         // new backdrops ask the tree for a frame of its own, even when
         // nothing else in it moved.
@@ -1258,25 +1273,32 @@ impl ShellSurface for WidgetSurface {
             .iter()
             .map(|region| (region.rect, region.blur_px, region.texels()))
             .collect();
-        let size = self.frames.size();
-        let key = TargetKey {
-            width: size.0,
-            height: size.1,
-            // The scene is in the frame's pixels: a part's bounds in it are the pixels they
-            // take.
-            to_device: Affine::IDENTITY,
-            base_color: TRANSPARENT,
-            generation: self.generation,
-        };
         let lifted = self.update_lifted();
-        let parts = self.host.scene_parts();
-        let damage = match self.retained.repaint(&self.scene, parts, key) {
+        // What the frame drew, where it changed: the host keeps the pixels it presented, so a
+        // frame draws only its damage and the target is repainted where it changed
+        // ([`ui::headless::Driver::draws_only_damage`]). A target that no frame met since the
+        // last look, or one whose frame repainted the surface whole, is repainted all of.
+        let size = self.frames.size();
+        let mut damage = match self.host.take_painted_damage() {
             // Nothing of what it shows changed: there is nothing to draw.
-            Repaint::Regions(changed) if changed.is_empty() => return lifted,
-            Repaint::Regions(changed) => Some(changed),
-            Repaint::Full(_) => None,
+            ui::headless::Painted::Nothing => return lifted,
+            ui::headless::Painted::Damage(changed) if changed.is_empty() => return lifted,
+            ui::headless::Painted::Whole => None,
+            ui::headless::Painted::Damage(changed) => Some(changed),
         };
-        self.retained.presented(&self.scene, parts, key);
+        // A damage too large to paint alone is painted as the whole surface, which would clear
+        // what this frame left out: the frame is drawn again, all of it.
+        if damage.as_deref().is_some_and(|changed| {
+            !tilo_ui_render::render_thread::renders_damage_alone(size.0, size.1, changed)
+        }) {
+            self.host.repaint_whole();
+            self.with_reports(|host| host.poll_frame().unwrap_or(false));
+            self.scene.reset();
+            self.scene.append(self.host.scene(), None);
+            // The whole of it is presented here; the next frame starts from it.
+            let _ = self.host.take_painted_damage();
+            damage = None;
+        }
         self.frames.present(&self.scene, damage.as_deref());
         true
     }

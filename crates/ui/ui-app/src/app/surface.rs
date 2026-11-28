@@ -1857,16 +1857,28 @@ impl SurfaceDamage {
         self.copying
     }
 
-    /// For a host that copies ([`Self::copying`]), takes after every frame
-    /// and repaints what [`Self::take_copying`] returns from that frame's
-    /// scene alone, over the pixels it presented last: never more of the
-    /// scene, and never the scene again later. The scene then holds only
-    /// what that damage needs: a scroll draws the strip it exposed and what
-    /// changed, not every row in view (`tilo_ui_base::draw_cull`).
+    /// Takes after every frame, for a host whose target keeps the pixels it presented: the
+    /// frame draws only what its damage needs, and the host repaints what [`Self::take`]
+    /// returns of that frame's scene alone — never more of it, and never the scene again
+    /// later. A scroll then draws the strip it exposed and what changed, not every row in view
+    /// (`tilo_ui_base::draw_cull`); a host that copies too plans its copies as well
+    /// ([`Self::copying`]).
     #[must_use]
     pub fn drawing_only_damage(mut self) -> Self {
-        self.culls = self.copying;
+        self.culls = true;
         self
+    }
+
+    /// Draw only the damage each frame brings, or every widget again: what a host asks for a
+    /// frame whose target is new or whole (a resized surface, another target entirely).
+    pub fn set_drawing_only_damage(&mut self, only: bool) {
+        self.culls = only;
+    }
+
+    /// Whether a frame repainted the surface whole for `why`, as the host's target is new: the
+    /// damage taken since describes nothing of it.
+    pub fn repaint_whole(&mut self, why: &'static str) {
+        self.repaint(why);
     }
 
     /// Paint members' pointers, names and activity over the widgets,
