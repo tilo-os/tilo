@@ -418,15 +418,37 @@ export function untilTruthy(expression, withinMs) {
   })`;
 }
 
+/** The stack's own listeners a page here may dial although this machine's roots
+ * do not sign them, by the origins they answer at: `TILO_WEB_PIN_CERTIFICATES`,
+ * comma separated. A page reaches its host's WebTransport listener at the
+ * stack's own certificate, and pins it in `serverCertificateHashes` as a
+ * person's browser pins the host it dials; this pins the same certificate in
+ * the browser, so the page's own check still decides, and only for the
+ * listeners the run names. */
+const PIN_CERTIFICATES = 'TILO_WEB_PIN_CERTIFICATES';
+
+async function pinnedFromEnvironment() {
+  const origins = (process.env[PIN_CERTIFICATES] ?? '')
+    .split(',')
+    .map(origin => origin.trim())
+    .filter(Boolean);
+  if (!origins.length) return null;
+  return pinnedCertificates(await Promise.all(origins.map(servedCertificate)));
+}
+
 /** A headless browser on a fresh profile. `args` are the flags a test adds to
  * [`BASELINE`]; `media` is `true` for a page that captures and plays media,
  * or `'ask'` for one that answers the microphone prompt itself.
+ *
+ * The certificates `TILO_WEB_PIN_CERTIFICATES` names are pinned for every
+ * browser this opens, as [`pinnedCertificates`] pins them.
  *
  * `TILO_CHROME_ARGS` adds flags of the machine's own, space separated, after
  * every other: a run that wants the machine's GPU (a recording) passes
  * `--enable-gpu --use-angle=vulkan --enable-features=Vulkan
  * --ignore-gpu-blocklist` there, and Chromium takes the switch it read last. */
 export async function launch({args = [], media = false} = {}) {
+  const pinned = await pinnedFromEnvironment();
   sweepProfiles();
   const profile = newProfile(throwawayDir());
   const supervised = process.platform === 'linux';
@@ -452,6 +474,7 @@ export async function launch({args = [], media = false} = {}) {
     // crash still prints its signal and stack on stderr without it.
     '--disable-crash-reporter',
     '--disable-breakpad',
+    ...(pinned ? [pinned] : []),
     ...args,
     ...(process.env.TILO_CHROME_ARGS ?? '').split(/\s+/).filter(Boolean),
     'about:blank',

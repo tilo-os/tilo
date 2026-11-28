@@ -211,6 +211,11 @@ TILO_INSTALL=$device/bin/tilo-install TILO_RUNTIME_BUNDLE_DIR=$lounge/runtimes \
   || { echo "FAIL: could not install the apps a flow's device runs" >&2; exit 1; }
 ln -sfn "$lounge/runtimes" "$device/data/tilo-runtime"
 
+# The host's own listener, which a page dials over WebTransport and pins by its
+# certificate (tools/web/chrome.mjs): the browsers the flows open are pinned to the
+# certificate this stack serves there, and to no other.
+export TILO_WEB_PIN_CERTIFICATES="https://127.0.0.1:$server_web_port"
+
 export E2E_WORK=$work E2E_BUNDLE=$bundle E2E_SITE=$site_origin E2E_SERVER=$server_origin E2E_WORKSPACE=$workspace \
   E2E_STACK=$tilo_sh/stack.sh E2E_API_URL=$api_origin TILO_CLI_BIN=$tilo_bin \
   TILO_APPS_DATA_DIR=$device/apps XDG_DATA_HOME=$device/data \
