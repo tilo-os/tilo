@@ -268,6 +268,11 @@ fn zone_description(kind: Text) -> Text {
     }
 }
 
+/// What a zone may do with traffic no rule matched.
+fn targets() -> List<Text> {
+    ["default", "accept", "reject", "drop"]
+}
+
 /// What happens to traffic no rule matched, in the person's words.
 fn target_words(target: Text) -> Text {
     if target == "accept" {
@@ -278,17 +283,6 @@ fn target_words(target: Text) -> Text {
         std.say("Dropped")
     } else {
         std.say("Rejected by firewalld’s default policy")
-    }
-}
-
-/// `items` joined with `, `, one at a time.
-fn joined(items: List<Text>, at: Int) -> Text {
-    if at >= items.len() {
-        ""
-    } else if at == 0 {
-        (items.at(at) ?? "") + joined(items, 1)
-    } else {
-        ", " + (items.at(at) ?? "") + joined(items, at + 1)
     }
 }
 
@@ -670,6 +664,77 @@ action make_active(f: Firewall, zone: Text) (
     notice("Made {zone_title(zone)} the active zone", kind: .success)
 }
 
+/// What a zone does with traffic no rule matched: firewalld's default policy, or accept, reject
+/// or drop it.
+action set_target(f: Firewall, zone: Text, target: Text) (
+    icon: .shield,
+    label: "Set what happens to unmatched traffic",
+    did: if target == "accept" {
+    "set unmatched traffic to be accepted in"
+} else if target == "reject" {
+    "set unmatched traffic to be rejected in"
+} else if target == "drop" {
+    "set unmatched traffic to be dropped in"
+} else {
+    "left unmatched traffic to firewalld’s default policy in"
+},
+) {
+    if target == "default" or target == "accept" or target == "reject" or target == "drop" {
+        if let held = f.zones.find(x -> x.kind == zone) {
+            held.target = target
+            device.apply(device.firewall, config: payload(f))
+        }
+    }
+}
+
+/// Turns masquerading of a zone's outbound traffic on or off.
+action set_masquerade(f: Firewall, zone: Text, on: Bool) (
+    icon: .power,
+    label: "Turn masquerading on or off",
+    did: if on { "turned masquerading on in" } else { "turned masquerading off in" },
+) {
+    if let held = f.zones.find(x -> x.kind == zone) {
+        held.masquerade = on
+        device.apply(device.firewall, config: payload(f))
+    }
+}
+
+/// Gives a zone a network interface; a zone that claimed it before lets it go.
+action add_interface(f: Firewall, zone: Text, interface: Text) (
+    icon: .plus,
+    label: "Add an interface",
+    did: "added {interface} to",
+) {
+    let name = interface.trim()
+    if name != "" {
+        for other in f.zones {
+            if other.kind != zone and other.interfaces.contains(name) {
+                other.interfaces = other.interfaces.filter(x -> x != name)
+            }
+        }
+        if let held = f.zones.find(x -> x.kind == zone) {
+            if not held.interfaces.contains(name) {
+                held.interfaces = held.interfaces + [name]
+                device.apply(device.firewall, config: payload(f))
+            }
+        }
+    }
+}
+
+/// Takes a network interface from a zone.
+action remove_interface(f: Firewall, zone: Text, interface: Text) (
+    icon: .trash,
+    label: "Remove an interface",
+    did: "removed an interface from",
+) {
+    // A change keeps only the arguments its zone still holds: the interface is gone from it, so
+    // the sentence cannot name it.
+    if let held = f.zones.find(x -> x.kind == zone) {
+        held.interfaces = held.interfaces.filter(x -> x != interface)
+        device.apply(device.firewall, config: payload(f))
+    }
+}
+
 /// Turns a rule on or off in a zone.
 action toggle_rule(f: Firewall, zone: Text, rule: Text, on: Bool) (
     icon: .power,
@@ -790,6 +855,7 @@ view window(f: Firewall) {
     state draft_verdict: Text = "allow"
     state draft_source: Text = ""
     state pending_switch: Text = ""
+    state draft_interface: Text = ""
     // Which of a rule's own columns the list is sorted by, and whether the order is descending.
     state sort_by: Text = "action"
     state descending: Bool = false
@@ -909,6 +975,7 @@ view window(f: Firewall) {
                     draft_proto,
                     draft_verdict,
                     draft_source,
+                    draft_interface,
                     sort_by,
                     descending,
                 )
@@ -961,6 +1028,7 @@ view zone_page(
     draft_proto: State<Text>,
     draft_verdict: State<Text>,
     draft_source: State<Text>,
+    draft_interface: State<Text>,
     sort_by: State<Text>,
     descending: State<Bool>,
 ) {
@@ -982,13 +1050,51 @@ view zone_page(
             ui.StatTile("Deny rules", "{deny}")
         }
         ui.Section("Details") {
-            ui.PropertyList {
-                ui.Property(
-                    "Interfaces",
-                    if zone.interfaces.is_empty() { "None" } else { joined(zone.interfaces, 0) },
-                )
-                ui.Property("Unmatched traffic", target_words(zone.target))
-                ui.Property("Masquerading", if zone.masquerade { "On" } else { "Off" })
+            form {
+                field("Unmatched traffic") {
+                    ui.Dropdown(
+                        value: targets().find(x -> x == zone.target) ?? "default",
+                        options: targets().map(x -> target_words(x)),
+                        values: targets(),
+                        caption: "Unmatched traffic",
+                    ) {
+                        on change(target: Text): set_target(f, zone.kind, target)
+                    }
+                }
+                field("Masquerading") {
+                    ui.Toggle(
+                        shown: zone.masquerade,
+                        label: if zone.masquerade { "On" } else { "Off" },
+                    ) {
+                        on check(on): set_masquerade(f, zone.kind, on)
+                    }
+                }
+                field("Interfaces") {
+                    stack(gap: .tight) {
+                        if zone.interfaces.is_empty() {
+                            ui.Text("None", role: .body, secondary: true)
+                        }
+                        for name in zone.interfaces {
+                            row(gap: .related, align: .center) {
+                                ui.Text(name, role: .body)
+                                spacer
+                                ui.Button("Remove {name}", icon: .trash, icon_only: true) {
+                                    on press: remove_interface(f, zone.kind, name)
+                                }
+                            }
+                        }
+                        row(gap: .related, align: .center) {
+                            ui.TextInput(bind: draft_interface, placeholder: "eth0") {
+                            }
+                            ui.Button("Add", icon: .plus) {
+                                on press: add_interface(f, zone.kind, draft_interface)
+                                    .then(
+                                        set(draft_interface, ""),
+                                    )
+                            }
+                        }
+                    }
+                }
             }
         }
         ui.Section("Rules") {

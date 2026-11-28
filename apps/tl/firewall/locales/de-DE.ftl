@@ -193,6 +193,46 @@ d-fas2qr4c = Zur aktiven Zone machen
 
 d-fas2qr4c-zone = Zone
 
+d-j75dqyc3 = Festlegen, was mit nicht passendem Datenverkehr geschieht
+    .doc = Was eine Zone mit Datenverkehr tut, auf den keine Regel passt: die Standardrichtlinie von firewalld, oder ihn annehmen, abweisen oder verwerfen.
+    .did = { $target ->
+        [accept] ließ nicht passenden Datenverkehr annehmen
+        [reject] ließ nicht passenden Datenverkehr abweisen
+        [drop] ließ nicht passenden Datenverkehr verwerfen
+       *[other] überließ nicht passenden Datenverkehr der Standardrichtlinie von firewalld
+    }
+
+d-j75dqyc3-zone = Zone
+
+d-j75dqyc3-target = Ziel
+
+d-lfedaan7 = Masquerading ein- oder ausschalten
+    .doc = Schaltet das Masquerading des ausgehenden Datenverkehrs einer Zone ein oder aus.
+    .did = { $on ->
+        [true] schaltete das Masquerading ein
+       *[other] schaltete das Masquerading aus
+    }
+
+d-lfedaan7-zone = Zone
+
+d-lfedaan7-on = An
+
+d-2l4uocmn = Schnittstelle hinzufügen
+    .doc = Gibt einer Zone eine Netzwerkschnittstelle; eine Zone, die sie vorher hatte, gibt sie ab.
+    .did = fügte { $interface } hinzu
+
+d-2l4uocmn-zone = Zone
+
+d-2l4uocmn-interface = Schnittstelle
+
+d-xu4xipjs = Schnittstelle entfernen
+    .doc = Nimmt einer Zone eine Netzwerkschnittstelle.
+    .did = entfernte eine Schnittstelle
+
+d-xu4xipjs-zone = Zone
+
+d-xu4xipjs-interface = Schnittstelle
+
 d-t5sxzg6g = Eine Regel ein- oder ausschalten
     .doc = Schaltet eine Regel in einer Zone ein oder aus.
     .did = { $on ->
@@ -323,6 +363,9 @@ d-4r3hrblj = Panik einschalten~present
 d-vxibtymz = Regel hinzufügen~present
 
 d-okktoj56 = Fenster
+    .w-remove = { $name } entfernen
+    .w-eth0 = eth0
+    .w-add = Hinzufügen
     .w-enable-the-rule = Die Regel { $name } einschalten
     .w-firewall = Firewall
     .w-zones = Zonen

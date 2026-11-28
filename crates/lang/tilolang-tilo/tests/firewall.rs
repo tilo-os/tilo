@@ -166,7 +166,10 @@ fn the_zone_page_reads_the_active_zone_and_its_details() {
         "Allow rules",
         "Deny rules",
         "Interfaces",
-        "wlan0, eth0",
+        "wlan0",
+        "eth0",
+        "Unmatched traffic",
+        "Masquerading",
     ] {
         assert!(has(&window, wanted), "{wanted} shows: {words:?}");
     }
@@ -723,6 +726,16 @@ fn rule_at(app: &Pane, zone: &str, port: &str) -> ResourceRef {
 /// allowed no more and again, a rule saved and deleted in `work`, the firewall stopped and
 /// started, `work` made active, panic mode entered and left.
 fn change_everything(app: &Pane) {
+    let work = |action: &str, value: Value| {
+        app.call(action, vec![app.root_value(), Value::text("work"), value]);
+    };
+    work("set_target", Value::text("accept"));
+    work("set_target", Value::text("default"));
+    work("set_masquerade", Value::Bool(true));
+    work("set_masquerade", Value::Bool(false));
+    // The public zone claims eth0: giving it to the work zone takes it from there.
+    work("add_interface", Value::text("eth0"));
+    work("remove_interface", Value::text("eth0"));
     let rule = rule_of(app, "public", "3389");
     for on in [true, false] {
         app.call(
@@ -792,6 +805,14 @@ fn history_says_what_each_firewall_change_did_in_the_readers_language() {
         let mut said = app.history(at, locale, words);
         said.split_off(said.len().saturating_sub(n))
     };
+    assert_eq!(
+        app.host
+            .runtime()
+            .read(&zone_at(&app, "public"), "interfaces")
+            .unwrap(),
+        Value::List(vec![Value::text("wlan0")]),
+        "the work zone took eth0 from the public zone"
+    );
     let cases: [(ResourceRef, &[&str], &[&str]); 3] = [
         (
             rule_at(&app, "public", "3389"),
@@ -801,10 +822,22 @@ fn history_says_what_each_firewall_change_did_in_the_readers_language() {
         (
             zone_at(&app, "work"),
             &[
+                "Set unmatched traffic to be accepted in",
+                "Left unmatched traffic to firewalld’s default policy in",
+                "Turned masquerading on in",
+                "Turned masquerading off in",
+                "Added eth0 to",
+                "Removed an interface from",
                 "Saved a rule that denies its traffic in",
                 "Deleted a rule from",
             ],
             &[
+                "Ließ nicht passenden Datenverkehr annehmen",
+                "Überließ nicht passenden Datenverkehr der Standardrichtlinie von firewalld",
+                "Schaltete das Masquerading ein",
+                "Schaltete das Masquerading aus",
+                "Fügte eth0 hinzu",
+                "Entfernte eine Schnittstelle",
                 "Speicherte eine Regel, die ihren Datenverkehr verweigert",
                 "Löschte eine Regel",
             ],
