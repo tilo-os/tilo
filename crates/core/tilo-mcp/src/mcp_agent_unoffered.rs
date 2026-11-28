@@ -66,19 +66,37 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 [] => return Err(self.nothing_offered(resolved, action, not_listed()).await),
                 [(resource, _)] => resource.clone(),
                 several => {
-                    let named: Vec<String> = several
-                        .iter()
-                        .map(|(_, label)| {
-                            format!("{}/{}#{action}", resolved.path, path_name(label))
-                        })
-                        .collect();
-                    return Err(format!(
-                        "invalid_arguments: {} publishes {action} on {} resources; name one: {}",
-                        resolved.path,
-                        several.len(),
-                        named.join(", ")
-                    )
-                    .into());
+                    // A caller that named the app alone named the app's own package resource:
+                    // each action that takes one of the app's roots is published on it beside
+                    // the root's own resource, and the package's row is the one an agent, a
+                    // script or a device names. The root's row is the person's, in a window.
+                    let package = format!("tl:{}", resolved.app_id);
+                    if let Some((resource, _)) =
+                        several.iter().find(|(resource, _)| *resource == package)
+                    {
+                        resource.clone()
+                    } else {
+                        // Named by the resource each publishes it on, which is what a caller
+                        // passes to call one: two resources can be labelled alike, and a label
+                        // names neither.
+                        let named: Vec<String> = several
+                            .iter()
+                            .map(|(resource, label)| {
+                                format!(
+                                    "{}/{}#{action} ({label})",
+                                    resolved.path,
+                                    path_name(resource)
+                                )
+                            })
+                            .collect();
+                        return Err(format!(
+                            "invalid_arguments: {} publishes {action} on {} resources; name one: {}",
+                            resolved.path,
+                            several.len(),
+                            named.join(", ")
+                        )
+                        .into());
+                    }
                 }
             },
         };
