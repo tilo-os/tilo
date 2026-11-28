@@ -416,6 +416,9 @@ type Workbench (untitled: "Shortcuts") {
     picker: Collection<Offer>
     picker_for: Option<Draft>
     picker_block: Text = ""
+    /// The catalogue is being read for the open picker, and why it could not be when it could not.
+    picker_loading: Bool = false
+    picker_failure: Text = ""
     /// The draft New shortcut last made, which the window shows: a press of that button runs the
     /// action itself, so the draft it makes is opened here and never only listed in the sidebar.
     opened: Text = ""
@@ -2121,19 +2124,33 @@ fn agent_app() -> Text {
     "so.tilo.agent"
 }
 
-/// The actions the person is offered, read now, for the open picker. Nothing is kept once the
-/// picker closes: what a view draws it read in the action that opened it.
+/// The picker opens at once and the catalogue is read for it a moment later, so a person sees
+/// that the actions are being read rather than a bare sheet. The read is the same wherever it
+/// happens: nothing is kept once the picker closes.
 action open_picker(w: Workbench, d: Draft, block: Text) (icon: .plus, label: "Add step") {
     close_picker(w)
     w.picker_for = .some(d)
     w.picker_block = block
-    let found = actions.catalogue(query: .none, app: .none)
-    for a in found {
+    w.picker_loading = true
+}
+
+/// Read the actions the person is offered for the open picker: what the app drew as being read.
+action read_picker(w: Workbench) {
+    if not w.picker_loading {
+        return
+    }
+    let answer = actions.catalogue(query: .none, app: .none)
+    for offer in w.picker {
+        w.picker.remove(offer)
+    }
+    for a in answer.offers {
         let offer = w.picker.insert(offer_of(a))
         for p in params_of(a) {
             offer.params.insert(p)
         }
     }
+    w.picker_failure = answer.failure
+    w.picker_loading = false
 }
 
 action close_picker(w: Workbench) {
@@ -2142,6 +2159,8 @@ action close_picker(w: Workbench) {
     }
     w.picker_for = .none
     w.picker_block = ""
+    w.picker_loading = false
+    w.picker_failure = ""
 }
 
 /// Where a new step goes in a block an editor path names.
@@ -2639,7 +2658,7 @@ action review(d: Draft) {
 /// Keeps every action step's parameters and the type of each argument what the catalogue says
 /// they are, reading the catalogue once.
 action match_catalogue(d: Draft) {
-    let found = actions.catalogue(query: .none, app: .none)
+    let found = actions.catalogue(query: .none, app: .none).offers
     for step in d.program.steps.filter(one -> one.head == .invoke) {
         for offered in found {
             let named = offered.address.split("#").last() ?? ""
@@ -2873,7 +2892,7 @@ fn catalogue_line(a: actions.Offered) -> Text {
 
 /// The agent's action that drafts, when this workspace is offered it; empty when it is not.
 action agent_address() -> Text {
-    let transforms = actions.catalogue(query: .none, app: .some(agent_app()))
+    let transforms = actions.catalogue(query: .none, app: .some(agent_app())).offers
     if let freeform = transforms.find(one -> one.address.ends_with("#freeform")) {
         return freeform.address
     }
@@ -2884,6 +2903,7 @@ action agent_address() -> Text {
 action catalogue_summary() -> Text {
     actions
         .catalogue(query: .none, app: .none)
+        .offers
         .filter(one -> one.app != "so.tilo.shortcuts" and one.app != agent_app())
         .map(one -> catalogue_line(one))
         .join("\n")
@@ -4168,7 +4188,16 @@ view picker(w: Workbench, d: Draft) {
                 on activate: add_block(w, d, head)
             }
         }
-        if w.picker.is_empty() {
+        if w.picker_loading {
+            // The catalogue is read a moment after the sheet opens: say so, and read it then.
+            ui.Timer(after: 0.01, restart: w.picker_block + d.shortcut_id) {
+                on tick: read_picker(w)
+            }
+            text("Reading the actions your apps offer…", role: .caption, secondary: true)
+        } else if w.picker_failure != "" {
+            text("The actions your apps offer could not be read", role: .caption, secondary: true)
+            text(w.picker_failure, role: .caption, secondary: true)
+        } else if w.picker.is_empty() {
             text("No app offers actions here yet.", role: .caption, secondary: true)
         } else if w.picker.filter(offer -> offer_matches(w.picker_query, offer)).is_empty() {
             text("No actions match this filter", role: .caption, secondary: true)

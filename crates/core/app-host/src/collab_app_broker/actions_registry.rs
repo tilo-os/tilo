@@ -67,35 +67,46 @@ impl AppBrokerState {
         };
         let invocation = request.invocation;
         self.action_query(caller, &asked).map(move |page| {
-            let page = page?;
-            let actions: Vec<serde_json::Value> = page
-                .rows
-                .into_iter()
-                .filter(|row| app.as_ref().is_none_or(|app| row.app_id == *app))
-                .filter_map(|row| {
-                    let action = row.action?;
-                    Some(serde_json::json!({
-                        "address": format!(
-                            "{}/{}#{}",
-                            row.app_id, action.address.resource, action.address.action
-                        ),
-                        "app": row.app_id,
-                        "app_label": app_label(&row.app_id),
-                        "label": action.action_label,
-                        "resource": action.resource_label,
-                        "resource_kind": row.resource.kind,
-                        "resource_id": row.resource.id,
-                        "kind": if action.contract.kind == ActionKind::Read { "read" } else { "effect" },
-                        "params": action.params.iter().map(|param| serde_json::json!({
-                            "name": param.name,
-                            "ty": param_type_name(param.ty),
-                            "required": param.required,
-                        })).collect::<Vec<_>>(),
-                        "confirms": !matches!(action.contract.confirmation, ConfirmationPolicy::None),
-                    }))
-                })
-                .collect();
-            Ok(completed(invocation, serde_json::json!(actions)))
+            // A catalogue that could not be read answers so, with the reason: the code that asked
+            // says it in its own words instead of failing at the call. What it answers is the
+            // `Catalogue` record, the offers and the reason beside them.
+            let (actions, failure) = match page {
+                Ok(page) => {
+                    let actions: Vec<serde_json::Value> = page
+                        .rows
+                        .into_iter()
+                        .filter(|row| app.as_ref().is_none_or(|app| row.app_id == *app))
+                        .filter_map(|row| {
+                            let action = row.action?;
+                            Some(serde_json::json!({
+                                "address": format!(
+                                    "{}/{}#{}",
+                                    row.app_id, action.address.resource, action.address.action
+                                ),
+                                "app": row.app_id,
+                                "app_label": app_label(&row.app_id),
+                                "label": action.action_label,
+                                "resource": action.resource_label,
+                                "resource_kind": row.resource.kind,
+                                "resource_id": row.resource.id,
+                                "kind": if action.contract.kind == ActionKind::Read { "read" } else { "effect" },
+                                "params": action.params.iter().map(|param| serde_json::json!({
+                                    "name": param.name,
+                                    "ty": param_type_name(param.ty),
+                                    "required": param.required,
+                                })).collect::<Vec<_>>(),
+                                "confirms": !matches!(action.contract.confirmation, ConfirmationPolicy::None),
+                            }))
+                        })
+                        .collect();
+                    (actions, String::new())
+                }
+                Err(error) => (Vec::new(), error.to_string()),
+            };
+            Ok(completed(
+                invocation,
+                serde_json::json!({ "offers": actions, "failure": failure }),
+            ))
         })
     }
 

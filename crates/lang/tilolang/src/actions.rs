@@ -26,6 +26,9 @@ pub const PARAM_TYPE: &str = "actions-param";
 /// What an action does when it runs: it reads, or it changes something.
 pub const KIND_ENUM: &str = "actions-kind";
 
+/// What `actions.catalogue` answers: the actions, or why they could not be read.
+pub const CATALOGUE_TYPE: &str = "actions-catalogue";
+
 /// The action that reads the catalogue.
 pub const CATALOGUE_ACTION: &str = "catalogue";
 /// The action that calls one action by its address.
@@ -73,7 +76,7 @@ fn catalogue_action() -> ActionMeta {
             ),
             param("app", "Option<Text>", "Only this app's actions, when named"),
         ],
-        result: Some("List<Offered>".to_string()),
+        result: Some("Catalogue".to_string()),
         class: EffectClass::Read,
         leaves: false,
         reaches: Vec::new(),
@@ -239,6 +242,27 @@ pub fn actions_meta() -> PackageMeta {
                 ..TypeMeta::default()
             },
             TypeMeta {
+                id: CATALOGUE_TYPE.to_string(),
+                name: "Catalogue".to_string(),
+                doc: "The actions the catalogue answered with, and why it could not be read when it could not: an app that asks for them says so in its own words rather than trapping."
+                    .to_string(),
+                fields: vec![
+                    field(
+                        "actions-catalogue-offers",
+                        "offers",
+                        "List<Offered>",
+                        "The actions the caller is offered, in the catalogue's order.",
+                    ),
+                    field(
+                        "actions-catalogue-failure",
+                        "failure",
+                        "Text",
+                        "Why the catalogue could not be read, as the dispatch said it; empty when it was read.",
+                    ),
+                ],
+                ..TypeMeta::default()
+            },
+            TypeMeta {
                 id: PARAM_TYPE.to_string(),
                 name: "ActionParam".to_string(),
                 doc: "One parameter of an offered action: its name, its type and whether it is required."
@@ -302,7 +326,7 @@ mod tests {
     fn the_registry_package_declares_its_verbs_its_types_and_their_answers() {
         let meta = actions_meta();
         assert_eq!(meta.app, ACTIONS_APP);
-        for ty in ["Offered", "ActionParam"] {
+        for ty in ["Offered", "ActionParam", "Catalogue"] {
             assert!(
                 meta.types.iter().any(|declared| declared.name == ty),
                 "{ty}"
@@ -318,7 +342,11 @@ mod tests {
             .iter()
             .find(|action| action.id == CATALOGUE_ACTION)
             .expect("catalogue is declared");
-        assert_eq!(catalogue.result.as_deref(), Some("List<Offered>"));
+        assert_eq!(
+            catalogue.result.as_deref(),
+            Some("Catalogue"),
+            "the answer says what was offered, or why it could not be read"
+        );
         assert_eq!(catalogue.class, EffectClass::Read);
         let call = meta
             .actions

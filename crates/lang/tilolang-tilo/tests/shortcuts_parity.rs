@@ -22,10 +22,27 @@ use crate::fixtures::{Replica, Workspace, target};
 const APP: &str = "so.tilo.shortcuts";
 
 /// What answers Shortcuts' calls of the session's action registry, as the device's dispatch
-/// would: the catalogue offers no action here, and the checker reads a draft that has neither a
-/// problem nor a grant.
+/// would: the catalogue offers no action here, or says why it could not be read, and the checker
+/// reads a draft that has neither a problem nor a grant.
 #[derive(Default)]
-struct Answers;
+struct Answers {
+    /// Why the catalogue could not be read, for a test of that line; empty for a catalogue read.
+    failure: String,
+}
+
+/// The `Catalogue` record the action registry answers with, the offers and the failure beside them.
+fn catalogue(failure: &str) -> Value {
+    let mut fields = std::collections::BTreeMap::new();
+    fields.insert(
+        "actions-catalogue-offers".to_owned(),
+        Value::List(Vec::new()),
+    );
+    fields.insert("actions-catalogue-failure".to_owned(), Value::text(failure));
+    Value::Rec(tilolang_runtime::value::RecordInit {
+        ty: "actions-catalogue".to_owned(),
+        fields,
+    })
+}
 
 impl Invoker for Answers {
     fn invoke(&self, invocation: &Invocation) -> Invoked {
@@ -34,7 +51,7 @@ impl Invoker for Answers {
         };
         if app == tilolang::ACTIONS_APP {
             return match name.as_str() {
-                "catalogue" => Invoked::Done(Value::List(Vec::new())),
+                "catalogue" => Invoked::Done(catalogue(&self.failure)),
                 _ => Invoked::Refused("this test calls no action by address".to_owned()),
             };
         }
@@ -63,7 +80,7 @@ const SHORTCUTS: (&str, &str) = (
 /// Ada's workspace with Shortcuts, and the workbench it keeps.
 fn workbench() -> (Replica, ResourceRef) {
     let (ada, _) = Replica::new("ada", Workspace::new(), &[SHORTCUTS]);
-    ada.host.runtime().set_foreign_invoker(Answers);
+    ada.host.runtime().set_foreign_invoker(Answers::default());
     let root = ada.root(APP);
     ada.commit();
     (ada, root)
@@ -464,6 +481,11 @@ fn an_imported_shortcut_arms_nothing() {
 
 /// The window as it ships, its draft opened by the control the walk presses.
 fn window() -> (Host, ViewInstance) {
+    window_answering(Answers::default())
+}
+
+/// The window on a host whose registry answers as `answers` says.
+fn window_answering(answers: Answers) -> (Host, ViewInstance) {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/shortcuts");
     let source = tilolang::PackageSource::read_dir(&dir).expect("the package reads");
     let ids = tilolang::IdsLock::parse(
@@ -480,7 +502,7 @@ fn window() -> (Host, ViewInstance) {
     .expect("a host");
     host.load_compiled(&compiled).expect("the package loads");
     tilolang_tilo::platform::load(host.runtime(), &compiled.meta.uses);
-    host.runtime().set_foreign_invoker(Answers);
+    host.runtime().set_foreign_invoker(answers);
     host.root_of(APP).expect("the workbench exists");
     let view = host.open_main(APP).expect("the window opens");
     (host, view)
@@ -514,11 +536,39 @@ fn shown(view: &ViewInstance) -> Vec<String> {
         .collect()
 }
 
+/// Run one of the app's actions as the person, as the window's own timer would when it comes due.
+fn act(host: &Host, action: &str, args: Vec<Value>) {
+    let meta = &host.package(APP).expect("the app is loaded").meta;
+    let id = crate::fixtures::action_id(meta, action);
+    let actor = tilolang_runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"));
+    match host.runtime().invoke_action(&actor, (id.as_str(), args)) {
+        Ok(tilolang_runtime::InvokeOutcome::Done(_)) => {}
+        other => panic!("{action}: {other:?}"),
+    }
+}
+
+/// Poll the window until `done` holds, for up to two seconds: what an action did shows in the
+/// frame after it.
+fn wait_until(view: &mut ViewInstance, done: impl Fn(&ViewInstance) -> bool) {
+    // A thousand looks, a moment apart: two seconds of frames.
+    for _ in 0..1000 {
+        view.poll_patches().expect("the window draws");
+        if done(view) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    panic!(
+        "the window never drew what the test waits for: {:?}",
+        shown(view)
+    );
+}
+
 /// Add step opens the picker, which says plainly when no app offers actions: the person is not
 /// left with an empty sheet and no words.
 #[test]
 fn the_picker_says_when_no_app_offers_actions() {
-    let (_host, mut view) = window();
+    let (host, mut view) = window();
     for _ in 0..8 {
         view.poll_patches().expect("the window draws");
     }
@@ -529,9 +579,25 @@ fn the_picker_says_when_no_app_offers_actions() {
     }
     let add = labelled(view.tree(), "ui.Button", "Add step");
     view.press(&add).expect("the picker opens");
-    for _ in 0..8 {
+    // The picker opens at once and the catalogue is read a moment later: it says what it is
+    // doing, then what it found. The window host holds that moment's timer; the test takes it.
+    for _ in 0..2 {
         view.poll_patches().expect("the window draws");
     }
+    let lines = shown(&view);
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "Reading the actions your apps offer…"),
+        "the picker says it is reading the catalogue: {lines:?}"
+    );
+    let root = host.root_of(APP).expect("the workbench");
+    act(&host, "read_picker", vec![Value::resource(&root)]);
+    wait_until(&mut view, |view| {
+        shown(view)
+            .iter()
+            .any(|line| line == "No app offers actions here yet.")
+    });
     let lines = shown(&view);
     assert!(
         lines
@@ -550,6 +616,48 @@ fn the_picker_says_when_no_app_offers_actions() {
         assert!(
             lines.iter().any(|line| line == head),
             "the picker offers the block {head}: {lines:?}"
+        );
+    }
+}
+
+/// A catalogue that could not be read says so where its actions would stand, with the dispatch's
+/// own words beside it, rather than leaving the picker empty.
+#[test]
+fn the_picker_says_when_the_actions_could_not_be_read() {
+    let (host, mut view) = window_answering(Answers {
+        failure: "the action registry is not connected".to_owned(),
+    });
+    for _ in 0..8 {
+        view.poll_patches().expect("the window draws");
+    }
+    let new = labelled(view.tree(), "ui.Button", "New shortcut");
+    view.press(&new).expect("a draft starts");
+    for _ in 0..8 {
+        view.poll_patches().expect("the window draws");
+    }
+    let add = labelled(view.tree(), "ui.Button", "Add step");
+    view.press(&add).expect("the picker opens");
+    for _ in 0..2 {
+        view.poll_patches().expect("the window draws");
+    }
+    let root = host.root_of(APP).expect("the workbench");
+    act(&host, "read_picker", vec![Value::resource(&root)]);
+    wait_until(&mut view, |view| {
+        shown(view)
+            .iter()
+            .any(|line| line == "The actions your apps offer could not be read")
+    });
+    let lines = shown(&view);
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "the action registry is not connected"),
+        "the picker says why: {lines:?}"
+    );
+    for head in ["If", "Repeat with each", "Set variable"] {
+        assert!(
+            lines.iter().any(|line| line == head),
+            "the blocks still stand: {head}: {lines:?}"
         );
     }
 }
