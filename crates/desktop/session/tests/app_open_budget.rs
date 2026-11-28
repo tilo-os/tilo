@@ -87,10 +87,7 @@ fn install(device: &Device, app: &str) {
 
 /// Install every seeded tilolang app this test opens into `device`'s store, the way a device that
 /// carries them holds them: signed packages from the run's build, as `tilolang run` installs a
-/// development session's, served by the session as a development one serves them (`--seed-apps`).
-/// The seed is what a window's first frame needs: an app whose records the session publishes reads
-/// them from it, and a connector answers from the samples the seed registers. Mail's window waits
-/// for mail no unseeded session can hand it, which is why it never opened here.
+/// development session's.
 fn install_tl(device: &Device) {
     let installed = crate::common::dev_apps::install_named(&device.store(), &TL_APPS);
     assert_eq!(

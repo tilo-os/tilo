@@ -215,15 +215,12 @@ impl Painted {
     fn and(self, next: Option<Vec<vello::kurbo::Rect>>) -> Self {
         match (self, next) {
             (Self::Whole, _) => Self::Whole,
-            (painted, None) => {
-                let _ = painted;
-                Self::Whole
-            }
             (Self::Nothing, Some(regions)) => Self::Damage(regions),
             (Self::Damage(mut drawn), Some(regions)) => {
                 drawn.extend(regions);
                 Self::Damage(drawn)
             }
+            (_, None) => Self::Whole,
         }
     }
 }
