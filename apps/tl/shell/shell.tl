@@ -240,13 +240,17 @@ template view band(content: View) {
                     // point the stack settled (below the bar too). Left at its own place
                     // it keeps the band under the bar's trailing end.
                     if device.overlays.place == .none {
-                        scroll(fill) {
-                            quick_settings(fill)
-                        }
+                        quick_settings(fill)
                     }
+                } else if device.overlays.here == "centre" or device.overlays.here == "history" {
+                    // The centre and the history are panels at an edge: the band's own
+                    // height reaches them and their bodies scroll what does not fit. A
+                    // scroll around a panel would grow it to its content instead, past the
+                    // band it stands in.
+                    surface(fill)
                 } else {
-                    // A surface of the shell's own over the places: the launcher, the
-                    // centre, quick settings or the workspaces.
+                    // A surface of the shell's own over the places, as a page: the launcher
+                    // and the workspaces scroll as a page does.
                     scroll(fill) {
                         surface(fill)
                     }
