@@ -477,3 +477,75 @@ fn the_places_page_starts_at_the_inset_and_shows_its_canvas_whole() {
         );
     }
 }
+
+/// How light the frame drawn last is within `rect`, from 0 (black) to 1 (white).
+fn lightness(harness: &Driver, [x, y, w, h]: [f64; 4]) -> f64 {
+    let (width, _) = harness.device_size();
+    let scale = f64::from(width) / f64::from(harness.viewport().0);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "pixels"
+    )]
+    let at = |value: f64| (value * scale).round() as usize;
+    let rgba = harness.render_rgba();
+    let pixels: Vec<&[u8]> = rgba.chunks_exact(4).collect();
+    let (mut sum, mut count) = (0.0, 0.0);
+    for row in pixels.chunks_exact(width as usize).skip(at(y)).take(at(h)) {
+        for pixel in row.iter().skip(at(x)).take(at(w)) {
+            sum += 0.2126 * f64::from(pixel[0])
+                + 0.7152 * f64::from(pixel[1])
+                + 0.0722 * f64::from(pixel[2]);
+            count += 255.0;
+        }
+    }
+    sum / count
+}
+
+/// Places, open in the light, turns dark when the session tells the window so, as it tells a
+/// window it shows: its page, its canvas and its map of the world all draw dark.
+#[test]
+fn places_open_in_the_light_turns_dark_whole_when_the_session_says_so() {
+    crate::support::installed("gallery");
+    let mut app = TestApp::<TlApp>::drive_at("basics", (1280, 1600)).expect("the scenario stages");
+    let harness = app.harness();
+    let tell = |harness: &mut Driver, theme: &ui::Theme| {
+        let message = ui::floating_surface::FloatingSurfaceHostMessage::appearance_with_theme(
+            &tilo_ui_base::WindowAppearance::default(),
+            theme,
+            None,
+        );
+        harness.app_mut().test_deliver_host_message(message);
+        harness.settle_for_capture(ui::time::Duration::from_millis(600));
+    };
+    tell(harness, &ui::Theme::light());
+    let places = pick(harness, "Places");
+    let map = |name: &str| {
+        nodes(&places)
+            .into_iter()
+            .find(|node| {
+                node.widget == "Map"
+                    && node
+                        .semantics
+                        .as_ref()
+                        .and_then(|access| access.name.as_deref())
+                        == Some(name)
+            })
+            .unwrap_or_else(|| panic!("the page shows the map {name:?}"))
+            .rect
+    };
+    let regions = [
+        ("page", [0.0, 0.0, 1280.0, 1600.0]),
+        ("canvas", map("Places")),
+        ("world", map("Berlin")),
+    ];
+    let light = regions.map(|(name, rect)| (name, lightness(harness, rect)));
+    tell(harness, &ui::Theme::dark());
+    let dark = regions.map(|(name, rect)| (name, lightness(harness, rect)));
+    for ((name, before), (_, after)) in light.iter().zip(&dark) {
+        assert!(
+            *before > 0.5 && *after < 0.5,
+            "{name} draws light then dark: {light:?} then {dark:?}"
+        );
+    }
+}
