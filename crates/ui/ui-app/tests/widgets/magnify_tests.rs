@@ -156,7 +156,7 @@ fn the_dock_grows_itself_so_the_items_never_overlap() {
     let rest: Vec<_> = (0..5)
         .map(|index| driver.targets()[&format!("t{index}")])
         .collect();
-    let centre = rest[2].center();
+    let centre = rest[3].center();
     driver.hover_at(centre.x, centre.y);
     assert!(settle(&mut driver, &mut Vec::new()));
     let grown: Vec<_> = (0..5)
@@ -181,26 +181,46 @@ fn the_dock_grows_itself_so_the_items_never_overlap() {
 /// its neighbour, and a grown tile pushes the row wider rather than over it.
 #[test]
 fn a_row_of_bare_tiles_at_touch_keeps_them_apart() {
-    let mut row = Row::new().with_rhythm(Rhythm::Sibling).with_id("dock");
-    for index in 0..5 {
+    // The dock's running tiles: a row on the edge's floor, its faces hugging at the sibling gap.
+    // The row a layout makes, not the legacy row widget the older tests here use.
+    let mut row = tilo_ui_app::widget::arrange::Row::row()
+        .fill_width()
+        .gap(Rhythm::Sibling)
+        .align(tilo_ui_app::widget::arrange::Align::End)
+        .with_id("dock");
+    for index in 0..6 {
         row = row.push(Box::new(Magnify::from_props(
             &format!("m{index}"),
             MagnifyProps {
                 zoom: 0.6,
-                body: Some(Box::new(Button::icon_only(
+                // Each tile as the shell's view builds it: a component's props, an icon-only
+                // plain button at the dock's size, with its badge.
+                body: Some(Box::new(<Button as Described>::from_props(
                     &format!("t{index}"),
-                    tilo_ui_base::icons::Icon::X,
-                    &format!("Tile {index}"),
+                    tilo_ui_app::widget::ButtonProps {
+                        label: format!("Tile {index}"),
+                        icon: Some(tilo_ui_base::icons::Icon::X),
+                        icon_only: true,
+                        role: Some(tilo_ui_app::widget::ButtonRole::Plain),
+                        size: tilo_ui_app::widget::ControlSize::Regular,
+                        count: Some(0),
+                        ..Default::default()
+                    },
                 ))),
             },
         )));
     }
+    // The shell's dock scrolls along the edge: the row stands in a horizontal scroll's content,
+    // as the dock's does.
     let mut driver = Driver::new_with_theme(
         tilo_ui_app::State::new(),
-        Box::new(row),
-        (600, 140),
+        Box::new(Scrollable::new_horizontal().with_child(Box::new(row))),
+        (320, 80),
         Theme::dark(),
     );
+    // The window is laid once for a mouse, then reached by a finger, as a window that is told its
+    // input after its first frame is.
+    driver.relayout();
     driver.set_interaction_environment(InteractionEnvironment::TOUCH);
     driver.relayout();
     let tiles = |driver: &Driver| -> Vec<Rect> {
@@ -247,7 +267,7 @@ fn a_row_of_bare_tiles_at_touch_keeps_them_apart() {
     driver.hover_at(560.0, 8.0);
     assert!(settle(&mut driver, &mut Vec::new()));
     let pointer_rest = tiles(&driver);
-    let centre = pointer_rest[2].center();
+    let centre = pointer_rest[3].center();
     driver.hover_at(centre.x, centre.y);
     assert!(settle(&mut driver, &mut Vec::new()));
     let magnified = tiles(&driver);
@@ -258,11 +278,11 @@ fn a_row_of_bare_tiles_at_touch_keeps_them_apart() {
         );
     }
     assert!(
-        magnified[2].width() > pointer_rest[2].width() + 1.0,
+        magnified[3].width() > pointer_rest[3].width() + 1.0,
         "the face under the pointer grows: {magnified:?} against {pointer_rest:?}"
     );
     assert!(
-        magnified[3].x0 > pointer_rest[3].x0 + 1.0,
+        magnified[4].x0 > pointer_rest[4].x0 + 1.0,
         "the row makes room for it: {magnified:?} against {pointer_rest:?}"
     );
 }
@@ -398,4 +418,56 @@ fn a_plain_hover_plate_clears_the_non_text_floor_on_chrome() {
             "the hover plate is a {ratio:.2}:1 step on the chrome ground"
         );
     }
+}
+
+/// A row of a layout places each part after the one before it: an icon and the words beside it
+/// stand a gap apart, never over each other.
+#[test]
+fn a_rows_parts_follow_each_others_widths() {
+    let check = |width: u32| {
+        let row = tilo_ui_app::widget::arrange::Row::row()
+            .fill_width()
+            .gap(Rhythm::Related)
+            .push(Box::new(tilo_ui_app::widget::IconWidget::new(
+                tilo_ui_base::icons::Icon::Bot,
+            )))
+            .push(Box::new(tilo_ui_app::widget::Text::new("Name")));
+        let mut driver = Driver::new_with_theme(
+            tilo_ui_app::State::new(),
+            Box::new(row),
+            (width, 60),
+            Theme::dark(),
+        );
+        driver.relayout();
+        let snapshot = driver.inspection();
+        let rects: Vec<(&str, Rect)> = snapshot
+            .root
+            .nodes()
+            .into_iter()
+            .filter(|node| node.widget == "IconWidget" || node.widget == "Text")
+            .map(|node| {
+                let [x, y, w, h] = node.rect;
+                (node.widget.as_str(), Rect::new(x, y, x + w, y + h))
+            })
+            .collect();
+        let icon = rects
+            .iter()
+            .find(|(widget, _)| *widget == "IconWidget")
+            .map(|(_, rect)| *rect)
+            .expect("the icon is drawn");
+        let text = rects
+            .iter()
+            .find(|(widget, _)| *widget == "Text")
+            .map(|(_, rect)| *rect)
+            .expect("the words are drawn");
+        assert!(
+            text.x0 >= icon.x1 + 8.0 - 0.5,
+            "at {width} px the words stand a related gap after the icon, not over it: \
+             {text:?} against {icon:?}"
+        );
+    };
+    // Room to spare, and a row far too narrow for both parts: the parts never stand over each
+    // other, the row goes on past the room it was given instead.
+    check(320);
+    check(60);
 }

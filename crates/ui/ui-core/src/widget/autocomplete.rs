@@ -556,7 +556,9 @@ impl FloatingList<Suggestion> {
         self.in_view()
             .filter_map(|index| {
                 let s = self.rows().get(index)?;
-                let bounds = self.row_rect(index)?;
+                // A row the panel's edge cuts in part is still a whole row to the person reading
+                // it, and to a finger on it: its target is the row's, not the sliver in view.
+                let bounds = self.row_bounds(index)?;
                 if !s.is_pickable() {
                     let busy = matches!(s.role, RowRole::Header { busy: true });
                     return Some(
@@ -1969,10 +1971,34 @@ mod tests {
                 assert_eq!(ac.row_at(row.center()), Some(0), "the row drawn is the row pressed");
             }
 
+            fn a_row_cut_by_the_lists_edge_keeps_its_whole_target() {
+                let mut list = SuggestionList::new().with_max_visible(4);
+                list.set_rows(
+                    (0..4)
+                        .map(|i| Suggestion::new(format!("item {i}")))
+                        .collect(),
+                );
+                list.set_anchor(Rect::new(0.0, 0.0, 200.0, 32.0));
+                list.set_viewport(Rect::new(0.0, 0.0, 300.0, 400.0));
+                // A panel shorter than its rows: the row its edge cuts shows a sliver.
+                list.set_max_height(Some(80.0));
+                let cut = list.rows().len();
+                let rows = list.access_rows(|_| 0);
+                assert!(rows.len() < cut, "not every row is in view: {rows:?}");
+                for row in &rows {
+                    let bounds = row.bounds.expect("bounds").to_rect();
+                    assert!(
+                        bounds.height() >= 31.0,
+                        "a row the edge cuts keeps the row's own target: {bounds:?}"
+                    );
+                }
+            }
+
             status_line_keeps_the_dropdown_open_with_no_rows();
             reactive_suggestions_after_open_replace_the_status_line();
             large_text_scales_dropdown_rows_and_hit_geometry_together();
             touch_rows_are_a_finger_high();
+            a_row_cut_by_the_lists_edge_keeps_its_whole_target();
         }
 
         phase a_short_label_leaves_its_detail_the_rest_of_the_row;

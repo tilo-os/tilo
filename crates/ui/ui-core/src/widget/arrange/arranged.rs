@@ -179,6 +179,18 @@ fn wrapped(mut style: Style, child: &Style) -> Style {
     if child.display == taffy::Display::None {
         style.display = taffy::Display::None;
     }
+    // A part whose child never shrinks keeps its wrapper's share: a wrapper squeezed under a
+    // child that stays its size lets the child spill into the part after it (an icon over the
+    // words beside it). The row goes on past the room it was given instead, which the layout
+    // shows, rather than drawing two parts over each other.
+    let floored = child
+        .min_size
+        .width
+        .into_option()
+        .is_some_and(|min| min > 0.0);
+    if child.flex_shrink == 0.0 || floored {
+        style.flex_shrink = 0.0;
+    }
     let full = taffy::style_helpers::percent(1.0_f32);
     let clips = child.overflow.x != taffy::Overflow::Visible
         || child.overflow.y != taffy::Overflow::Visible;

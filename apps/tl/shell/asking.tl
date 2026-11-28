@@ -641,7 +641,9 @@ fn asker_name(a: invocations.Asked) -> Text {
 /// Who asks, as its own parts: an agent, a device or a program by its name, an app by its title
 /// with who wrote it beneath, and the workspace the call acts in.
 view asker(a: invocations.Asked) {
-    row(gap: .related, align: .center) {
+    // A card too narrow for the name beside its asker takes it on a line below: the parts never
+    // stand over each other.
+    row(gap: .related, align: .center, wrap: true) {
         if let picture = a.picture {
             // What the question is about shows itself: a program's own artwork.
             ui.Avatar(name: asker_name(a), picture: picture, square: true)
