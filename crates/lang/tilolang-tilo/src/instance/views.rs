@@ -334,8 +334,17 @@ impl Instance {
                 runtime.invoke_action(&self.me_actor(), action)
             }
         };
-        if let Err(error) = opened {
-            tracing::debug!(%error, ty = %target.ty, "opening a resource did not change it");
+        match opened {
+            Ok(tilolang_runtime::InvokeOutcome::Denied) => {
+                tracing::warn!(ty = %target.ty, "opening a resource was not allowed");
+            }
+            Ok(tilolang_runtime::InvokeOutcome::Asked(_)) => {
+                tracing::warn!(ty = %target.ty, "opening a resource asks the person");
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::debug!(%error, ty = %target.ty, "opening a resource did not change it");
+            }
         }
     }
 
