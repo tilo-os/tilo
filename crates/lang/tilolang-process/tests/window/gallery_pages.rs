@@ -415,3 +415,65 @@ fn one_window_shows_each_page_it_is_switched_to_in_turn() {
         );
     }
 }
+
+/// Every section of `composition`'s page, leftmost first: where the page's content starts.
+fn sections_x(composition: &Composition) -> f64 {
+    nodes(composition)
+        .into_iter()
+        .filter(|node| node.widget == "Section")
+        .map(|node| node.rect[0])
+        .fold(f64::INFINITY, f64::min)
+}
+
+/// The Places page stands at the page's inset as every other page does, and its canvas shows
+/// whole every place the page puts on it: a person sees the sample without panning for it.
+#[test]
+fn the_places_page_starts_at_the_inset_and_shows_its_canvas_whole() {
+    crate::support::installed("gallery");
+    let mut app = TestApp::<TlApp>::drive_at("basics", (1280, 800)).expect("the scenario stages");
+    let harness = app.harness();
+    let inset = sections_x(&pick(harness, "Data"));
+    let places = pick(harness, "Places");
+    let canvas_x = sections_x(&places);
+    assert!(
+        inset.is_finite() && (canvas_x - inset).abs() < 0.5,
+        "Places' sections start at {canvas_x}, every other page's at {inset}"
+    );
+    let all = nodes(&places);
+    let canvas = all
+        .iter()
+        .find(|node| {
+            node.widget == "Map"
+                && node
+                    .semantics
+                    .as_ref()
+                    .and_then(|access| access.name.as_deref())
+                    == Some("Places")
+        })
+        .expect("the page shows its canvas");
+    let [cx, cy, cw, ch] = canvas.rect;
+    let mut cards = Vec::new();
+    let mut pending: Vec<&Composed> = canvas.children.iter().collect();
+    while let Some(node) = pending.pop() {
+        if matches!(node.widget.as_str(), "Card" | "Place" | "WindowFrame") {
+            cards.push(node);
+        }
+        pending.extend(&node.children);
+    }
+    assert_eq!(
+        cards.len(),
+        4,
+        "the canvas holds its four places: {:?}",
+        cards.iter().map(|node| &node.widget).collect::<Vec<_>>()
+    );
+    for card in cards {
+        let [x, y, w, h] = card.rect;
+        assert!(
+            x >= cx - 0.5 && y >= cy - 0.5 && x + w <= cx + cw + 0.5 && y + h <= cy + ch + 0.5,
+            "{} at {:?} stands whole inside the canvas at {:?}",
+            card.widget,
+            card.rect,
+            canvas.rect
+        );
+    }
+}

@@ -2,12 +2,12 @@
 /// desktop's does, and a map of the world with a route, markers and an area kept offline.
 view places(g: Gallery) {
     scroll {
-        stack(gap: .section, max: 72rem) {
+        stack(gap: .section, max: 72rem, padding: .group) {
             part(
                 "Canvas",
                 "A map that pans and zooms under the places on it, and a window standing on it.",
             ) {
-                layers(aspect: 2.2) {
+                layers(aspect: 1.8) {
                     ui.Map(name: "Places") {
                         ui.MapPin(name: "Notes", x: 40, y: 40, width: 240) {
                             ui.Card(title: "Notes") {
@@ -19,7 +19,7 @@ view places(g: Gallery) {
                                 ui.Text("Another, beside it.", role: .caption, secondary: true)
                             }
                         }
-                        ui.MapPin(name: "Content", x: 620, y: 40, width: 320, height: 200) {
+                        ui.MapPin(name: "Content", x: 600, y: 40, width: 320, height: 200) {
                             ui.Place(name: "Groceries", fill) {
                                 controls: {
                                     ui.Button("Close", icon: .x, icon_only: true, role: .plain)
