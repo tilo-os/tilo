@@ -66,7 +66,13 @@ not_inputs='^\./(docs|\.claude|dist/dev|scripts/headless-examples|target|os/outp
 # listing, with no program started per file: a tree of twenty thousand files is hashed in
 # seconds, also where its files sit on a slow shared filesystem.
 sums_of() {
-    local root=$1
+    local root=$1 hashers
+    # The files are hashed in parallel: where the tree sits on a shared mount (a check's source
+    # files over virtiofs) each file costs a round trip, and a serial pass spends minutes waiting
+    # rather than hashing. The listing is sorted below, so the order the hashers answer in is
+    # nothing the digest reads.
+    hashers=${TILO_BUILD_PROVENANCE_HASHERS:-$(nproc 2>/dev/null || printf '4')}
+    ((hashers > 16)) && hashers=16
     (
         cd "$root"
         # Every file a build reads: what git tracks, and what it leaves untracked and not
@@ -88,7 +94,7 @@ sums_of() {
                 -prune -o -type f -print0
         fi \
             | grep -zvE "$not_inputs|(^|/)[^/]*$record_name\$" \
-            | xargs -0 -r sha256sum | LC_ALL=C sort
+            | xargs -0 -r -P "$hashers" sha256sum | LC_ALL=C sort
     )
 }
 
