@@ -2969,7 +2969,18 @@ impl DirectSync {
     /// that accepted the dial hands its replica's catch-up with the history the other one asks for
     /// ([`Self::answer_store`]), where it is judged as history: on the live stream, what it carries
     /// that was written more than the live window ago was refused as a late frame.
-    fn link_catch_up(&self, dialing: bool, opens: bool) -> Result<Vec<Authored>, String> {
+    fn link_catch_up(
+        &self,
+        dialing: bool,
+        #[cfg_attr(
+            target_arch = "wasm32",
+            expect(
+                unused_variables,
+                reason = "a page keeps no store to gather history from"
+            )
+        )]
+        opens: bool,
+    ) -> Result<Vec<Authored>, String> {
         #[cfg_attr(
             target_arch = "wasm32",
             allow(unused_mut, reason = "a page keeps no store to open the link with")
