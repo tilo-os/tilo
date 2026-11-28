@@ -15029,6 +15029,7 @@ dependencies = [
  "tilo-ui-app",
  "tilo-ui-base",
  "tilo-ui-charts",
+ "tilo-ui-map",
  "tilo-workspace-agent",
  "tilo-workspace-emoji",
  "tracing",
@@ -15439,6 +15440,7 @@ dependencies = [
  "tilo-ui-base",
  "tilo-ui-charts",
  "tilo-ui-graph",
+ "tilo-ui-map",
  "tilo-webview",
  "tracing",
  "workspace-hack",
@@ -21636,6 +21638,7 @@ dependencies = [
  "tilo-ui-app",
  "tilo-ui-base",
  "tilo-ui-charts",
+ "tilo-ui-map",
  "tilo-vello",
  "tilo-vello-encoding",
  "tilo-wasm-aot",
@@ -21838,6 +21841,21 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-ui-map"
+version = "0.1.0"
+dependencies = [
+ "tilo-component-scan",
+ "tilo-cpu-raster",
+ "tilo-taffy",
+ "tilo-test-env",
+ "tilo-ui",
+ "tilo-ui-base",
+ "tilo-vello",
+ "tilo-winit",
  "workspace-hack",
 ]
 

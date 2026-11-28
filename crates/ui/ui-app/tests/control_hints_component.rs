@@ -14,8 +14,8 @@ use tilo_ui_app::headless::Driver;
 use tilo_ui_app::time::{Duration, Instant};
 use tilo_ui_app::widget::arrange::{Fit, Sizing, Stack};
 use tilo_ui_app::{
-    widget::CanvasPlace, widget::Map, widget::MapProps, widget::PLACE_BAND, widget::PinPlace,
-    widget::PlaceProps, widget::Scrollable, widget::WindowFrame, widget::WindowFrameProps,
+    widget::CanvasPlace, widget::PLACE_BAND, widget::PlaceProps, widget::Scrollable,
+    widget::WindowFrame, widget::WindowFrameProps,
 };
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Length;
@@ -23,6 +23,9 @@ use tilo_ui_base::{
     component::Described, component::Event, component::Fired, component::Intent, component::Value,
 };
 use tilo_ui_base::{widget::Manual, widget::MeasureConstraint, widget::Spacer, widget::Widget};
+use tilo_ui_map::Map;
+use tilo_ui_map::MapProps;
+use tilo_ui_map::PinPlace;
 
 /// The display the shell draws on, and where its two windows stand: room above them, where a hint
 /// about a window's bar stands clear of what the windows show.

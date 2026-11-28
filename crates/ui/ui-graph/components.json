@@ -4342,195 +4342,6 @@
       }
     },
     {
-      "name": "Map",
-      "doc": "Places at points on a pannable, zoomable surface, each a view of its own.",
-      "props": [
-        {
-          "name": "name",
-          "doc": "What the map is, for assistive technology.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "ground",
-          "doc": "Whether it is a desktop: the windows it holds stand on the desktop's ground ([`SurfaceLevel::Ground`](crate::widget::primitives::SurfaceLevel)), not on the content colour of the window the map is in.",
-          "type": "bool"
-        },
-        {
-          "name": "world",
-          "doc": "Whether it is a map of the world: a pin stands centred on the place it names and keeps the size the view gave it on screen at every zoom, and the camera draws back until the whole world fits.",
-          "type": "bool"
-        },
-        {
-          "name": "basemap",
-          "doc": "Where a map of the world's imagery comes from: a tile address with `%z`, `%x` and `%y` standing for the tile's zoom and its column and row (`https://tile.openstreetmap.org/%z/%x/%y.png`). The tiles draw under everything else, scaled with the camera, at the zoom that shows them sharpest; without one the map draws its ground, and a map of the world a faint grid at the places it names. A host serves the pictures (`crate::pictures::set_remote_fetcher`).",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "outline",
-          "doc": "A rectangle the view points at, in canvas pixels (`x`, `y`, width, height), drawn as the light outline a drag across the canvas draws: the rectangle the person dragged, kept while they say what fills it.",
-          "type": {
-            "list": "int"
-          }
-        },
-        {
-          "name": "hint",
-          "doc": "What the empty map says once, quietly, at the middle of what it shows: what a person does on it (\"Click anywhere and say what you want\"). Drawn only while it holds no pin, and read to assistive technology as the map's description.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "latitude",
-          "doc": "The latitude the map is centred on, with `longitude`: the place at its middle when the view sets it, so a map of places opens on a place. `None` leaves it a canvas.",
-          "type": {
-            "option": "float"
-          }
-        },
-        {
-          "name": "longitude",
-          "doc": "The longitude the map is centred on, with `latitude`.",
-          "type": {
-            "option": "float"
-          }
-        },
-        {
-          "name": "zoom",
-          "doc": "The zoom the map opens at, about its centre (`latitude`, `longitude`).",
-          "type": {
-            "option": "float"
-          }
-        },
-        {
-          "name": "enabled",
-          "doc": "Whether a press on its empty surface runs now.",
-          "type": "bool"
-        },
-        {
-          "name": "description",
-          "doc": "Why it cannot be pressed now, where the name does not say (an action whose requirement does not hold): spoken as its description beside its name.",
-          "type": {
-            "option": "text"
-          }
-        }
-      ],
-      "parts": [
-        {
-          "name": "pins",
-          "doc": "The pins, in the order the map draws them (the last on top).",
-          "accepts": {
-            "component": "MapPin"
-          },
-          "many": true,
-          "default": true
-        },
-        {
-          "name": "tracks",
-          "doc": "The lines drawn across the map under its markers and pins: a route, the way one leg of a journey goes.",
-          "accepts": {
-            "component": "MapTrack"
-          },
-          "many": true
-        },
-        {
-          "name": "markers",
-          "doc": "What stands on the map at a place, drawn as a marker of its own size on screen whatever the zoom: where a search found something, the device's own place. Pointing at one reports it (`marker`); the view opens what it is.",
-          "accepts": {
-            "component": "MapMarker"
-          },
-          "many": true
-        }
-      ],
-      "events": [
-        {
-          "name": "drop",
-          "doc": "A resource was dragged onto the map and let go: carries the resource the drag carried, as its address, and where it was let go — its canvas x, then its canvas y. The view decides what to do with it; the shell's canvas places it there.",
-          "value": "resource",
-          "at": {
-            "list": "int"
-          }
-        },
-        {
-          "name": "press",
-          "doc": "The pointer pressed on the map's empty surface — not on a pin — and let go there, having travelled no further than a click: carries the canvas point under the press, its x then its y, kept apart from a drag and a middle drag. What it reports is where the press landed at the camera the map looks with, so the point is right at any pan or zoom; the view decides what stands there (the shell's canvas opens its caret at it).",
-          "value": {
-            "list": "int"
-          }
-        },
-        {
-          "name": "frame",
-          "doc": "A left drag across the map's empty surface, let go after travelling: carries the dragged rectangle in canvas pixels, its x, its y, its width and its height. The rectangle is drawn as a light outline while the drag lasts (the theme's focus colour, never a colour of its own), and the view lays what it answers into that rectangle.",
-          "value": {
-            "list": "int"
-          }
-        },
-        {
-          "name": "context",
-          "doc": "The pointer's right button pressed on the map: carries the key of the pin pin_places under it — empty text where the press landed on the map's own empty surface — and the canvas point under the pointer, its x then its y. What the view does with it is its own: the shell's canvas opens the pointed place's menu, or the canvas's own for free space (`canvas.md` §1, §6).",
-          "value": "text",
-          "at": {
-            "list": "int"
-          }
-        },
-        {
-          "name": "resize",
-          "doc": "A place's trailing edge, bottom edge or corner was dragged and let go: carries the key of the pin it resized and its new size in canvas pixels, its width then its height. Its corner stays where it stood; the view gives the place that size.",
-          "value": "text",
-          "at": {
-            "list": "int"
-          }
-        },
-        {
-          "name": "seen",
-          "doc": "The person pointed on the map's free space (a click, a dragged rectangle, a right press): carries the part of the canvas they see as they point, in canvas pixels, its x, its y, its width and its height. It is reported before the pointing itself (`press`, `frame`, `context`), so what answers it can stand in free room where they look (canvas.md §7, \"Everything stays in view\").",
-          "value": {
-            "list": "int"
-          }
-        },
-        {
-          "name": "drawn",
-          "doc": "A hugging pin's view came to a height of its own and the pin is laid out at it: carries the pin's key and its drawn height in canvas pixels. Reported once each time that height changes, never every frame, so a view that reads it as free area on the canvas (`canvas.md` §1, §7) learns what the pin takes without a report a frame.",
-          "value": "text",
-          "at": {
-            "list": "int"
-          }
-        },
-        {
-          "name": "rest",
-          "doc": "The camera came to rest where the person left it: carries the place at its middle as its latitude then its longitude, the zoom it shows, and what it shows at its edges as its northern, southern, eastern and western degrees, in that order. Reported once each time a pan, pinch, wheel or key move ends, and never for a move the view itself set, so a view that saves what the person sees knows where they are looking.",
-          "value": {
-            "list": "float"
-          }
-        },
-        {
-          "name": "fault",
-          "doc": "The imagery the map shows cannot be loaded: carries how many of the tiles it shows have failed and how many it shows, so the view can say so in words while nothing draws (offline, or the tile server refusing). Reported when either number changes, and again with nothing failed once imagery loads.",
-          "value": {
-            "list": "int"
-          }
-        },
-        {
-          "name": "at",
-          "doc": "The pointer pressed the map's empty surface and let go there, a click: carries the place under it, its latitude then its longitude, for a map centred on a place.",
-          "value": {
-            "list": "float"
-          }
-        },
-        {
-          "name": "marker",
-          "doc": "The pointer pressed a marker and let go there, a click: carries the name the marker was given (`MapMarker`'s `name`), or its key where it has none. The view opens what the marker is; the map reports nothing of its own for that press.",
-          "value": "text"
-        }
-      ],
-      "semantics": {
-        "role": "Group",
-        "label": "name"
-      }
-    },
-    {
       "name": "MediaCard",
       "doc": "One card: the art (a cover, a thumbnail, a photo) with its title and up to two meta lines under it. A view gives it as a grid's item, on its own, or compact in a band (a pill with the art and the title in one row, `compact`).",
       "props": [
@@ -10833,6 +10644,195 @@
       }
     },
     {
+      "name": "Map",
+      "doc": "Places at points on a pannable, zoomable surface, each a view of its own.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What the map is, for assistive technology.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "ground",
+          "doc": "Whether it is a desktop: the windows it holds stand on the desktop's ground ([`SurfaceLevel::Ground`](tilo_ui::widget::primitives::SurfaceLevel)), not on the content colour of the window the map is in.",
+          "type": "bool"
+        },
+        {
+          "name": "world",
+          "doc": "Whether it is a map of the world: a pin stands centred on the place it names and keeps the size the view gave it on screen at every zoom, and the camera draws back until the whole world fits.",
+          "type": "bool"
+        },
+        {
+          "name": "basemap",
+          "doc": "Where a map of the world's imagery comes from: a tile address with `%z`, `%x` and `%y` standing for the tile's zoom and its column and row (`https://tile.openstreetmap.org/%z/%x/%y.png`). The tiles draw under everything else, scaled with the camera, at the zoom that shows them sharpest; without one the map draws its ground, and a map of the world a faint grid at the places it names. A host serves the pictures (`tilo_ui::pictures::set_remote_fetcher`).",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "outline",
+          "doc": "A rectangle the view points at, in canvas pixels (`x`, `y`, width, height), drawn as the light outline a drag across the canvas draws: the rectangle the person dragged, kept while they say what fills it.",
+          "type": {
+            "list": "int"
+          }
+        },
+        {
+          "name": "hint",
+          "doc": "What the empty map says once, quietly, at the middle of what it shows: what a person does on it (\"Click anywhere and say what you want\"). Drawn only while it holds no pin, and read to assistive technology as the map's description.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "latitude",
+          "doc": "The latitude the map is centred on, with `longitude`: the place at its middle when the view sets it, so a map of places opens on a place. `None` leaves it a canvas.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "longitude",
+          "doc": "The longitude the map is centred on, with `latitude`.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "zoom",
+          "doc": "The zoom the map opens at, about its centre (`latitude`, `longitude`).",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "enabled",
+          "doc": "Whether a press on its empty surface runs now.",
+          "type": "bool"
+        },
+        {
+          "name": "description",
+          "doc": "Why it cannot be pressed now, where the name does not say (an action whose requirement does not hold): spoken as its description beside its name.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "parts": [
+        {
+          "name": "pins",
+          "doc": "The pins, in the order the map draws them (the last on top).",
+          "accepts": {
+            "component": "MapPin"
+          },
+          "many": true,
+          "default": true
+        },
+        {
+          "name": "tracks",
+          "doc": "The lines drawn across the map under its markers and pins: a route, the way one leg of a journey goes.",
+          "accepts": {
+            "component": "MapTrack"
+          },
+          "many": true
+        },
+        {
+          "name": "markers",
+          "doc": "What stands on the map at a place, drawn as a marker of its own size on screen whatever the zoom: where a search found something, the device's own place. Pointing at one reports it (`marker`); the view opens what it is.",
+          "accepts": {
+            "component": "MapMarker"
+          },
+          "many": true
+        }
+      ],
+      "events": [
+        {
+          "name": "drop",
+          "doc": "A resource was dragged onto the map and let go: carries the resource the drag carried, as its address, and where it was let go — its canvas x, then its canvas y. The view decides what to do with it; the shell's canvas places it there.",
+          "value": "resource",
+          "at": {
+            "list": "int"
+          }
+        },
+        {
+          "name": "press",
+          "doc": "The pointer pressed on the map's empty surface — not on a pin — and let go there, having travelled no further than a click: carries the canvas point under the press, its x then its y, kept apart from a drag and a middle drag. What it reports is where the press landed at the camera the map looks with, so the point is right at any pan or zoom; the view decides what stands there (the shell's canvas opens its caret at it).",
+          "value": {
+            "list": "int"
+          }
+        },
+        {
+          "name": "frame",
+          "doc": "A left drag across the map's empty surface, let go after travelling: carries the dragged rectangle in canvas pixels, its x, its y, its width and its height. The rectangle is drawn as a light outline while the drag lasts (the theme's focus colour, never a colour of its own), and the view lays what it answers into that rectangle.",
+          "value": {
+            "list": "int"
+          }
+        },
+        {
+          "name": "context",
+          "doc": "The pointer's right button pressed on the map: carries the key of the pin pin_places under it — empty text where the press landed on the map's own empty surface — and the canvas point under the pointer, its x then its y. What the view does with it is its own: the shell's canvas opens the pointed place's menu, or the canvas's own for free space (`canvas.md` §1, §6).",
+          "value": "text",
+          "at": {
+            "list": "int"
+          }
+        },
+        {
+          "name": "resize",
+          "doc": "A place's trailing edge, bottom edge or corner was dragged and let go: carries the key of the pin it resized and its new size in canvas pixels, its width then its height. Its corner stays where it stood; the view gives the place that size.",
+          "value": "text",
+          "at": {
+            "list": "int"
+          }
+        },
+        {
+          "name": "seen",
+          "doc": "The person pointed on the map's free space (a click, a dragged rectangle, a right press): carries the part of the canvas they see as they point, in canvas pixels, its x, its y, its width and its height. It is reported before the pointing itself (`press`, `frame`, `context`), so what answers it can stand in free room where they look (canvas.md §7, \"Everything stays in view\").",
+          "value": {
+            "list": "int"
+          }
+        },
+        {
+          "name": "drawn",
+          "doc": "A hugging pin's view came to a height of its own and the pin is laid out at it: carries the pin's key and its drawn height in canvas pixels. Reported once each time that height changes, never every frame, so a view that reads it as free area on the canvas (`canvas.md` §1, §7) learns what the pin takes without a report a frame.",
+          "value": "text",
+          "at": {
+            "list": "int"
+          }
+        },
+        {
+          "name": "rest",
+          "doc": "The camera came to rest where the person left it: carries the place at its middle as its latitude then its longitude, the zoom it shows, and what it shows at its edges as its northern, southern, eastern and western degrees, in that order. Reported once each time a pan, pinch, wheel or key move ends, and never for a move the view itself set, so a view that saves what the person sees knows where they are looking.",
+          "value": {
+            "list": "float"
+          }
+        },
+        {
+          "name": "fault",
+          "doc": "The imagery the map shows cannot be loaded: carries how many of the tiles it shows have failed and how many it shows, so the view can say so in words while nothing draws (offline, or the tile server refusing). Reported when either number changes, and again with nothing failed once imagery loads.",
+          "value": {
+            "list": "int"
+          }
+        },
+        {
+          "name": "at",
+          "doc": "The pointer pressed the map's empty surface and let go there, a click: carries the place under it, its latitude then its longitude, for a map centred on a place.",
+          "value": {
+            "list": "float"
+          }
+        },
+        {
+          "name": "marker",
+          "doc": "The pointer pressed a marker and let go there, a click: carries the name the marker was given (`MapMarker`'s `name`), or its key where it has none. The view opens what the marker is; the map reports nothing of its own for that press.",
+          "value": "text"
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "name"
+      }
+    },
+    {
       "name": "ActivityEntry",
       "doc": "One change of a document: what it did, who did it and when.",
       "props": [
@@ -11791,230 +11791,6 @@
       "semantics": {
         "role": "Button",
         "label": "label"
-      }
-    },
-    {
-      "name": "MapPin",
-      "doc": "One pin of a map, as an instance gives it: its key, its place and the view it shows.",
-      "props": [
-        {
-          "name": "name",
-          "doc": "What it is, for assistive technology.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "x",
-          "doc": "The canvas point of its top-leading corner, in canvas pixels.",
-          "type": {
-            "option": "int"
-          }
-        },
-        {
-          "name": "y",
-          "doc": "The canvas y of its top-leading corner, in canvas pixels.",
-          "type": {
-            "option": "int"
-          }
-        },
-        {
-          "name": "latitude",
-          "doc": "The latitude of the place the pin stands on, with `longitude`: the map projects it onto the canvas, so a pin stands on its place at every zoom. Given, `x` and `y` are not read.",
-          "type": {
-            "option": "float"
-          }
-        },
-        {
-          "name": "longitude",
-          "doc": "The longitude of the place the pin stands on.",
-          "type": {
-            "option": "float"
-          }
-        },
-        {
-          "name": "width",
-          "doc": "How wide it stands, in canvas pixels.",
-          "type": {
-            "option": "int"
-          }
-        },
-        {
-          "name": "height",
-          "doc": "How tall it stands, in canvas pixels; without it, as tall as its view asks.",
-          "type": {
-            "option": "int"
-          }
-        },
-        {
-          "name": "band",
-          "doc": "Whether its view keeps a place's handle band over its top edge ([`crate::widget::canvas_place::PLACE_BAND`]): the pin stands that much higher, so the view's own top is at `y`.",
-          "type": "bool"
-        },
-        {
-          "name": "hug",
-          "doc": "`height` is the most it takes: its view hugs what it holds up to it (an answer in the rectangle it was asked in), rather than filling it.",
-          "type": "bool"
-        },
-        {
-          "name": "grows",
-          "doc": "It is an answer: arriving, it grows out of where the person last pointed on the map (the caret or the rectangle it answers), rather than fading in where it stands. The pointing itself (a caret) leaves it unset and stands at once.",
-          "type": "bool"
-        },
-        {
-          "name": "leaving",
-          "doc": "The place's window is on its way out: the pin stands where it last did and its view plays the departure, while the pin itself takes nothing — no press points at the place, no edge sizes it, and a press on it is the canvas's nowhere, never a caret under it.",
-          "type": "bool"
-        },
-        {
-          "name": "item",
-          "doc": "What the pin stands for, as the view names it: what pointing at the pin (`context`) and sizing it (`resize`) report. Without it, the pin's key.",
-          "type": {
-            "option": "text"
-          },
-          "data": true
-        }
-      ],
-      "parts": [
-        {
-          "name": "body",
-          "doc": "What it shows.",
-          "accepts": "view",
-          "many": true,
-          "default": true
-        }
-      ],
-      "semantics": {
-        "role": "Group",
-        "label": "name"
-      }
-    },
-    {
-      "name": "MapTrack",
-      "doc": "A line across a map of the world: a route, one leg of a journey, the way a walk goes.",
-      "props": [
-        {
-          "name": "name",
-          "doc": "What it is, for assistive technology.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "points",
-          "doc": "The places it runs through, in degrees: each place's latitude then its longitude, in turn (`[52.52, 13.40, 52.53, 13.41]`).",
-          "type": {
-            "list": "float"
-          },
-          "required": true
-        },
-        {
-          "name": "tone",
-          "doc": "What it says of itself, as the theme's ink: a route the person is taking, a way they walk, a public transport leg, or a quiet line.",
-          "type": {
-            "option": {
-              "choice": {
-                "name": "MapTrackTone",
-                "cases": [
-                  "route",
-                  "walk",
-                  "transit",
-                  "quiet"
-                ]
-              }
-            }
-          }
-        },
-        {
-          "name": "width",
-          "doc": "How thick it draws on screen, in logical pixels; without it, one line of the theme.",
-          "type": {
-            "option": "float"
-          }
-        },
-        {
-          "name": "dashed",
-          "doc": "Whether it draws as a dashed line: a walk, a way that is not the route itself.",
-          "type": "bool"
-        }
-      ],
-      "semantics": {
-        "role": "Image",
-        "label": "name"
-      }
-    },
-    {
-      "name": "MapMarker",
-      "doc": "One marker on a map of the world: a place a view names, drawn at its size on screen whatever the zoom, standing on the place it names.",
-      "props": [
-        {
-          "name": "name",
-          "doc": "What it stands for: a place's name, read to assistive technology and on pointing.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "latitude",
-          "doc": "The latitude of the place it stands on.",
-          "type": "float",
-          "required": true
-        },
-        {
-          "name": "longitude",
-          "doc": "The longitude of the place it stands on.",
-          "type": "float",
-          "required": true
-        },
-        {
-          "name": "kind",
-          "doc": "What it is, which its shape and ink say.",
-          "type": {
-            "option": {
-              "choice": {
-                "name": "MapMarkerKind",
-                "cases": [
-                  "landmark",
-                  "cafe",
-                  "restaurant",
-                  "bar",
-                  "museum",
-                  "park",
-                  "transit",
-                  "hotel",
-                  "shop",
-                  "hospital",
-                  "other",
-                  "current",
-                  "start",
-                  "end",
-                  "poi"
-                ]
-              }
-            }
-          }
-        },
-        {
-          "name": "selected",
-          "doc": "Whether it is the one the person chose: drawn a size larger, with a ring.",
-          "type": "bool"
-        },
-        {
-          "name": "presence",
-          "doc": "Who else is at the place now: a member's or an agent's lens on it (`lenses(place)`), whose face docks on the marker as a list row wears the member at its item. The map draws them in the presence of the window it is in, and shows none for this person's own views.",
-          "type": {
-            "option": "actor"
-          }
-        },
-        {
-          "name": "label",
-          "doc": "Whether its name stands beside it, on a plate over the map: a place's name, as a map names the places it shows. A label that would cover another is left out, so a dense quarter keeps its markers legible.",
-          "type": "bool"
-        }
-      ],
-      "semantics": {
-        "role": "Image",
-        "label": "name"
       }
     },
     {
@@ -13585,6 +13361,230 @@
       "semantics": {
         "role": "ListItem",
         "presents": "item"
+      }
+    },
+    {
+      "name": "MapPin",
+      "doc": "One pin of a map, as an instance gives it: its key, its place and the view it shows.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What it is, for assistive technology.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "x",
+          "doc": "The canvas point of its top-leading corner, in canvas pixels.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "y",
+          "doc": "The canvas y of its top-leading corner, in canvas pixels.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "latitude",
+          "doc": "The latitude of the place the pin stands on, with `longitude`: the map projects it onto the canvas, so a pin stands on its place at every zoom. Given, `x` and `y` are not read.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "longitude",
+          "doc": "The longitude of the place the pin stands on.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "width",
+          "doc": "How wide it stands, in canvas pixels.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "height",
+          "doc": "How tall it stands, in canvas pixels; without it, as tall as its view asks.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "band",
+          "doc": "Whether its view keeps a place's handle band over its top edge ([`tilo_ui::widget::canvas_place::PLACE_BAND`]): the pin stands that much higher, so the view's own top is at `y`.",
+          "type": "bool"
+        },
+        {
+          "name": "hug",
+          "doc": "`height` is the most it takes: its view hugs what it holds up to it (an answer in the rectangle it was asked in), rather than filling it.",
+          "type": "bool"
+        },
+        {
+          "name": "grows",
+          "doc": "It is an answer: arriving, it grows out of where the person last pointed on the map (the caret or the rectangle it answers), rather than fading in where it stands. The pointing itself (a caret) leaves it unset and stands at once.",
+          "type": "bool"
+        },
+        {
+          "name": "leaving",
+          "doc": "The place's window is on its way out: the pin stands where it last did and its view plays the departure, while the pin itself takes nothing — no press points at the place, no edge sizes it, and a press on it is the canvas's nowhere, never a caret under it.",
+          "type": "bool"
+        },
+        {
+          "name": "item",
+          "doc": "What the pin stands for, as the view names it: what pointing at the pin (`context`) and sizing it (`resize`) report. Without it, the pin's key.",
+          "type": {
+            "option": "text"
+          },
+          "data": true
+        }
+      ],
+      "parts": [
+        {
+          "name": "body",
+          "doc": "What it shows.",
+          "accepts": "view",
+          "many": true,
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "name"
+      }
+    },
+    {
+      "name": "MapTrack",
+      "doc": "A line across a map of the world: a route, one leg of a journey, the way a walk goes.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What it is, for assistive technology.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "points",
+          "doc": "The places it runs through, in degrees: each place's latitude then its longitude, in turn (`[52.52, 13.40, 52.53, 13.41]`).",
+          "type": {
+            "list": "float"
+          },
+          "required": true
+        },
+        {
+          "name": "tone",
+          "doc": "What it says of itself, as the theme's ink: a route the person is taking, a way they walk, a public transport leg, or a quiet line.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "MapTrackTone",
+                "cases": [
+                  "route",
+                  "walk",
+                  "transit",
+                  "quiet"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "width",
+          "doc": "How thick it draws on screen, in logical pixels; without it, one line of the theme.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "dashed",
+          "doc": "Whether it draws as a dashed line: a walk, a way that is not the route itself.",
+          "type": "bool"
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "name"
+      }
+    },
+    {
+      "name": "MapMarker",
+      "doc": "One marker on a map of the world: a place a view names, drawn at its size on screen whatever the zoom, standing on the place it names.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What it stands for: a place's name, read to assistive technology and on pointing.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "latitude",
+          "doc": "The latitude of the place it stands on.",
+          "type": "float",
+          "required": true
+        },
+        {
+          "name": "longitude",
+          "doc": "The longitude of the place it stands on.",
+          "type": "float",
+          "required": true
+        },
+        {
+          "name": "kind",
+          "doc": "What it is, which its shape and ink say.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "MapMarkerKind",
+                "cases": [
+                  "landmark",
+                  "cafe",
+                  "restaurant",
+                  "bar",
+                  "museum",
+                  "park",
+                  "transit",
+                  "hotel",
+                  "shop",
+                  "hospital",
+                  "other",
+                  "current",
+                  "start",
+                  "end",
+                  "poi"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "selected",
+          "doc": "Whether it is the one the person chose: drawn a size larger, with a ring.",
+          "type": "bool"
+        },
+        {
+          "name": "presence",
+          "doc": "Who else is at the place now: a member's or an agent's lens on it (`lenses(place)`), whose face docks on the marker as a list row wears the member at its item. The map draws them in the presence of the window it is in, and shows none for this person's own views.",
+          "type": {
+            "option": "actor"
+          }
+        },
+        {
+          "name": "label",
+          "doc": "Whether its name stands beside it, on a plate over the map: a place's name, as a map names the places it shows. A label that would cover another is left out, so a dense quarter keeps its markers legible.",
+          "type": "bool"
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "name"
       }
     }
   ],

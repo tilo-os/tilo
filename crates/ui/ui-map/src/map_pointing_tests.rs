@@ -77,7 +77,7 @@ fn a_hugging_pin_reports_the_height_it_is_drawn_at_once() {
             hug: true,
             grows: true,
         },
-        Box::new(crate::widget::Text::new("Here are your mails.")),
+        Box::new(tilo_ui::widget::Text::new("Here are your mails.")),
     );
     lay_out(&mut map);
     // The first solve reports the height the words come to, once.
@@ -93,7 +93,7 @@ fn a_hugging_pin_reports_the_height_it_is_drawn_at_once() {
     // The pin's view comes to another height: it is reported once more, taller.
     map.put_pin_view(
         0,
-        Box::new(crate::widget::Text::new(
+        Box::new(tilo_ui::widget::Text::new(
             "Here are your mails. This is a longer answer, so the card it stands in is taller \
              than the last one, and the height it is drawn at changes with it.",
         )),

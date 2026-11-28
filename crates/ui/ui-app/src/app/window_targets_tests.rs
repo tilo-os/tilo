@@ -75,11 +75,11 @@ fn described(app: &mut App, shell: &mut UnixStream) -> Option<Vec<WindowTarget>>
 
 /// A window showing a map, the sentence under it that says whose data it is, and a button.
 fn map_window() -> (App, UnixStream) {
-    let map = crate::widget::Map::from_props(
+    let map = tilo_ui_map::Map::from_props(
         "map",
-        crate::widget::MapProps {
+        tilo_ui_map::MapProps {
             name: Some("Map".to_owned()),
-            ..crate::widget::MapProps::default()
+            ..tilo_ui_map::MapProps::default()
         },
     );
     let sentence = crate::widget::Text::new("Map data and map tiles © OpenStreetMap contributors.");

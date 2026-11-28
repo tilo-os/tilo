@@ -8,7 +8,7 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
 use vello::peniko::Color;
 
 use super::{ARRIVAL_MARGIN, Map, MapCamera};
-use crate::widget::primitives::SurfaceLevel;
+use tilo_ui::widget::primitives::SurfaceLevel;
 use tilo_ui_base::theme::Theme;
 
 impl Map {

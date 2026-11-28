@@ -733,6 +733,7 @@ LIBRARY_SKIP += (
     "crates/ui/tilo-rich-edit/",
     "crates/ui/ui-base/",
     "crates/ui/ui-charts/",
+    "crates/ui/ui-map/",
     "crates/ui/ui-core/",
     "crates/ui/ui-math/",
     "crates/ui/ui-kms/",

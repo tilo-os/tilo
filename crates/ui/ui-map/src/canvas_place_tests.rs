@@ -1,8 +1,12 @@
 //! A place on a canvas fills the room its pin gives it: its ground under the band its handle
 //! shows in.
 
-use super::*;
-use crate::widget::{Map, PinPlace};
+use tilo_ui::widget::{CanvasPlace, PLACE_BAND, PlaceProps};
+use tilo_ui_base::component::Described;
+use tilo_ui_base::widget::Widget;
+use vello::kurbo::Rect;
+
+use crate::{Map, PinPlace};
 
 /// The place's ground, found under `widget` by its name.
 fn ground_rect(widget: &dyn Widget) -> Option<Rect> {

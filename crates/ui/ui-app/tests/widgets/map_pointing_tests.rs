@@ -13,8 +13,6 @@ use tilo_ui_app::kurbo::*;
 use tilo_ui_app::retained_present::*;
 use tilo_ui_app::testing::*;
 use tilo_ui_app::vello::*;
-use tilo_ui_app::widget::internals::map::test_support::*;
-use tilo_ui_app::widget::internals::map::*;
 use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::Event;
@@ -29,6 +27,8 @@ use tilo_ui_base::text_selection::*;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::*;
 use tilo_ui_base::widget::*;
+use tilo_ui_map::test_support::*;
+use tilo_ui_map::*;
 use winit::event::*;
 use winit::keyboard::*;
 /// A click on the empty canvas reports the canvas point under it, at the camera the map looks

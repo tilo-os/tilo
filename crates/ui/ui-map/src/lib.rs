@@ -23,6 +23,70 @@
 //! it) takes the camera over from the one it replaces (`Lens`) rather than looking at the
 //! canvas' origin.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::collapsible_if,
+    clippy::default_trait_access,
+    clippy::doc_markdown,
+    clippy::empty_line_after_doc_comments,
+    clippy::format_collect,
+    clippy::format_push_string,
+    clippy::implicit_hasher,
+    clippy::indexing_slicing,
+    clippy::items_after_statements,
+    clippy::items_after_test_module,
+    clippy::large_enum_variant,
+    clippy::large_stack_arrays,
+    clippy::manual_assert_eq,
+    clippy::manual_find,
+    clippy::manual_midpoint,
+    clippy::many_single_char_names,
+    clippy::map_unwrap_or,
+    clippy::match_wildcard_for_single_variants,
+    clippy::missing_errors_doc,
+    clippy::needless_collect,
+    clippy::needless_pass_by_value,
+    clippy::needless_range_loop,
+    clippy::needless_raw_string_hashes,
+    clippy::or_fun_call,
+    clippy::panic_in_result_fn,
+    clippy::redundant_clone,
+    clippy::redundant_closure,
+    clippy::redundant_closure_for_method_calls,
+    clippy::ref_as_ptr,
+    clippy::result_large_err,
+    clippy::semicolon_if_nothing_returned,
+    clippy::significant_drop_in_scrutinee,
+    clippy::significant_drop_tightening,
+    clippy::similar_names,
+    clippy::struct_excessive_bools,
+    clippy::too_many_lines,
+    clippy::type_complexity,
+    clippy::unchecked_time_subtraction,
+    clippy::unicode_not_nfc,
+    clippy::uninlined_format_args,
+    clippy::unnecessary_literal_bound,
+    clippy::unnecessary_wraps,
+    clippy::unreadable_literal,
+    clippy::unused_self,
+    clippy::used_underscore_binding,
+    clippy::useless_conversion,
+    reason = "lint debt these widgets carried in the toolkit, scoped to this target"
+)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::disallowed_methods,
+        clippy::string_slice,
+        clippy::unreachable,
+        clippy::float_cmp,
+        reason = "in a test these are the assertion, not a hazard, and tests may wait on the real clock"
+    )
+)]
+
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -67,7 +131,7 @@ const ZOOM_PER_DETENT: f64 = 1.1;
 
 /// How long the camera must stand still before a move of the person's is over: the notches of one
 /// wheel turn, a zoom's last frame and a drag's last pixels arrive together.
-const REST_AFTER: crate::time::Duration = crate::time::Duration::from_millis(150);
+const REST_AFTER: tilo_ui::time::Duration = tilo_ui::time::Duration::from_millis(150);
 
 /// A basemap tile's side, in pixels of the tile server's own imagery: the size a tile is at when
 /// the camera takes a tile's pixel for a screen pixel.
@@ -178,7 +242,7 @@ const ARRIVAL_MARGIN: f64 = tilo_ui_base::tokens::Spacing::BASE.rhythm.section a
 /// The band a pin keeps over its view: a place's handle band, or none.
 fn band_of(band: bool) -> f64 {
     if band {
-        crate::widget::canvas_place::PLACE_BAND
+        tilo_ui::widget::canvas_place::PLACE_BAND
     } else {
         0.0
     }
@@ -276,7 +340,7 @@ pub struct MapProps {
     /// What the map is, for assistive technology.
     pub name: Option<String>,
     /// Whether it is a desktop: the windows it holds stand on the desktop's ground
-    /// ([`SurfaceLevel::Ground`](crate::widget::primitives::SurfaceLevel)), not on the content
+    /// ([`SurfaceLevel::Ground`](tilo_ui::widget::primitives::SurfaceLevel)), not on the content
     /// colour of the window the map is in.
     pub ground: bool,
     /// Whether it is a map of the world: a pin stands centred on the place it names and keeps
@@ -288,7 +352,7 @@ pub struct MapProps {
     /// (`https://tile.openstreetmap.org/%z/%x/%y.png`). The tiles draw under everything else,
     /// scaled with the camera, at the zoom that shows them sharpest; without one the map draws
     /// its ground, and a map of the world a faint grid at the places it names. A host serves the
-    /// pictures (`crate::pictures::set_remote_fetcher`).
+    /// pictures (`tilo_ui::pictures::set_remote_fetcher`).
     pub basemap: Option<String>,
     /// The pins, in the order the map draws them (the last on top).
     #[component(part(default))]
@@ -445,7 +509,7 @@ pub struct MapPinProps {
     /// How tall it stands, in canvas pixels; without it, as tall as its view asks.
     pub height: Option<i64>,
     /// Whether its view keeps a place's handle band over its top edge
-    /// ([`crate::widget::canvas_place::PLACE_BAND`]): the pin stands that much higher, so the
+    /// ([`tilo_ui::widget::canvas_place::PLACE_BAND`]): the pin stands that much higher, so the
     /// view's own top is at `y`.
     pub band: bool,
     /// `height` is the most it takes: its view hugs what it holds up to it (an answer in the
@@ -717,7 +781,7 @@ pub struct Map {
     /// Where the region laid each pin out last, by key, written by its own solve.
     laid: Rc<RefCell<HashMap<String, Rect>>>,
     /// The edges that resize the places on screen, for the shell's control hints.
-    hint_edges: crate::control_hints::anchors::EdgesAnchor,
+    hint_edges: tilo_ui::control_hints::anchors::EdgesAnchor,
     /// The pins that hug what they hold but whose view said no height of its own at the last
     /// solve (a turn before its words arrive), by key: laid out at their most, which is not yet
     /// how tall they are, so the camera does not follow them there.
@@ -808,7 +872,7 @@ pub struct Map {
     /// What the camera reports when the person's own move ends.
     rest: Event,
     /// When the camera is to be called at rest, once it has stood still that long.
-    rest_due: Option<crate::time::Instant>,
+    rest_due: Option<tilo_ui::time::Instant>,
     /// What the imagery the map shows failing to load reports: the tiles failed of those shown.
     fault: Event,
     /// The failure the map last reported (`fault`): the tiles failed and shown it said, so the
@@ -826,7 +890,7 @@ pub struct Map {
     edge_drag: Option<EdgeDrag>,
     /// The place edge the pointer rests on, and since when: its outline lights once it rested
     /// there (`docs/design-language.md`, "Window edge resize").
-    edge_hover: Option<(String, bool, bool, crate::time::Instant)>,
+    edge_hover: Option<(String, bool, bool, tilo_ui::time::Instant)>,
     /// The rectangle the view points at, in canvas pixels, drawn as a light outline.
     outline: Option<Rect>,
     /// The key the map is known by on the drag bus, namespaced from the view that built it: a
@@ -950,7 +1014,7 @@ impl Map {
             key_pan: f64::from(tilo_ui_base::tokens::Metrics::BASE.wheel_line),
             placed: Rc::default(),
             laid: Rc::default(),
-            hint_edges: crate::control_hints::anchors::EdgesAnchor::new(),
+            hint_edges: tilo_ui::control_hints::anchors::EdgesAnchor::new(),
             unsaid: Rc::default(),
             drawn_said: Rc::default(),
             pin_places: Rc::default(),
@@ -1184,7 +1248,7 @@ impl Map {
             ])));
     }
 
-    /// Tell the shell's control hints ([`crate::control_hints`]) where the edges that resize the
+    /// Tell the shell's control hints ([`tilo_ui::control_hints`]) where the edges that resize the
     /// places on screen are, and, when the places drawn since `windows` hold windows, whether some
     /// lie out of view to either side.
     fn tell_hints(&self, transform: Affine, windows: u64) {
@@ -1202,8 +1266,8 @@ impl Map {
                 .filter(|rect| resizes && rect.overlaps(self.rect))
                 .map(|rect| Line::new((rect.x1, rect.y0), (rect.x1, rect.y1))),
         );
-        if crate::control_hints::anchors::windows_drawn() != windows {
-            crate::control_hints::anchors::windows_beyond(
+        if tilo_ui::control_hints::anchors::windows_drawn() != windows {
+            tilo_ui::control_hints::anchors::windows_beyond(
                 laid.iter().any(|rect| rect.x1 <= self.rect.x0),
                 laid.iter().any(|rect| rect.x0 >= self.rect.x1),
             );
@@ -1211,11 +1275,11 @@ impl Map {
     }
 
     /// The person moved the camera by hand to `camera`: a pan, which the shell's control hints
-    /// teach ([`crate::control_hints`]).
+    /// teach ([`tilo_ui::control_hints`]).
     fn pan_by_hand(&mut self, camera: MapCamera) {
         self.set_camera(camera);
-        crate::control_hints::performed::note(
-            crate::control_hints::performed::Performed::PannedView,
+        tilo_ui::control_hints::performed::note(
+            tilo_ui::control_hints::performed::Performed::PannedView,
         );
     }
 
@@ -1492,7 +1556,7 @@ impl Map {
 
     /// Bring the camera's glide up to `now`: where the region lays the places out this frame.
     /// Whether the camera moved.
-    fn step_camera(&mut self, now: crate::time::Instant) -> bool {
+    fn step_camera(&mut self, now: tilo_ui::time::Instant) -> bool {
         let Some(glide) = &mut self.glide else {
             return false;
         };
@@ -2189,7 +2253,7 @@ const GRAIN_DOT: f64 = 1.5;
 /// whatever presents the frame (a software GL surface included) show the same pixel, never a
 /// veneer laid over a pixel that holds nothing (bright white where its alpha was taken back out).
 fn grain_colour(theme: &Theme) -> vello::peniko::Color {
-    let ground = crate::widget::primitives::SurfaceLevel::Ground.color(theme);
+    let ground = tilo_ui::widget::primitives::SurfaceLevel::Ground.color(theme);
     let veneer = theme.tokens.colors.overlay_subtle;
     let [gr, gg, gb, ga] = ground.components;
     let [vr, vg, vb, va] = veneer.components;
@@ -2292,8 +2356,11 @@ impl Map {
             .tokens
             .typography
             .style(tilo_ui_base::tokens::TextRole::Body);
-        let face =
-            crate::widget::TextLineFace::styled(hint, &style, tilo_ui_base::tokens::TextRole::Body);
+        let face = tilo_ui::widget::TextLineFace::styled(
+            hint,
+            &style,
+            tilo_ui_base::tokens::TextRole::Body,
+        );
         let mut ctx = tilo_ui_base::paint::PaintCtx::new(scene, transform, text, theme);
         face.paint(&mut ctx, self.rect, theme.text_tertiary);
     }
@@ -2328,25 +2395,25 @@ impl Map {
             let origin = self.rect.origin().to_vec2();
             let screen = drag.rect() + origin;
             outline(scene, &screen);
-            let lit = crate::widget::EdgeLit::Dragging;
+            let lit = tilo_ui::widget::EdgeLit::Dragging;
             if drag.trailing {
-                crate::widget::paint_edge(
+                tilo_ui::widget::paint_edge(
                     scene,
                     transform,
                     theme,
                     screen,
-                    crate::widget::EdgeSide::Trailing,
+                    tilo_ui::widget::EdgeSide::Trailing,
                     lit,
                     1.0,
                 );
             }
             if drag.bottom {
-                crate::widget::paint_edge(
+                tilo_ui::widget::paint_edge(
                     scene,
                     transform,
                     theme,
                     screen,
-                    crate::widget::EdgeSide::Bottom,
+                    tilo_ui::widget::EdgeSide::Bottom,
                     lit,
                     1.0,
                 );
@@ -2357,13 +2424,13 @@ impl Map {
                 .find(|(key, _, _)| *key == drag.key)
                 .map_or(0.0, |(_, place, _)| place.band);
             let zoom = zoom.max(f64::EPSILON);
-            crate::widget::paint_size_chip(
+            tilo_ui::widget::paint_size_chip(
                 scene,
                 transform,
                 text,
                 theme,
                 screen,
-                crate::widget::EdgeSide::Trailing,
+                tilo_ui::widget::EdgeSide::Trailing,
                 (
                     (screen.width() / zoom).round(),
                     ((screen.height() - band) / zoom).round(),
@@ -2375,12 +2442,12 @@ impl Map {
         // Resting on a place's edge lights it, quietly, for as long as the pointer stays.
         if let Some((key, trailing, bottom, since)) = &self.edge_hover {
             let fade = theme.motion().fast();
-            let rested = crate::time::now().saturating_duration_since(*since);
-            if rested >= crate::widget::EDGE_DWELL {
+            let rested = tilo_ui::time::now().saturating_duration_since(*since);
+            if rested >= tilo_ui::widget::EDGE_DWELL {
                 let alpha = if fade.is_zero() {
                     1.0
                 } else {
-                    ((rested.saturating_sub(crate::widget::EDGE_DWELL)).as_secs_f64()
+                    ((rested.saturating_sub(tilo_ui::widget::EDGE_DWELL)).as_secs_f64()
                         / fade.as_secs_f64())
                     .clamp(0.0, 1.0) as f32
                 };
@@ -2388,24 +2455,24 @@ impl Map {
                     let origin = self.rect.origin().to_vec2();
                     let screen = rect + origin;
                     if *trailing {
-                        crate::widget::paint_edge(
+                        tilo_ui::widget::paint_edge(
                             scene,
                             transform,
                             theme,
                             screen,
-                            crate::widget::EdgeSide::Trailing,
-                            crate::widget::EdgeLit::Resting,
+                            tilo_ui::widget::EdgeSide::Trailing,
+                            tilo_ui::widget::EdgeLit::Resting,
                             alpha,
                         );
                     }
                     if *bottom {
-                        crate::widget::paint_edge(
+                        tilo_ui::widget::paint_edge(
                             scene,
                             transform,
                             theme,
                             screen,
-                            crate::widget::EdgeSide::Bottom,
-                            crate::widget::EdgeLit::Resting,
+                            tilo_ui::widget::EdgeSide::Bottom,
+                            tilo_ui::widget::EdgeLit::Resting,
                             alpha,
                         );
                     }
@@ -2437,7 +2504,7 @@ impl Map {
 
     /// Say how the imagery the map shows is doing, when that changed: how many of the tiles it
     /// shows failed to load of how many it shows. A view says so in words while none drew.
-    fn report_fault(&mut self, pictures: &crate::pictures::Pictures) {
+    fn report_fault(&mut self, pictures: &tilo_ui::pictures::Pictures) {
         let Some(basemap) = self.basemap.clone() else {
             return;
         };
@@ -2452,7 +2519,7 @@ impl Map {
             tiles
                 .iter()
                 .filter(|(x, y)| {
-                    let source = crate::widget::PictureSource {
+                    let source = tilo_ui::widget::PictureSource {
                         src: Self::tile_address(&basemap, z, *x, *y),
                     };
                     pictures.failed(&source)
@@ -2531,7 +2598,7 @@ impl Map {
         &self,
         scene: &mut Scene,
         transform: Affine,
-        pictures: &crate::pictures::Pictures,
+        pictures: &tilo_ui::pictures::Pictures,
     ) {
         let Some(basemap) = self.basemap.clone() else {
             return;
@@ -2547,7 +2614,7 @@ impl Map {
         // paints over them: one drawing per coarser tile, however many holes it covers.
         let mut under: Vec<(i64, i64, i64)> = Vec::new();
         for (x, y) in &tiles {
-            let source = crate::widget::PictureSource {
+            let source = tilo_ui::widget::PictureSource {
                 src: Self::tile_address(&basemap, z, *x, *y),
             };
             if pictures.loaded(&source).is_some() || pictures.failed(&source) {
@@ -2559,7 +2626,7 @@ impl Map {
                 }
                 let step = 1_i64 << (z - coarser);
                 let (parent_x, parent_y) = (x.div_euclid(step), y.div_euclid(step));
-                let parent = crate::widget::PictureSource {
+                let parent = tilo_ui::widget::PictureSource {
                     src: Self::tile_address(&basemap, coarser, parent_x, parent_y),
                 };
                 if pictures.loaded(&parent).is_some() {
@@ -2572,7 +2639,7 @@ impl Map {
         }
         for (coarser, x, y) in under {
             let rect = self.tile_screen_rect(camera, corner, coarser, x, y);
-            let source = crate::widget::PictureSource {
+            let source = tilo_ui::widget::PictureSource {
                 src: Self::tile_address(&basemap, coarser, x, y),
             };
             if let Some(image) = pictures.loaded(&source) {
@@ -2580,7 +2647,7 @@ impl Map {
             }
         }
         for (x, y) in tiles {
-            let source = crate::widget::PictureSource {
+            let source = tilo_ui::widget::PictureSource {
                 src: Self::tile_address(&basemap, z, x, y),
             };
             // Asking for it admits a load the first time; until it lands, the coarser tile under
@@ -2722,7 +2789,7 @@ impl Map {
             let (marker_index, at) = kept[index];
             let (_, _, _, _, name, _, _) = &self.markers[marker_index];
             let Some(name) = name else { continue };
-            let face = crate::widget::TextLineFace::styled(
+            let face = tilo_ui::widget::TextLineFace::styled(
                 name,
                 &style,
                 tilo_ui_base::tokens::TextRole::Caption,
@@ -2777,7 +2844,7 @@ impl Map {
                 &mut tilo_ui_base::paint::PaintCtx::new(scene, transform, text, theme),
                 (dock, self.rect),
                 &[(member.clone(), Some(person.name.clone()))],
-                crate::widget::primitives::SurfaceLevel::Window.color(theme),
+                tilo_ui::widget::primitives::SurfaceLevel::Window.color(theme),
                 false,
             );
         }
@@ -2880,7 +2947,7 @@ impl Map {
     }
 
     /// Whether any pin's motion is still moving at `now`: what asks for frames while it does.
-    fn pins_moving(&self, now: crate::time::Instant) -> bool {
+    fn pins_moving(&self, now: tilo_ui::time::Instant) -> bool {
         self.placed
             .borrow()
             .values()
@@ -2982,7 +3049,9 @@ impl Map {
                 // finding of where a place can be sized, before any press.
                 let hovered = self
                     .edge_at(self.cursor - self.rect.origin().to_vec2())
-                    .map(|(key, _, trailing, bottom)| (key, trailing, bottom, crate::time::now()));
+                    .map(|(key, _, trailing, bottom)| {
+                        (key, trailing, bottom, tilo_ui::time::now())
+                    });
                 if hovered
                     .as_ref()
                     .map(|(key, trailing, bottom, _)| (key, trailing, bottom))
@@ -3109,8 +3178,8 @@ impl Map {
                         .find(|(key, _, _)| *key == drag.key)
                         .map_or(0.0, |(_, place, _)| place.band);
                     if rect != drag.from {
-                        crate::control_hints::performed::note(
-                            crate::control_hints::performed::Performed::ResizedWindow,
+                        tilo_ui::control_hints::performed::note(
+                            tilo_ui::control_hints::performed::Performed::ResizedWindow,
                         );
                         self.resize
                             .fire(Some(tilo_ui_base::component::Value::List(vec![
@@ -3349,7 +3418,7 @@ impl Widget for Map {
             || self.rest_due.is_some()
             || self.edge_hover.as_ref().is_some_and(|(_, _, _, since)| {
                 now.saturating_duration_since(*since)
-                    < crate::widget::EDGE_DWELL
+                    < tilo_ui::widget::EDGE_DWELL
                         + tilo_ui_base::tokens::motion::Durations::default().fast()
             })
             || self.glide.is_some_and(|glide| glide.is_gliding(now))
@@ -3453,11 +3522,11 @@ impl Widget for Map {
         let viewport = self.rect;
         let clips = viewport.width() > 0.0 && viewport.height() > 0.0;
         if self.ground && clips {
-            let _ = crate::widget::primitives::paint_surface(
+            let _ = tilo_ui::widget::primitives::paint_surface(
                 scene,
                 transform,
                 viewport,
-                crate::widget::primitives::SurfaceLevel::Ground,
+                tilo_ui::widget::primitives::SurfaceLevel::Ground,
                 theme,
             );
             self.draw_grain(scene, transform, theme);
@@ -3471,14 +3540,14 @@ impl Widget for Map {
                 &viewport,
             );
         }
-        let pictures = crate::pictures::Pictures::window();
+        let pictures = tilo_ui::pictures::Pictures::window();
         self.draw_basemap(scene, transform, &pictures);
         self.report_fault(&pictures);
         self.draw_tracks(scene, transform, theme);
         self.draw_markers(scene, transform, text, theme, &env);
         self.draw_hint(scene, transform, text, theme);
         self.draw_frame_outline(scene, transform, text, theme);
-        let windows = crate::control_hints::anchors::windows_drawn();
+        let windows = tilo_ui::control_hints::anchors::windows_drawn();
         self.draw_pins(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
@@ -3641,12 +3710,12 @@ impl Widget for Map {
         // A resource another view dragged and let go inside the map is a drop here: the map
         // reports what it carried and the canvas point under the pointer, and the view places
         // it there (the shell's own `open`, or its place at a point).
-        if let Some(landed) = crate::widget::drag_bus::take(self.drop_key(), self.rect) {
+        if let Some(landed) = tilo_ui::widget::drag_bus::take(self.drop_key(), self.rect) {
             let tilo_ui_base::dnd::DragPayload::Custom { kind, blob } = landed.payload else {
                 return changed;
             };
-            if kind != crate::widget::drag_source::RESOURCE_PAYLOAD
-                && kind != crate::widget::drag_run::ITEM_PAYLOAD
+            if kind != tilo_ui::widget::drag_source::RESOURCE_PAYLOAD
+                && kind != tilo_ui::widget::drag_run::ITEM_PAYLOAD
             {
                 return changed;
             }
@@ -3655,12 +3724,12 @@ impl Widget for Map {
             {
                 if landed
                     .source
-                    .ends_with(crate::widget::canvas_place::HANDLE_KEY)
+                    .ends_with(tilo_ui::widget::canvas_place::HANDLE_KEY)
                 {
                     // A place carried by its handle to another spot on the canvas: moved, as a
                     // window by its bar, which the shell's control hints teach.
-                    crate::control_hints::performed::note(
-                        crate::control_hints::performed::Performed::MovedWindow,
+                    tilo_ui::control_hints::performed::note(
+                        tilo_ui::control_hints::performed::Performed::MovedWindow,
                     );
                 }
                 let at = self.camera.to_canvas(self.rect.origin(), landed.pointer);
@@ -3836,7 +3905,7 @@ mod mercator_tests {
     #[test]
     fn a_centred_map_stands_its_place_at_the_middle() {
         use super::MapCamera;
-        use crate::kurbo::Rect;
+        use tilo_ui::kurbo::Rect;
         let rect = Rect::new(0.0, 0.0, 800.0, 600.0);
         let zoom = 2.0;
         let centre = mercator_project(52.52, 13.405);
@@ -3916,7 +3985,7 @@ pub mod test_support {
         }
     }
     pub fn words(body: &str) -> Element {
-        Box::new(crate::widget::Text::new(body))
+        Box::new(tilo_ui::widget::Text::new(body))
     }
     pub fn lay_out(map: &mut Map) {
         let mut text = tilo_ui_base::font_catalog::fixture_renderer();
@@ -3951,14 +4020,14 @@ pub mod test_support {
     }
     /// A list of `rows` rows of 40 pixels that fills its parent, as a found inbox or notes list is.
     pub fn list(rows: u64) -> Element {
-        let model =
-            crate::widget::VecListModel::new((0..rows).collect(), |row| *row).expect("unique rows");
+        let model = tilo_ui::widget::VecListModel::new((0..rows).collect(), |row| *row)
+            .expect("unique rows");
         Box::new(
-            crate::widget::VirtualList::new(model, 40.0, |_, index, _| {
+            tilo_ui::widget::VirtualList::new(model, 40.0, |_, index, _| {
                 Box::new(
-                    crate::widget::Container::new()
+                    tilo_ui::widget::Container::new()
                         .with_height(40.0)
-                        .with_child(Box::new(crate::widget::Text::new(&format!(
+                        .with_child(Box::new(tilo_ui::widget::Text::new(&format!(
                             "Conversation {index}"
                         )))),
                 )
@@ -4123,6 +4192,8 @@ pub mod test_support {
 #[path = "map_answer_tests.rs"]
 mod answer_tests;
 #[cfg(test)]
+mod canvas_place_tests;
+#[cfg(test)]
 #[path = "map_canvas_tests.rs"]
 mod canvas_tests;
 #[cfg(test)]
@@ -4155,7 +4226,7 @@ impl Map {
 
     /// Whether any pin is still moving at `now`.
     #[must_use]
-    pub fn test_pins_moving(&self, now: crate::time::Instant) -> bool {
+    pub fn test_pins_moving(&self, now: tilo_ui::time::Instant) -> bool {
         self.pins_moving(now)
     }
 
@@ -4186,3 +4257,13 @@ impl Map {
         self.seen_rect()
     }
 }
+
+include!(concat!(env!("OUT_DIR"), "/component_registry.rs"));
+
+/// The map, which a window builds by name beside the toolkit's
+/// (`tilo_ui::component_catalogue::TOOLKIT`).
+pub static COMPONENTS: tilo_ui_base::component::Set = tilo_ui_base::component::Set {
+    entries: generated_entries,
+    parts: GENERATED_PARTS,
+    enums: Vec::new,
+};

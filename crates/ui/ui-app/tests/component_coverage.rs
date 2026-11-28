@@ -77,7 +77,11 @@ impl Widget for Mounted {
 /// changes shows the content clipped at its old size.
 #[test]
 fn every_described_component_settles_its_layout() {
-    let registry = Registry::of(&[&TOOLKIT, &tilo_ui_charts::COMPONENTS]);
+    let registry = Registry::of(&[
+        &TOOLKIT,
+        &tilo_ui_charts::COMPONENTS,
+        &tilo_ui_map::COMPONENTS,
+    ]);
     let mut problems = Vec::new();
     for entry in registry.entries() {
         let description = (entry.describe)();
@@ -167,8 +171,12 @@ fn every_described_component_settles_its_layout() {
 #[test]
 fn the_gallery_shows_every_described_component() {
     let sources = gallery_sources();
-    let catalogue =
-        tilo_ui_base::component::Registry::of(&[&TOOLKIT, &tilo_ui_charts::COMPONENTS]).catalogue();
+    let catalogue = tilo_ui_base::component::Registry::of(&[
+        &TOOLKIT,
+        &tilo_ui_charts::COMPONENTS,
+        &tilo_ui_map::COMPONENTS,
+    ])
+    .catalogue();
     let coverage = tilo_ui_base::component::gallery::coverage(&catalogue, &sources);
     let problems = coverage.problems();
     assert!(problems.is_empty(), "{}", problems.join("\n"));

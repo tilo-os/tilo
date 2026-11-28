@@ -1,6 +1,6 @@
 //! Where the shell's windows and the edges that resize them stand, for control hints: each
 //! window frame ([`crate::widget::WindowFrame`]) and each surface that resizes what it holds by an
-//! edge ([`crate::widget::Map`]) says so here as it lays out and draws, and the hints
+//! edge (the map, `tilo_ui_map::Map`) says so here as it lays out and draws, and the hints
 //! ([`super::ControlHints`]) read it as they place a hint. The same thread-local account as
 //! [`super::performed`]: whichever view draws the window, the hint over it reads one record.
 //!

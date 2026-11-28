@@ -60,6 +60,7 @@ CRATES = (
     Path("crates/ui/ui-core"),
     Path("crates/ui/tilo-rich-edit"),
     Path("crates/ui/ui-charts"),
+    Path("crates/ui/ui-map"),
     Path("crates/ui/ui-math"),
     Path("crates/sdk/tilo-process-services"),
     Path("crates/core/collaboration"),

@@ -34,7 +34,11 @@ use winit::keyboard::*;
 
 /// The toolkit's own described widgets, as a window that builds only them composes them.
 fn toolkit() -> Registry {
-    Registry::of(&[&TOOLKIT, &tilo_ui_charts::COMPONENTS])
+    Registry::of(&[
+        &TOOLKIT,
+        &tilo_ui_charts::COMPONENTS,
+        &tilo_ui_map::COMPONENTS,
+    ])
 }
 
 tilo_test_env::scenario! {
@@ -271,9 +275,8 @@ tilo_test_env::scenario! {
     // props that carried none of their views, so every card showed empty.
     phase a_widget_holding_parts_takes_other_parts_only_by_being_built_again;
     {
-        use tilo_ui_app::widget::{
-            Board, BoardCardProps, BoardListProps, BoardProps, Map, MapPinProps, MapProps, Text,
-        };
+        use tilo_ui_app::{widget::Board, widget::BoardCardProps, widget::BoardListProps, widget::BoardProps, widget::Text};
+        use tilo_ui_map::{Map, MapPinProps, MapProps};
 
         fn pin(key: &str, body: &str) -> MapPinProps {
             MapPinProps {

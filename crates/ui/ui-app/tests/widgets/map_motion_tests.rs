@@ -15,7 +15,6 @@ use tilo_ui_app::kurbo::*;
 use tilo_ui_app::retained_present::*;
 use tilo_ui_app::testing::*;
 use tilo_ui_app::vello::*;
-use tilo_ui_app::widget::internals::map::test_support::TEST_ARRIVAL_MARGIN as ARRIVAL_MARGIN;
 use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
@@ -29,6 +28,8 @@ use tilo_ui_base::text_selection::*;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::*;
 use tilo_ui_base::widget::*;
+use tilo_ui_map::test_support::TEST_ARRIVAL_MARGIN as ARRIVAL_MARGIN;
+use tilo_ui_map::{Map, MapCamera, PinPlace};
 use winit::event::*;
 use winit::keyboard::*;
 fn theme() -> Theme {

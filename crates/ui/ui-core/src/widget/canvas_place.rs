@@ -66,7 +66,7 @@ pub const PLACE_BAND: f64 = tilo_ui_base::tokens::Metrics::BASE.panel_row_height
 
 /// What a place's handle is keyed by, after the place's own key: a resource dragged from a key
 /// ending so is a place being moved by its handle.
-pub(crate) const HANDLE_KEY: &str = "\u{1f}handle";
+pub const HANDLE_KEY: &str = "\u{1f}handle";
 
 /// See the module docs.
 pub struct CanvasPlace {
@@ -321,7 +321,3 @@ impl Decorator for PlaceGround {
         scene.pop_layer();
     }
 }
-
-#[cfg(test)]
-#[path = "canvas_place_tests.rs"]
-mod tests;

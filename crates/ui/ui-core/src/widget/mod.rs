@@ -362,7 +362,7 @@ pub use {send_to::SendToBox, send_to::SendToFocus};
 pub mod attached;
 mod hover_toolbar;
 pub use hover_toolbar::HoverToolbar;
-mod canvas_place;
+pub mod canvas_place;
 pub use {canvas_place::CanvasPlace, canvas_place::PLACE_BAND, canvas_place::PlaceProps};
 mod swipe_row;
 pub use {
@@ -710,12 +710,6 @@ pub mod magnify;
 pub use {magnify::Magnify, magnify::MagnifyProps};
 pub mod docked;
 pub use {docked::Docked, docked::DockedProps};
-pub mod map;
-pub use {
-    map::MAP_ZOOM_MAX, map::MAP_ZOOM_MIN, map::Map, map::MapCamera, map::MapMarkerKind,
-    map::MapMarkerProps, map::MapPinProps, map::MapProps, map::MapTrackProps, map::MapTrackTone,
-    map::PinPlace,
-};
 pub mod window_well;
 pub use {window_well::Wells, window_well::WindowWell, window_well::WindowWellProps};
 pub mod window_preview;
@@ -879,9 +873,6 @@ pub mod internals {
     }
     pub mod canvas_place {
         pub use crate::widget::canvas_place::*;
-    }
-    pub mod map {
-        pub use crate::widget::map::*;
     }
     pub mod modal_dialog {
         pub use crate::widget::modal_dialog::*;

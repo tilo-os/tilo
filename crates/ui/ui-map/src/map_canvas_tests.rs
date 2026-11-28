@@ -93,7 +93,7 @@ fn the_empty_canvas_says_once_what_it_is_for() {
 #[test]
 fn an_answer_hugs_its_words_up_to_its_room() {
     let words =
-        || -> Element { Box::new(crate::widget::Text::new("Two tasks are due this week.")) };
+        || -> Element { Box::new(tilo_ui::widget::Text::new("Two tasks are due this week.")) };
     let mut map = Map::new()
         .pin("answer", place(0.0, 0.0, 400.0, 400.0, true), words())
         .pin("filled", place(500.0, 0.0, 200.0, 400.0, false), words());
@@ -114,7 +114,7 @@ fn an_answer_hugs_its_words_up_to_its_room() {
     let mut tall = Map::new().pin(
         "answer",
         place(0.0, 0.0, 300.0, 200.0, true),
-        Box::new(crate::widget::Text::new(&long)),
+        Box::new(tilo_ui::widget::Text::new(&long)),
     );
     laid(&mut tall);
     let answer = tall.laid.borrow()["answer"];

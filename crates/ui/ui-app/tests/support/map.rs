@@ -2,10 +2,11 @@
 
 use tilo_ui_app::headless::Driver;
 use tilo_ui_app::kurbo::{Point, Rect};
-use tilo_ui_app::widget::internals::map::test_support::pointing_map;
-use tilo_ui_app::widget::{Map, MapCamera};
 use tilo_ui_base::component::Fired;
 use tilo_ui_base::theme::Theme;
+use tilo_ui_map::Map;
+use tilo_ui_map::MapCamera;
+use tilo_ui_map::test_support::pointing_map;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 /// A map laid out over the whole viewport, with its camera as given: the camera is the map's
