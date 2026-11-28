@@ -51,7 +51,6 @@ async fn host_routes_answer_over_loopback_plain_http_only() {
             },
             allowed_origins: Vec::new(),
             plain_listen: Some("0.0.0.0:0".parse().unwrap()),
-            public_origin: None,
             fetch_proxy: None,
             site: None,
         })

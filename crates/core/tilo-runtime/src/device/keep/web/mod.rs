@@ -56,11 +56,6 @@ pub struct WebConfig {
     /// for local review in a browser that should not need a certificate
     /// exception.
     pub plain_listen: Option<SocketAddr>,
-    /// The `https://` origin a TLS-terminating proxy publishes the plain
-    /// listener at. When set, the plain listener may bind a non-loopback
-    /// address (the proxy is the way in), and this origin is what pages
-    /// and links are told.
-    pub public_origin: Option<String>,
     /// The fetch proxy this host serves its members' pages at
     /// [`protocol::FETCH_PATH`], if any.
     pub fetch_proxy: Option<FetchProxySetup>,
@@ -421,39 +416,14 @@ fn without_default_port(authority: &str) -> &str {
         .unwrap_or(authority)
 }
 
-/// Checks the published origins against the listeners they front. `also` are
-/// the other origins whoever keeps this server says it is reached under: each
-/// an origin as the public one is, beside which it stands.
-fn checked_origins(config: &WebConfig, also: &[String]) -> Result<(), String> {
-    if config.public_origin.is_none()
-        && config
-            .plain_listen
-            .is_some_and(|plain| !plain.ip().is_loopback())
+/// Checks the plain listener against what publishes it: a listener another
+/// machine reaches must be on this one's loopback.
+fn checked_origins(config: &WebConfig) -> Result<(), String> {
+    if config
+        .plain_listen
+        .is_some_and(|plain| !plain.ip().is_loopback())
     {
-        return Err(
-            "the plain HTTP listener must be a loopback address unless a proxy publishes it".into(),
-        );
-    }
-    if config.public_origin.as_ref().is_some_and(|origin| {
-        !tilo_net::Url::parse(origin).is_ok_and(|url| tilo_net::secure_origin(&url))
-            || config.plain_listen.is_none()
-    }) {
-        return Err(
-            "a public origin is an https:// origin (or an http:// one on this machine) published for the plain listener".into(),
-        );
-    }
-    if !also.is_empty() && config.public_origin.is_none() {
-        return Err(
-            "another origin this server is reached under stands beside its public origin, which is not set".into(),
-        );
-    }
-    if !also
-        .iter()
-        .all(|origin| tilo_net::Url::parse(origin).is_ok_and(|url| tilo_net::secure_origin(&url)))
-    {
-        return Err(
-            "another origin this server is reached under is an https:// origin (or an http:// one on this machine)".into(),
-        );
+        return Err("the plain HTTP listener must be a loopback address".into());
     }
     Ok(())
 }
@@ -527,7 +497,7 @@ impl Server {
     /// Returns [`ServerError::Iroh`] (the transport error kind) when the
     /// certificate cannot be loaded or an address cannot be bound.
     pub async fn serve_web(&self, config: WebConfig) -> Result<WebHandle, ServerError> {
-        let parts = self.web_parts(config, Vec::new());
+        let parts = self.web_parts(config);
         let handle = serve_parts(parts.clone()).await?;
         self.web_ui.started(parts, &handle);
         Ok(handle)
@@ -556,7 +526,7 @@ impl Server {
                 );
             }
         }
-        let parts = self.web_parts(config, Vec::new());
+        let parts = self.web_parts(config);
         if !self.web_ui.wanted() {
             self.web_ui.ready(parts);
             return Ok(None);
@@ -568,7 +538,7 @@ impl Server {
 
     /// What a browser listener is served from, as the device's web UI setting serves it
     /// again after it stopped.
-    fn web_parts(&self, config: WebConfig, also: Vec<String>) -> WebParts {
+    fn web_parts(&self, config: WebConfig) -> WebParts {
         WebParts {
             context: self.web_context().clone(),
             live: self.live.clone(),
@@ -578,7 +548,6 @@ impl Server {
             workspaces: self.workspaces().cloned(),
             browser_origin: Arc::clone(&self.browser_origin),
             config,
-            also,
         }
     }
 }
@@ -596,7 +565,6 @@ pub(crate) struct WebParts {
     workspaces: Option<tilo_workspace_service::workspaces::Workspaces>,
     browser_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
     config: WebConfig,
-    also: Vec<String>,
 }
 
 /// Serve a browser listener from `parts`: the same bring-up whoever started it, the
@@ -615,13 +583,9 @@ async fn serve_parts(parts: WebParts) -> Result<WebHandle, ServerError> {
         workspaces,
         browser_origin,
         config,
-        also,
     } = parts;
     let failed = |message: String| ServerError::Iroh(format!("web listener: {message}"));
-    checked_origins(&config, &also).map_err(failed)?;
-    if !also.is_empty() {
-        tracing::info!(origins = ?also, "this server is also reached under these origins");
-    }
+    checked_origins(&config).map_err(failed)?;
     let device = &context.server.identity;
     let identity = tls::Identity::load(&config.tls, &device.signing_key, Some(&device.cert))
         .map_err(failed)?;
@@ -629,10 +593,7 @@ async fn serve_parts(parts: WebParts) -> Result<WebHandle, ServerError> {
     let addr = tcp
         .local_addr()
         .map_err(|error| failed(error.to_string()))?;
-    let public_origin = match config.public_origin.clone() {
-        Some(origin) => Some(origin),
-        None => browser_locator_origin(&config.tls, addr)?,
-    };
+    let public_origin = browser_locator_origin(&config.tls, addr)?;
     let acceptor =
         tokio_rustls::TlsAcceptor::from(Arc::new(identity.https_config().map_err(failed)?));
     let fetch = fetch::Serving::start(config.fetch_proxy.as_ref()).map_err(failed)?;

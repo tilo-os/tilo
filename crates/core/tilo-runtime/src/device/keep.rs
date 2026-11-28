@@ -490,7 +490,6 @@ fn web_config(
             std::env::var(ALLOWED_ORIGINS_ENV).ok().as_deref(),
         ),
         plain_listen: None,
-        public_origin: None,
         fetch_proxy: None,
         site: cfg.web_entry.clone(),
     }

@@ -279,7 +279,6 @@ pub async fn start_host_serving(
             },
             allowed_origins: Vec::new(),
             plain_listen,
-            public_origin: None,
             fetch_proxy,
             site: None,
         })
@@ -339,15 +338,7 @@ pub fn start_server_daemon(
     label: &str,
     sign_in: Option<&fake_model_providers::FakeProviders>,
 ) -> DaemonHost {
-    start_server_daemon_admitting(
-        root,
-        desk_host,
-        desk,
-        person_workspace,
-        label,
-        sign_in,
-        &[],
-    )
+    start_server_daemon_admitting(root, desk_host, desk, person_workspace, label, sign_in, &[])
 }
 
 /// [`start_server_daemon`], whose server also lets the people `guests` (their roots) connect:
@@ -472,7 +463,6 @@ pub async fn start_workspace_host_relaying(
             },
             allowed_origins: Vec::new(),
             plain_listen: None,
-            public_origin: None,
             fetch_proxy: None,
             site: None,
         })

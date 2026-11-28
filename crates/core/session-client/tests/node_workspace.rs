@@ -186,7 +186,6 @@ async fn a_company_node_hosts_and_seals_the_workspace_people_join() {
             tls: local_tls(&state),
             allowed_origins: vec![page_origin],
             plain_listen: Some("127.0.0.1:0".parse().unwrap()),
-            public_origin: None,
             fetch_proxy: None,
             site: None,
         },
@@ -273,7 +272,6 @@ async fn a_company_node_hosts_and_seals_the_workspace_people_join() {
             tls: local_tls(&state),
             allowed_origins: Vec::new(),
             plain_listen: None,
-            public_origin: None,
             fetch_proxy: None,
             site: None,
         })

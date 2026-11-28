@@ -1401,40 +1401,6 @@ fn the_host_address_follows_the_endpoint_relay() {
     assert_eq!(address.endpoint_addr, relayed);
 }
 
-/// The other origins a server is told it is reached under are origins as its
-/// public one is, and stand beside one: anything else stops the start.
-#[test]
-fn another_origin_a_server_is_reached_under_is_an_origin_beside_its_public_one() {
-    let config = |public_origin: Option<&str>| WebConfig {
-        listen: "127.0.0.1:0".parse().unwrap(),
-        tls: TlsSource::Local {
-            hosts: vec!["localhost".into()],
-            store: None,
-        },
-        allowed_origins: Vec::new(),
-        plain_listen: Some("127.0.0.1:0".parse().unwrap()),
-        public_origin: public_origin.map(str::to_owned),
-        fetch_proxy: None,
-        site: None,
-    };
-    let also = |origin: &str| vec![origin.to_owned()];
-    let published = config(Some("http://127.0.0.1:24500"));
-    assert!(checked_origins(&published, &[]).is_ok());
-    assert!(checked_origins(&published, &also("https://tilo.wifi.example:24500")).is_ok());
-    assert!(
-        checked_origins(&published, &also("http://tilo.wifi.example:24500")).is_err(),
-        "plain http beyond this machine"
-    );
-    assert!(
-        checked_origins(&published, &also("tilo.wifi.example:24500")).is_err(),
-        "a name alone is no origin"
-    );
-    assert!(
-        checked_origins(&config(None), &also("https://tilo.wifi.example:24500")).is_err(),
-        "no second name without a first"
-    );
-}
-
 /// A person's picture is served to the outside at an unguessable public address, and the
 /// address serves nothing from the moment they replace it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

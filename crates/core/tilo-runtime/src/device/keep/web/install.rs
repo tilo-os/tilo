@@ -568,7 +568,6 @@ mod tests {
             },
             allowed_origins: vec!["https://console.example".into()],
             plain_listen: Some("127.0.0.1:0".parse().unwrap()),
-            public_origin: None,
             fetch_proxy: None,
             site: None,
         }
