@@ -101,6 +101,13 @@ fn a_fresh_phone_lists_its_workspaces_apps() {
         "every app is listed with its glyph: {apps:?}"
     );
 
+    // A window opens with what the device says of the app's actions, as a launch hands it: what
+    // opening the app runs is decided from its first frame, not refused before the device answered.
+    let connection = phone.window_connection(server::NOTES, &server.workspace);
+    assert!(
+        connection.is_ok_and(|connection| !connection.verdicts.is_empty()),
+        "Notes' window opens with the device's verdicts on its actions"
+    );
     opens_what_the_workspace_runs(&server, &phone);
 
     // Started again while the server is away, the phone opens Notes on the copy it keeps, not

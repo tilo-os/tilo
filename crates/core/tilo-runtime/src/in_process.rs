@@ -79,6 +79,9 @@ pub struct WindowConnection {
     pub collaboration: runtime_portal::process_link::Descriptor,
     /// The window's connection to the identity service, which signs what it writes as the person.
     pub identity: runtime_portal::process_link::Descriptor,
+    /// What the device says of the app's declared actions for the person, handed as a launch
+    /// hands them: what the window opens and acts on before it asked anything.
+    pub verdicts: Vec<tilo_actions::shown::ActionDecision>,
 }
 
 /// The device daemon running in this process, and the runtime its API is called on.
@@ -261,11 +264,14 @@ impl Device {
             .apps()
             .window_in_this_process(app, workspace)
             .map_err(anyhow::Error::msg)?;
+        let verdicts =
+            crate::device::shown::declared(services.workspaces(), &person, workspace, (app, &[]));
         Ok(WindowConnection {
             person,
             instance,
             collaboration,
             identity,
+            verdicts,
         })
     }
 

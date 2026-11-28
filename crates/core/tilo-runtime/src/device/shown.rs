@@ -75,23 +75,22 @@ impl Shown {
 /// app it `uses`, for `person` at a window of it open in `workspace` now, with what the grants say
 /// at each node below: handed with the window's launch, so its first frame shows them and acts on
 /// them without asking.
-#[cfg(target_os = "linux")]
 pub(crate) fn declared(
     workspaces: &Workspaces,
     person: &str,
     workspace: &str,
     (app, uses): (&str, &[&str]),
 ) -> Vec<ActionDecision> {
-    let resources = {
-        let known = collab_types::app_surface::Surfaces::process().resources_of(app);
-        if known.is_empty() {
-            fleet_catalogue::surface(app)
-                .and_then(|json| collab_types::surface::SurfaceFile::from_json(json).ok())
-                .map(|file| file.resources)
-                .unwrap_or_default()
-        } else {
-            known
-        }
+    let resources = collab_types::app_surface::Surfaces::process().resources_of(app);
+    // A desktop knows the surface of every app it ships, started or not.
+    #[cfg(target_os = "linux")]
+    let resources = if resources.is_empty() {
+        fleet_catalogue::surface(app)
+            .and_then(|json| collab_types::surface::SurfaceFile::from_json(json).ok())
+            .map(|file| file.resources)
+            .unwrap_or_default()
+    } else {
+        resources
     };
     let mut actions = tilo_actions::shown::declared_by(app, &resources);
     for used in uses.iter().filter(|used| **used != app) {

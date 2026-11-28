@@ -339,12 +339,15 @@ pub fn open(
             // their own workspace's documents are kept as.
             let person = connection.person;
             let route = tilolang_process::route_of(&bundle.meta, id, &person);
-            let spec = tilolang_process::hosted::Spec::new(
+            let mut spec = tilolang_process::hosted::Spec::new(
                 bundle.meta.app.clone(),
                 workspace,
                 connection.instance,
                 &person,
             );
+            // What the device said of the app's actions opens with the window, as with a launch:
+            // what opening it runs (Files reading its folder) is decided from its first frame.
+            spec.verdicts = connection.verdicts;
             tilolang_process::window::hosted::HostedWindow::in_process_joined(
                 spec,
                 route,
