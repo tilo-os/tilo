@@ -1,7 +1,7 @@
-//! The Browser as it ships: a private window's page is its author's alone, and goes with its
-//! window. Another member, and an agent acting for them, lists, counts and reads none of it, while
-//! the author's other device has it as long as the window is open; once the window closes,
-//! nothing of the page is left on any device. An ordinary page is every member's, as before.
+//! The Browser as it ships: a private window's page stays on the device it was opened on, its
+//! author's alone, and goes with its window. Another member, an agent acting for them and the
+//! author's other device list, count and read none of it; once the window closes, nothing of the
+//! page is left, its history included. An ordinary page is every member's, as before.
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -186,8 +186,18 @@ fn a_private_window_leaves_nothing_anyone_else_reads_and_nothing_once_it_closes(
         2,
         "the Browser opens on a home page, and the ordinary one"
     );
-    // Ada's laptop has her private page while its window is open.
-    assert_eq!(found(&laptop, &kind, &private), (3, 3, true));
+    // Ada's laptop has none of her private page either: it stays on her desktop.
+    assert_eq!(found(&laptop, &kind, &private), (2, 2, false));
+    assert!(
+        matches!(
+            desktop.command(collab_types::store::wire::Command::Get {
+                kind: kind.clone(),
+                id: private.id_string(),
+            }),
+            collab_types::store::wire::Reply::Resource(Some(_))
+        ),
+        "the desktop holds the private page while its window is open"
+    );
 
     // No member but Ada, and no agent acting for another member, may read the private page.
     crate::fixtures::stage_members(
@@ -242,7 +252,23 @@ fn a_private_window_leaves_nothing_anyone_else_reads_and_nothing_once_it_closes(
     assert_eq!(
         found(&laptop, &kind, &private),
         (2, 2, false),
-        "nothing of the private page outlives its window on Ada's other device"
+        "Ada's other device never had the private page"
+    );
+    // On the desktop, the page is gone with its history: no document holds anything of it.
+    assert!(
+        host.runtime()
+            .versions(&private)
+            .unwrap_or_default()
+            .is_empty(),
+        "nothing of the private page's history is left"
+    );
+    assert!(
+        !desktop
+            .documents()
+            .iter()
+            .any(|doc| collab_types::stays_on_device(doc)),
+        "no document that stayed on the desktop is left: {:?}",
+        desktop.documents()
     );
     assert_eq!(pages(&laptop), 2);
     assert_eq!(found(&ben, &kind, &private), (2, 2, false));

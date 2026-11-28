@@ -41,7 +41,15 @@ impl std::error::Error for Refused {}
 /// When `command` is a read, or the store refused the write.
 pub fn write(store: &mut Store, command: Command) -> Result<Vec<Written>, Box<Refused>> {
     let command = placed_by_rules(store, command)?;
-    write_placed(store, command)
+    let written = write_placed(store, command)?;
+    // What stays on this device and holds nothing any more goes whole.
+    if written
+        .iter()
+        .any(|write| collab_types::stays_on_device(&write.doc))
+    {
+        store.let_go_here();
+    }
+    Ok(written)
 }
 
 /// [`write`] of a command whose resources are placed already.
@@ -238,6 +246,10 @@ pub fn steps(store: &mut Store, steps: u32, invoker: &str, kinds: &[String], red
 /// store answers a read by.
 pub fn reads_as(reader: &str) -> impl Fn(&str) -> bool + '_ {
     move |readers| {
+        // A set that stays on this device is its one person's here.
+        let readers = readers
+            .strip_prefix(collab_types::DEVICE_READERS)
+            .unwrap_or(readers);
         !reader.is_empty() && (readers == "*" || readers.split(',').any(|person| person == reader))
     }
 }

@@ -213,7 +213,13 @@ impl Workspace {
                 })
         };
         let mut changed = false;
-        for doc in other.0.documents().into_iter().filter(|doc| opens(doc)) {
+        // A document that stays on its device is never offered to another.
+        for doc in other
+            .0
+            .documents()
+            .into_iter()
+            .filter(|doc| opens(doc) && !collab_types::stays_on_device(doc))
+        {
             if let Some(bytes) = other.0.save(&doc) {
                 changed |= self.0.merge(&doc, &bytes).unwrap();
             }
@@ -256,6 +262,12 @@ impl Workspace {
         command: collab_types::store::wire::Command,
     ) -> collab_types::store::wire::Reply {
         tilolang_tilo::resources::Port::command(&*self.0, command).unwrap()
+    }
+
+    /// The documents this workspace holds.
+    #[must_use]
+    pub fn documents(&self) -> Vec<String> {
+        self.0.documents()
     }
 
     /// The store over this workspace, as a host opens it.

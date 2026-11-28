@@ -175,6 +175,9 @@ pub enum StoreError {
     Readers(String),
     /// A step through history that cannot be taken: why.
     History(String),
+    /// A document that stays on the device that wrote it ([`collab_types::stays_on_device`])
+    /// was offered from elsewhere: from another device, or from what was kept on disk.
+    StaysOnDevice(String),
 }
 
 impl std::fmt::Display for StoreError {
@@ -184,6 +187,10 @@ impl std::fmt::Display for StoreError {
             Self::Document(error) => write!(f, "the document refused the change: {error}"),
             Self::NotAWrite => write!(f, "that is a read, not a write"),
             Self::Readers(reason) | Self::History(reason) => f.write_str(reason),
+            Self::StaysOnDevice(doc) => write!(
+                f,
+                "the document {doc} stays on the device that wrote it: none is taken from elsewhere"
+            ),
         }
     }
 }
@@ -1883,11 +1890,107 @@ impl Store {
     }
 
     /// Applies a peer's `changes` to the document `doc`, which `readers` may read, and indexes
-    /// the resources they touched.
+    /// the resources they touched. A document that stays on the device that wrote it is never
+    /// a peer's: its changes are refused whole.
     ///
     /// # Errors
-    /// When the document cannot be read, or refuses a change admitted to it.
+    /// When the document cannot be read, refuses a change admitted to it, or stays on its device.
     pub fn receive(
+        &mut self,
+        doc_id: &str,
+        readers: &str,
+        changes: Vec<Received>,
+        admit: &dyn Admit,
+    ) -> Result<Vec<(ChangeHash, Refusal)>, StoreError> {
+        if collab_types::stays_on_device(doc_id) {
+            return Err(StoreError::StaysOnDevice(doc_id.to_owned()));
+        }
+        self.take_in(doc_id, readers, changes, admit)
+    }
+
+    /// Applies this device's own `writes` of documents that stay on it
+    /// ([`collab_types::stays_on_device`]), which [`Self::check_batch`] admitted already: they
+    /// are kept in memory alone, never written to disk, sealed or sent. A record removed from
+    /// such a document leaves nothing of itself behind, and a document that holds no record any
+    /// more goes whole, its history with it: what it held is not kept anywhere.
+    ///
+    /// # Errors
+    /// A write of a document that does not stay on its device, or one the document refuses.
+    pub fn keep_here(&mut self, writes: &[Written], author: [u8; 32]) -> Result<(), StoreError> {
+        for write in writes {
+            if !collab_types::stays_on_device(&write.doc) {
+                return Err(StoreError::Readers(format!(
+                    "the document {} is no document that stays on this device",
+                    write.doc
+                )));
+            }
+            let received = Received {
+                change: write.change.clone(),
+                author,
+                claimed: None,
+            };
+            let refused = self.take_in(
+                &write.doc,
+                &write.readers,
+                vec![received],
+                &|_: &Proposal<'_>| true,
+            )?;
+            if let Some((change, refusal)) = refused.first() {
+                return Err(StoreError::Readers(format!(
+                    "the document {} refused its own change {change}: {refusal:?}",
+                    write.doc
+                )));
+            }
+        }
+        self.let_go_here();
+        Ok(())
+    }
+
+    /// Lets go of every document that stays on this device and holds nothing any more: a
+    /// placed document whose every record was removed, and the content of a record no longer
+    /// held. Each goes whole, with its history and the removals it noted, so nothing of what
+    /// it held is readable afterwards.
+    pub fn let_go_here(&mut self) {
+        let docs: BTreeSet<String> = self
+            .docs
+            .keys()
+            .map(String::as_str)
+            .chain(self.index.documents())
+            .filter(|doc| collab_types::stays_on_device(doc))
+            .map(str::to_owned)
+            .collect();
+        let gone: BTreeSet<String> = docs
+            .into_iter()
+            .filter(|doc| match collab_types::store_content_resource(doc) {
+                Some((kind, id)) => self.index.get(kind, id).is_none(),
+                None => self.index.held(doc).next().is_none(),
+            })
+            .collect();
+        if gone.is_empty() {
+            return;
+        }
+        for doc in &gone {
+            self.forget_document(doc);
+            self.refused.remove(doc);
+            self.waiting.remove(doc);
+        }
+        let removed: Vec<(String, String)> = self
+            .removed
+            .iter()
+            .filter(|(_, removed)| gone.contains(&removed.doc))
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in removed {
+            self.removed.remove(&key);
+            for under in self.removed_under.values_mut() {
+                under.remove(&key);
+            }
+        }
+        self.removed_under.retain(|_, under| !under.is_empty());
+    }
+
+    /// [`Self::receive`] for any document, the one that stays on its device included.
+    fn take_in(
         &mut self,
         doc_id: &str,
         readers: &str,
@@ -3199,6 +3302,10 @@ impl Store {
     /// # Errors
     /// When the bytes are no document.
     pub fn load(&mut self, doc_id: &str, bytes: &[u8]) -> Result<(), StoreError> {
+        // Nothing that stays on its device was ever kept, so nothing kept is one.
+        if collab_types::stays_on_device(doc_id) {
+            return Err(StoreError::StaysOnDevice(doc_id.to_owned()));
+        }
         let doc = Automerge::load(bytes)?;
         let readers = text_at(&doc, &ROOT, READERS).unwrap_or_default();
         for change in doc.get_changes(&[]) {

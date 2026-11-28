@@ -1522,7 +1522,7 @@ impl<'a> Parser<'a> {
                     "readers" => {
                         let span = self.span();
                         let who = self.ident(
-                            "who reads the type's records: `author`, `author and` a role, or a field naming members",
+                            "who reads the type's records: `author`, `author here`, `author and` a role, or a field naming members",
                         )?;
                         let rule = if who.name == "author" && self.eat_kw("and") {
                             // `author and moderator`: the author, and whoever holds the role.
@@ -1540,6 +1540,11 @@ impl<'a> Parser<'a> {
                             };
                             crate::meta::ReaderRule::AuthorAnd { role: named }
                         } else if who.name == "author" {
+                            // `author here`: theirs on the device it was made on, and no other.
+                            let here = matches!(self.peek(), Tok::Ident(w) if w == "here");
+                            if here {
+                                self.bump();
+                            }
                             let until = if matches!(self.peek(), Tok::Ident(w) if w == "until") {
                                 self.bump();
                                 Some(
@@ -1549,7 +1554,7 @@ impl<'a> Parser<'a> {
                             } else {
                                 None
                             };
-                            crate::meta::ReaderRule::Author { until }
+                            crate::meta::ReaderRule::Author { until, here }
                         } else {
                             crate::meta::ReaderRule::Field { field: who.name }
                         };

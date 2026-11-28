@@ -2593,6 +2593,230 @@ mod tests {
         );
     }
 
+    /// The app's kind of a private window: a page that stays on the device it was opened on
+    /// (`author here`).
+    const HERE_SURFACE: &str = "{\"format\":2,\"resources\":[{\"fields\":[{\"path\":\"url\",\"type\":\"text\"}],\"kind\":\"tl.so.tilo.tube.Private\",\"label\":\"Private page\",\"readers\":{\"author\":{\"here\":true}},\"verbs\":[{\"id\":\"open\",\"kind\":\"undoable\"}],\"version\":1}]}";
+    const PRIVATE: &str = "tl.so.tilo.tube.Private";
+    const SECRET_URL: &str = "https://example.org/what-a-private-window-read";
+
+    /// The app's process opens `id` of `kind` at `url` for `person`.
+    fn opened(kind: &str, id: &str, url: &str, person: &str) -> Command {
+        Command::Put {
+            kind: kind.to_owned(),
+            id: id.to_owned(),
+            resource: collab_types::store::Resource {
+                fields: std::collections::BTreeMap::from([(
+                    "url".to_owned(),
+                    collab_types::store::Cell::One(collab_types::store::Value::from(url)),
+                )]),
+                ..collab_types::store::Resource::default()
+            },
+            stamp: Stamp {
+                verb: "open".to_owned(),
+                ..app_for(APP, person)
+            },
+        }
+    }
+
+    /// Whether the store of `workspace` holds `id` of `kind`, and the document it is in.
+    async fn held_in(
+        workspaces: &Workspaces,
+        workspace: &str,
+        kind: &str,
+        id: &str,
+    ) -> Option<String> {
+        let state = workspaces.workspace(workspace).await.unwrap();
+        let doc = state
+            .lock()
+            .await
+            .resources
+            .store_mut()
+            .index()
+            .get(kind, id)
+            .map(|held| held.doc.clone());
+        drop(state);
+        doc
+    }
+
+    /// What `workspace` answers a peer that offers it `doc` back, as the device holds it.
+    async fn offered_back(
+        workspaces: &Workspaces,
+        workspace: &str,
+        doc: &str,
+    ) -> Result<Vec<(automerge::ChangeHash, tilo_resource_store::Refusal)>, String> {
+        let state = workspaces.workspace(workspace).await.unwrap();
+        let mut hosted = state.lock().await;
+        let readers = hosted.resources.readers(doc).expect("its readers");
+        let change = hosted
+            .resources
+            .store_mut()
+            .document(doc)
+            .and_then(|held| {
+                held.get_changes(&[])
+                    .first()
+                    .map(|change| (*change).clone())
+            })
+            .expect("the document holds its change");
+        let offered = hosted.resources.receive(
+            doc,
+            &readers,
+            vec![tilo_resource_store::Received {
+                change,
+                author: [9; 32],
+                claimed: None,
+            }],
+            &|_: &tilo_resource_store::Proposal<'_>| true,
+        );
+        drop(hosted);
+        offered
+    }
+
+    /// Every file under `dir`, read whole.
+    fn files_under(dir: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+        let mut files = Vec::new();
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                files.extend(files_under(&path));
+            } else if let Ok(bytes) = std::fs::read(&path) {
+                files.push((path, bytes));
+            }
+        }
+        files
+    }
+
+    /// Whether any file under `dir` holds `needle`, or keeps a document that stays on its device.
+    fn kept_on_disk(dir: &std::path::Path, needle: &[u8]) -> Vec<std::path::PathBuf> {
+        files_under(dir)
+            .into_iter()
+            .filter(|(path, bytes)| {
+                bytes.windows(needle.len()).any(|window| window == needle)
+                    || path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .and_then(super::super::doc_of)
+                        .is_some_and(|doc| collab_types::stays_on_device(&doc))
+            })
+            .map(|(path, _)| path)
+            .collect()
+    }
+
+    /// A private window's page stays on the device it was opened on: it is held in memory, read
+    /// back while the device runs, and never written to disk, put in the replica the workspace's
+    /// other devices are served from, or taken from a peer that offers it. The device is killed
+    /// with the page open and starts again: nothing of it is left, while a note written beside
+    /// it is still there.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_private_page_stays_on_its_device_and_nothing_of_it_survives_a_kill() {
+        let dir = tempfile::tempdir().unwrap();
+        let (host, workspace, device) = kitchen_kept(dir.path()).await;
+        let workspaces = host.workspaces().clone();
+        crate::workspaces::keep_surface(
+            &workspaces.inner.host.surfaces,
+            APP,
+            HERE_SURFACE.as_bytes(),
+        )
+        .unwrap();
+        let person = caller_of(&workspaces, &workspace)
+            .acting()
+            .person_id()
+            .expect("the route is a person's")
+            .to_owned();
+        crate::workspaces::fixtures::install_app(&workspaces, &workspace, APP)
+            .await
+            .expect("the person installs the app");
+        let me = caller_of(&workspaces, &workspace).acting().by.clone();
+        let _plan = note(&workspaces, &workspace, "plan", "Plan", &me).await;
+        let state = workspaces.workspace(&workspace).await.unwrap();
+        let workspace_id = state.lock().await.workspace_id();
+        let served_before = host
+            .workspace_documents()
+            .retained(workspace_id)
+            .await
+            .unwrap()
+            .len();
+
+        let written = write_as_app_process(
+            &workspaces,
+            &workspace,
+            APP,
+            opened(PRIVATE, "page-1", SECRET_URL, &person),
+        )
+        .await;
+        assert!(matches!(written, Ok(Reply::Written)), "{written:?}");
+        let doc = held_in(&workspaces, &workspace, PRIVATE, "page-1")
+            .await
+            .expect("the device holds the private page while it runs");
+        assert!(collab_types::stays_on_device(&doc), "{doc}");
+        let read = write_as_app_process(
+            &workspaces,
+            &workspace,
+            APP,
+            Command::Get {
+                kind: PRIVATE.to_owned(),
+                id: "page-1".to_owned(),
+            },
+        )
+        .await;
+        assert!(
+            matches!(read, Ok(Reply::Resource(Some(_)))),
+            "its person reads it here: {read:?}"
+        );
+
+        // Nothing of it went where another device or a peer reads: what the workspace serves,
+        // the disk.
+        let served = host
+            .workspace_documents()
+            .retained(workspace_id)
+            .await
+            .unwrap()
+            .len();
+        assert_eq!(
+            served, served_before,
+            "nothing of it is served to the workspace's other devices"
+        );
+        assert_eq!(
+            kept_on_disk(dir.path(), SECRET_URL.as_bytes()),
+            Vec::<std::path::PathBuf>::new()
+        );
+
+        // A peer that offers the document is refused.
+        let offered = offered_back(&workspaces, &workspace, &doc).await;
+        assert!(
+            offered
+                .as_ref()
+                .is_err_and(|error| error.contains("stays on the device")),
+            "{offered:?}"
+        );
+
+        // The device is killed with the page open: no stop, nothing saved on the way out.
+        drop(state);
+        drop(workspaces);
+        drop(host);
+        let host = started(dir.path(), &device).await;
+        let workspaces = host.workspaces();
+        crate::workspaces::keep_surface(
+            &workspaces.inner.host.surfaces,
+            APP,
+            HERE_SURFACE.as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(
+            held_in(workspaces, &workspace, PRIVATE, "page-1").await,
+            None,
+            "nothing of the private page is left after the device starts again"
+        );
+        assert_eq!(
+            title_in(workspaces, &workspace, "plan").await.as_deref(),
+            Some("Plan"),
+            "the note written beside it is"
+        );
+        assert_eq!(
+            kept_on_disk(dir.path(), SECRET_URL.as_bytes()),
+            Vec::<std::path::PathBuf>::new()
+        );
+    }
+
     /// A holder that lacks an app's surface refuses its writes; a surface that arrives, declared,
     /// lets a write of that app through — no registry is asked.
     #[tokio::test(flavor = "current_thread")]

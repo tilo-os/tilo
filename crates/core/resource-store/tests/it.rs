@@ -4857,6 +4857,7 @@ mod store {
                 DRAFT.to_owned(),
                 ReaderRule::Author {
                     until: Some("sent".to_owned()),
+                    here: false,
                 },
             )]),
             ..Schema::default()
@@ -5613,7 +5614,13 @@ mod outside_effects {
                     .collect(),
                 ..Verb::default()
             }],
-            readers: BTreeMap::from([(EFFECT.to_owned(), ReaderRule::Author { until: None })]),
+            readers: BTreeMap::from([(
+                EFFECT.to_owned(),
+                ReaderRule::Author {
+                    until: None,
+                    here: false,
+                },
+            )]),
             owners: BTreeMap::new(),
         }
     }
@@ -5780,6 +5787,7 @@ mod outside_effects {
                 "Ruled".to_owned(),
                 ReaderRule::Author {
                     until: Some("ready".to_owned()),
+                    here: false,
                 },
             )]),
             owners: BTreeMap::new(),

@@ -997,8 +997,10 @@ impl Resolver<'_> {
         for t in decls {
             let Some(readers) = &t.readers else { continue };
             let (field, wanted, ty) = match &readers.rule {
-                ReaderRule::Author { until: None } | ReaderRule::AuthorAnd { .. } => continue,
-                ReaderRule::Author { until: Some(field) } => (field, "a `Bool`", Ty::Bool),
+                ReaderRule::Author { until: None, .. } | ReaderRule::AuthorAnd { .. } => continue,
+                ReaderRule::Author {
+                    until: Some(field), ..
+                } => (field, "a `Bool`", Ty::Bool),
                 ReaderRule::Field { field } => {
                     (field, "a `Set<Actor>`", Ty::Set(Box::new(Ty::Actor)))
                 }

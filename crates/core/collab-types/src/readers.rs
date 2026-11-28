@@ -9,6 +9,11 @@
 //! any other set's is a group of its own ([`reader_group`]) whose keys only its readers' devices
 //! hold.
 //!
+//! A set may instead stay on one device (`@device:<person>`, [`Readers::Device`]): the person
+//! who made its records reads them on the device that made them, and nowhere else. It has no key
+//! group, so nothing seals it, and a document of it ([`stays_on_device`]) is never written to
+//! disk, sent to another device or taken from one.
+//!
 //! Content is sealed under its group's keys scoped to the document it belongs to
 //! ([`content_artifact_id`]): the same key never opens another document's content, nor the
 //! content of the same document id under other readers or in another workspace.
@@ -26,6 +31,12 @@ pub const EVERY_MEMBER: &str = "*";
 /// What begins a reader set read by the holders of a role: `@role:<role>`, then its people.
 pub const ROLE_READERS: &str = "@role:";
 
+/// What begins a reader set that stays on the device it was written on: `@device:<person>`.
+pub const DEVICE_READERS: &str = "@device:";
+
+/// What begins the name a document id gives a set that stays on its device ([`reader_set_name`]).
+const DEVICE_NAME: char = '@';
+
 const CONTENT_ARTIFACT_DOMAIN: &[u8] = b"tilo-content-artifact-v1\0";
 const READER_GROUP_DOMAIN: &[u8] = b"tilo-reader-group-v1\0";
 
@@ -42,6 +53,9 @@ pub enum Readers {
         role: Role,
         people: BTreeSet<[u8; 32]>,
     },
+    /// This person, on the device the record was written on, and no other device of theirs or
+    /// anyone's.
+    Device([u8; 32]),
 }
 
 /// Who a reader set other than every member's names: its people, and the role whose holders
@@ -74,6 +88,14 @@ impl Readers {
     pub fn parse(text: &str) -> Option<Self> {
         if text == EVERY_MEMBER {
             return Some(Self::EveryMember);
+        }
+        if let Some(person) = text.strip_prefix(DEVICE_READERS) {
+            return match Self::parse_people(person)? {
+                Self::People(people) if people.len() == 1 => {
+                    people.into_iter().next().map(Self::Device)
+                }
+                _ => None,
+            };
         }
         if let Some(rest) = text.strip_prefix(ROLE_READERS) {
             let (key, people) = rest.split_once(',').unwrap_or((rest, ""));
@@ -135,6 +157,7 @@ impl Readers {
         match self {
             Self::EveryMember => EVERY_MEMBER.to_owned(),
             Self::People(named) => people(named),
+            Self::Device(person) => format!("{DEVICE_READERS}{}", hex::encode(person)),
             Self::Role {
                 role,
                 people: named,
@@ -163,16 +186,22 @@ impl Readers {
                 role: Some(*role),
                 people: people.clone(),
             }),
+            Self::Device(person) => Some(NamedReaders {
+                role: None,
+                people: BTreeSet::from([*person]),
+            }),
         }
     }
 }
 
 /// The key group of `readers` in `workspace`: the workspace's own group for every member, else
-/// a group of that set's alone, the same on every device. `None` when `readers` names no set.
+/// a group of that set's alone, the same on every device. `None` when `readers` names no set, or
+/// one that stays on its device, which no key seals.
 #[must_use]
 pub fn reader_group(workspace: WorkspaceId, readers: &str) -> Option<WorkspaceId> {
     match Readers::parse(readers)? {
         Readers::EveryMember => Some(workspace),
+        Readers::Device(_) => None,
         Readers::People(_) | Readers::Role { .. } => Some(WorkspaceId::from_uuid(derived_uuid(
             READER_GROUP_DOMAIN,
             &[&workspace.to_string(), readers],
@@ -181,14 +210,28 @@ pub fn reader_group(workspace: WorkspaceId, readers: &str) -> Option<WorkspaceId
 }
 
 /// The name a document id gives the reader set `readers`: [`EVERY_MEMBER`] as itself, any other
-/// set as the first 16 hex digits of its BLAKE3 digest, so a long list of people is in no id.
+/// set as the first 16 hex digits of its BLAKE3 digest, so a long list of people is in no id. A
+/// set that stays on its device is named so too, after `@`, so its documents say so by their id.
 #[must_use]
 pub fn reader_set_name(readers: &str) -> String {
     if readers == EVERY_MEMBER {
         return readers.to_owned();
     }
     let digest = blake3::hash(readers.as_bytes()).to_hex();
-    digest.as_str().get(..16).unwrap_or_default().to_owned()
+    let digest = digest.as_str().get(..16).unwrap_or_default();
+    if readers.starts_with(DEVICE_READERS) {
+        format!("{DEVICE_NAME}{digest}")
+    } else {
+        digest.to_owned()
+    }
+}
+
+/// Whether `document` is a store document of a reader set that stays on its device
+/// ([`Readers::Device`]): never written to disk, sealed, sent to another device or taken from
+/// one.
+#[must_use]
+pub fn stays_on_device(document: &str) -> bool {
+    store_document_readers(document).is_some_and(|name| name.starts_with(DEVICE_NAME))
 }
 
 /// The reader set's name a document of a workspace's resource store carries in its id
@@ -197,8 +240,9 @@ pub fn reader_set_name(readers: &str) -> String {
 #[must_use]
 pub fn store_document_readers(document: &str) -> Option<&str> {
     let (readers, rest) = document.split_once('/')?;
+    let digest = readers.strip_prefix(DEVICE_NAME).unwrap_or(readers);
     let named = readers == EVERY_MEMBER
-        || (readers.len() == 16 && readers.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        || (digest.len() == 16 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()));
     let numbered = rest.rsplit_once(['#', '~']).is_some_and(|(_, number)| {
         !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
     });
@@ -253,6 +297,26 @@ pub fn app_document_id(app: &str, document: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A set that stays on its device names its documents so, and has no key group to seal them
+    /// for another device with.
+    #[test]
+    fn a_set_that_stays_on_its_device_has_no_key_group_and_says_so_in_its_documents() {
+        let person = [7_u8; 32];
+        let text = Readers::Device(person).text();
+        assert_eq!(Readers::parse(&text), Some(Readers::Device(person)));
+        assert_eq!(
+            reader_group(WorkspaceId::from_uuid(uuid::Uuid::nil()), &text),
+            None
+        );
+        let document = format!("{}/browser.Page#0", reader_set_name(&text));
+        assert!(stays_on_device(&document), "{document}");
+        assert!(is_store_document(&document));
+        let shared = format!("{}/browser.Page#0", reader_set_name(&hex::encode(person)));
+        assert!(!stays_on_device(&shared));
+        assert!(!stays_on_device("*/browser.Page#0"));
+        assert_eq!(Readers::parse("@device:ab"), None);
+    }
 
     #[test]
     fn a_store_document_is_told_from_an_apps_own_document_by_its_name() {

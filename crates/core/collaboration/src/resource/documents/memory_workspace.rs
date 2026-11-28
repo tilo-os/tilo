@@ -86,7 +86,11 @@ impl MemoryWorkspace {
         // Only the author's own record is derived here: a rule that opens with a field (until)
         // or names a role keeps its readers with the workspace's governance, which this store
         // does not hold.
-        let ReaderRule::Author { until: None } = rule else {
+        let ReaderRule::Author {
+            until: None,
+            here: false,
+        } = rule
+        else {
             return None;
         };
         let made = automerge::Automerge::parse_changes(changes).ok()?;

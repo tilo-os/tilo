@@ -411,7 +411,7 @@ impl Core {
             // `(readers: author)`: whoever made the record reads it; once the field `until`
             // names holds, it names no readers of its own and whoever reads its document reads
             // it, as the store hands it to the workspace's readers.
-            ReaderRule::Author { until } => {
+            ReaderRule::Author { until, .. } => {
                 if let Some(until) = until {
                     let field = info.field_by_id_or_name(&until)?.clone();
                     if let Some(vs) = self.frames.borrow_mut().view_mut() {

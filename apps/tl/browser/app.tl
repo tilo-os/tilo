@@ -129,16 +129,17 @@ type Address (title: label) {
 
 /// A page open in a window: its address, what it is called, and what was done in it, newest
 /// last. The page itself lives in the engine on this device; what every member of the workspace
-/// reads of it is this. A private window's page is its author's alone, and goes when its window
-/// closes.
-type Page (title: title, readers: author until shared) {
+/// reads of it is this. A private window's page stays on the device it was opened on, its
+/// author's alone, and goes when its window closes or the device stops.
+type Page (title: title, readers: author here until shared) {
     url: Text
     title: Text
     /// History is paused in this page's window: pages opened there are not added to the person's
     /// history.
     paused: Bool = false
-    /// Every member of the workspace reads the page. A private window's page is not shared: no
-    /// other member or their agents read it, its engine runs on a profile of its own, which holds
+    /// Every member of the workspace reads the page. A private window's page is not shared: it
+    /// stays on this device, never written to disk or sent anywhere, so no other member, agent
+    /// or device of the person reads it. Its engine runs on a profile of its own, which holds
     /// nothing the person signed in to, is not offered their saved logins, and goes when the
     /// window closes, as the page does. Nothing it opens joins the person's history.
     shared: Bool = true

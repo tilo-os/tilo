@@ -55,7 +55,10 @@ pub fn person_view() -> Surface {
     declaring(
         crate::person_view::PERSON_VIEW_KIND,
         "View",
-        Some(ReaderRule::Author { until: None }),
+        Some(ReaderRule::Author {
+            until: None,
+            here: false,
+        }),
         [],
         true,
     )
@@ -67,7 +70,10 @@ pub fn window_view() -> Surface {
     declaring(
         WINDOW_VIEW_KIND,
         "Window view",
-        Some(ReaderRule::Author { until: None }),
+        Some(ReaderRule::Author {
+            until: None,
+            here: false,
+        }),
         [],
         false,
     )

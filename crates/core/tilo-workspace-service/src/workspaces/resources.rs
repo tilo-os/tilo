@@ -498,6 +498,25 @@ impl Resources {
         Ok(refused)
     }
 
+    /// Keeps this device's own `writes` of documents that stay on it, by `author`: in memory
+    /// alone, never in the store's files, so a start finds nothing of them
+    /// ([`tilo_resource_store::Store::keep_here`]). Open queries see them as any write.
+    ///
+    /// # Errors
+    /// The store refuses one.
+    pub(super) fn keep_here(
+        &mut self,
+        writes: &[tilo_resource_store::Written],
+        author: [u8; 32],
+    ) -> Result<(), String> {
+        self.store_mut()
+            .keep_here(writes, author)
+            .map_err(|error| error.to_string())?;
+        self.tell_opened();
+        self.publish_live();
+        Ok(())
+    }
+
     /// Whether a change to the apps the workspace runs was taken in since this was last asked.
     pub(super) fn take_apps_moved(&mut self) -> bool {
         std::mem::take(&mut self.apps_moved)
@@ -2805,6 +2824,17 @@ impl Workspaces {
                 &OriginAdmission { origin: &origin },
             )
             .map_err(|refusal| format!("the resource change was refused: {refusal:?}"))?;
+        // A write of a document that stays on this device is kept here alone: never sealed,
+        // retained, written to disk or carried to another device.
+        let (here, writes): (Vec<_>, Vec<_>) = writes
+            .into_iter()
+            .partition(|write| collab_types::stays_on_device(&write.doc));
+        if !here.is_empty() {
+            hosted.resources.keep_here(&here, device.device())?;
+            if writes.is_empty() {
+                return Ok(collab_types::store::wire::Reply::Written);
+            }
+        }
         // The store takes these writes as they are kept, unless the action has others to come.
         let whole = action.is_none();
         let action = action.or_else(|| action_of(&hosted, &device, &app, &writes));

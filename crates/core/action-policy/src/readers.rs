@@ -15,9 +15,15 @@ pub enum ReaderRule {
     /// `author`, `author until sent`: the person who made the record, on each of their devices;
     /// every member once the `Bool` field `until` names holds, which it never stops holding (a
     /// draft until it is sent).
+    ///
+    /// `author here` (`here`): the person who made the record, on the device it was made on and
+    /// no other. Its document is never written to disk, sealed or sent, so it is gone when that
+    /// device's store stops, and with its last record (a private window's page).
     Author {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         until: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        here: bool,
     },
     /// A field's name: the people its `Set<Actor>` names.
     Field { field: String },
@@ -37,11 +43,18 @@ impl ReaderRule {
         let field = |word: &str| {
             !word.is_empty() && word.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
         };
-        match words.split_whitespace().collect::<Vec<_>>().as_slice() {
-            ["author"] => Some(Self::Author { until: None }),
+        let words: Vec<&str> = words.split_whitespace().collect();
+        let (here, words) = match words.as_slice() {
+            ["author", "here", rest @ ..] => (true, [&["author"][..], rest].concat()),
+            _ => (false, words),
+        };
+        match words.as_slice() {
+            ["author"] => Some(Self::Author { until: None, here }),
             ["author", "until", until] if field(until) => Some(Self::Author {
                 until: Some((*until).to_owned()),
+                here,
             }),
+            _ if here => None,
             ["author", "and", role] => {
                 crate::Role::parse(role).map(|role| Self::AuthorAnd { role })
             }
@@ -57,8 +70,13 @@ impl std::fmt::Display for ReaderRule {
     /// The rule as a type's options write it.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Author { until: None } => f.write_str("author"),
-            Self::Author { until: Some(field) } => write!(f, "author until {field}"),
+            Self::Author { until, here } => {
+                f.write_str(if *here { "author here" } else { "author" })?;
+                match until {
+                    Some(field) => write!(f, " until {field}"),
+                    None => Ok(()),
+                }
+            }
             Self::Field { field } => f.write_str(field),
             Self::AuthorAnd { role } => write!(f, "author and {}", role.key()),
         }

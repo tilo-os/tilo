@@ -316,7 +316,11 @@ impl LocalPort {
         let Some(dir) = &self.dir else {
             return Ok(());
         };
-        for write in written {
+        // A document that stays on this device is held in memory alone.
+        for write in written
+            .iter()
+            .filter(|write| !collab_types::stays_on_device(&write.doc))
+        {
             let path = dir.join(format!("{}.changes", escape(&write.doc)));
             let mut file = std::fs::OpenOptions::new()
                 .create(true)

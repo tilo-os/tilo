@@ -108,7 +108,10 @@ pub fn readers() -> tilo_resource_store::Schema {
     tilo_resource_store::Schema {
         readers: std::iter::once((
             KIND.to_owned(),
-            tilo_actions::surface::ReaderRule::Author { until: None },
+            tilo_actions::surface::ReaderRule::Author {
+                until: None,
+                here: false,
+            },
         ))
         .collect(),
         ..tilo_resource_store::Schema::default()

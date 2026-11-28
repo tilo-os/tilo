@@ -15,7 +15,9 @@ pub enum KeyScope {
 }
 
 impl KeyScope {
-    /// The document's group, bound to its declared reader set when it names one.
+    /// The document's group, bound to its declared reader set when it names one. A document
+    /// that stays on its device ([`collab_types::stays_on_device`]) has none: no key is ever
+    /// handed out for it, so nothing of it is sealed for another device.
     #[must_use]
     pub fn document(
         workspace: WorkspaceId,
@@ -23,6 +25,11 @@ impl KeyScope {
         document: &str,
         readers: Option<&str>,
     ) -> Option<Self> {
+        if collab_types::stays_on_device(document)
+            || readers.is_some_and(|readers| readers.starts_with(collab_types::DEVICE_READERS))
+        {
+            return None;
+        }
         let named = collab_types::store_document_readers(document)
             .filter(|name| *name != collab_types::EVERY_MEMBER);
         match (named, readers) {
@@ -151,6 +158,30 @@ impl std::fmt::Display for KeyScope {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A document that stays on its device has no key group: no scope is made for it, from its
+    /// id or from a scope another device names on the wire.
+    #[test]
+    fn a_document_that_stays_on_its_device_has_no_key_scope() {
+        let workspace = WorkspaceId::from_u128(1);
+        let readers = collab_types::Readers::Device([7; 32]).text();
+        let document = format!("{}/browser.Page#0", collab_types::reader_set_name(&readers));
+        assert_eq!(
+            KeyScope::document(workspace, "so.tilo.browser", &document, Some(&readers)),
+            None
+        );
+        assert_eq!(
+            KeyScope::document(workspace, "so.tilo.browser", &document, None),
+            None
+        );
+        let named = KeyScope::Document {
+            workspace,
+            app: "so.tilo.browser".to_owned(),
+            document,
+            readers: Some(readers),
+        };
+        assert_eq!(KeyScope::parse(&named.to_string()), None);
+    }
 
     #[test]
     fn a_document_has_a_stable_group_distinct_from_the_workspace_and_other_documents() {

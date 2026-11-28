@@ -916,7 +916,10 @@ pub fn personal_surface() -> Surface {
         label: "Your place in the app".to_owned(),
         version: VERSION,
         person: false,
-        readers: Some(ReaderRule::Author { until: None }),
+        readers: Some(ReaderRule::Author {
+            until: None,
+            here: false,
+        }),
         verbs,
         fields: Vec::new(),
         types: Vec::new(),
@@ -995,7 +998,10 @@ pub fn queued_effect_surface() -> Surface {
         label: "A queued effect".to_owned(),
         version: VERSION,
         person: false,
-        readers: Some(ReaderRule::Author { until: None }),
+        readers: Some(ReaderRule::Author {
+            until: None,
+            here: false,
+        }),
         // The device that owns an entry marks it going (`$send`), says why it waits (`$wait`),
         // and says how it went (`$settle`): the platform's writes, which no app declares.
         verbs: vec![

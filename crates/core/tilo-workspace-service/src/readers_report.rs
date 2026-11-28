@@ -230,6 +230,7 @@ mod tests {
                     DRAFT.to_owned(),
                     ReaderRule::Author {
                         until: Some("sent".to_owned()),
+                        here: false,
                     },
                 )]),
                 ..Schema::default()

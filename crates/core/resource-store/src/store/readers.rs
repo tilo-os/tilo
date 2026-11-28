@@ -155,7 +155,12 @@ impl Store {
                         )));
                     }
                     let held = self.index.get(kind, id);
-                    if let (ReaderRule::Author { until: Some(until) }, Some(held)) = (rule, held)
+                    if let (
+                        ReaderRule::Author {
+                            until: Some(until), ..
+                        },
+                        Some(held),
+                    ) = (rule, held)
                         && holds(&held.fields, until)
                         && !holds(&resource.fields, until)
                     {
@@ -292,7 +297,9 @@ impl Store {
         writes: &[(String, String, Option<automerge::ScalarValue>)],
     ) -> bool {
         match self.rules.get(kind) {
-            Some(ReaderRule::Author { until: Some(until) }) => {
+            Some(ReaderRule::Author {
+                until: Some(until), ..
+            }) => {
                 let written = writes
                     .iter()
                     .find(|(written, field, _)| written == id && field == until)
@@ -428,15 +435,18 @@ fn readers_by_rule(
                 role.key()
             ));
         }
-        ReaderRule::Author { until } => {
+        ReaderRule::Author { until, here } => {
             if until.as_deref().is_some_and(|until| holds(fields, until)) {
                 return Ok(collab_types::EVERY_MEMBER.to_owned());
             }
-            vec![
-                author
-                    .person()
-                    .ok_or("only its author reads it, and no person made it")?,
-            ]
+            let person = author
+                .person()
+                .ok_or("only its author reads it, and no person made it")?;
+            // `author here`: theirs on this device, in a document that never leaves it.
+            if *here {
+                return Ok(format!("{}{person}", collab_types::DEVICE_READERS));
+            }
+            vec![person]
         }
         ReaderRule::Field { field } => match fields.get(field) {
             Some(Cell::Set(members)) => members

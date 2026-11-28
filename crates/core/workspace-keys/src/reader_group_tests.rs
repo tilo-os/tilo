@@ -102,6 +102,20 @@ fn every_member_reads_under_the_workspaces_own_group() {
     assert_eq!(ada.service.reader_group(workspace_id, "not a set"), None);
 }
 
+/// A set that stays on its device has no group: no key of it is made, kept, wrapped to another
+/// device or asked for, and nothing a device keeps names it after a restart.
+#[test]
+fn a_set_that_stays_on_its_device_has_no_group_and_nothing_of_it_is_kept() {
+    let workspace_id = WorkspaceId::new();
+    let policy = people_policy([1]);
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = Arc::new(Workspace::default());
+    let mut ada = device(&workspace, workspace_id, 0, 1, &policy, dir.path());
+    let here = collab_types::Readers::Device([1; 32]).text();
+    assert_eq!(ada.service.reader_group(workspace_id, &here), None);
+    assert!(ada.service.reader_groups_of(workspace_id).is_empty());
+}
+
 #[test]
 fn only_the_readers_devices_hold_their_groups_keys_and_one_that_leaves_reads_nothing_after() {
     let workspace = Arc::new(Workspace::default());

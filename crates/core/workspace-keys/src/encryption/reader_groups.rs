@@ -54,6 +54,10 @@ impl Directory {
     /// The group of `readers` in `workspace`, known here from now on. `None` when `readers`
     /// names no set.
     pub(super) fn group(&mut self, workspace: WorkspaceId, readers: &str) -> Option<WorkspaceId> {
+        // A set that stays on its device has no group: nothing of it is sealed, kept or asked.
+        if matches!(Readers::parse(readers), Some(Readers::Device(_))) {
+            return None;
+        }
         let group = collab_types::reader_group(workspace, readers)?;
         if let Some(named) = Readers::parse(readers).and_then(|set| set.named()) {
             self.groups.entry(group).or_insert_with(|| ReaderGroup {
@@ -118,6 +122,9 @@ impl Directory {
     }
 
     pub(super) fn named_readers(&self, workspace: WorkspaceId, document: &str) -> Option<String> {
+        if collab_types::stays_on_device(document) {
+            return None;
+        }
         let name = collab_types::store_document_readers(document)?;
         let candidates: BTreeSet<_> = self
             .groups

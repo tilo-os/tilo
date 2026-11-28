@@ -111,7 +111,10 @@ draft whose first field is the address it goes from is called by its subject. Ev
 reads a type's resources unless it says who does: `(readers: author)` makes each one its author's
 alone, sealed to the keys of their devices, so no other member lists, finds, counts or opens it;
 `until sent` hands it to every member once its `Bool` field `sent` holds, for good (setting it
-back is refused); `(readers: guests)` seals it to the people a `Set<Actor>` field names, and a
+back is refused); `(readers: author here)` keeps it on the device it was written on as well:
+it is held in that device's memory alone, never written to disk, sealed or sent, so the person's
+other devices and every peer have none of it (a peer that offers one is refused), and a device
+that stops, however it stops, starts again without it; `(readers: guests)` seals it to the people a `Set<Actor>` field names, and a
 change of them moves it to the new ones. A root type whose record is read by every member but
 must never be opened by the workspace's own keys says `(sealed: true)`: its record has keys of its
 own from its first write, which go only to the devices of members its rules let read it, so one a
@@ -426,8 +429,9 @@ invokes it by name; no surface offers it.
 
 What closing a window of a resource does is a `closed action`, under the same rules: the platform
 runs it as the window closes, for each resource the window showed, as the person whose window it
-was. A record that must not outlive its window goes there; with `readers: author`, nobody else
-ever held it:
+was. A record that must not outlive its window goes there; with `readers: author here`, nobody
+else and no other device ever held it, and its versions go with it, so a window closed leaves
+nothing of the page behind, and a device killed with the window open leaves nothing either:
 
 ```
 /// A private window closed: its page goes with it.
