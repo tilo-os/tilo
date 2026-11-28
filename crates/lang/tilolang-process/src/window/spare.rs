@@ -13,6 +13,9 @@
 //!
 //! What the compositor shows of the process's windows is what the session bound its connection
 //! to, never what the process says it is.
+//!
+//! Where no Tilo session runs (a person's own desktop, GNOME), the device's daemon starts and
+//! binds the spare the same way, on the person's Wayland display, with no shell beside it.
 
 use std::os::fd::IntoRawFd as _;
 use std::os::unix::fs::FileExt as _;
@@ -86,6 +89,11 @@ pub fn run() -> std::process::ExitCode {
     if let Err(error) = super::bind(bound) {
         eprintln!("tilolang: {error}");
         return std::process::ExitCode::from(2);
+    }
+    // A window bound with no shell beside it is one the daemon opened on a desktop that is not
+    // Tilo's: no compositor of ours says when its first frame was shown, so it says so itself.
+    if shell_ui.is_none() {
+        tilo_startup_metrics::presents_itself(&app);
     }
     ui::window_link::adopt(link, window, shell_ui);
     ui::launch::run_or_exit(&super::launch_spec());

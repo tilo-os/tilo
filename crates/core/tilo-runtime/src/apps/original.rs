@@ -4,6 +4,8 @@ use app_catalogue::apps::InstalledApp;
 
 pub(super) struct OriginalLaunch {
     pub(super) package_hash: String,
+    /// The installed package itself, whose signed record a window's files are read through.
+    pub(super) installed: package_store::registry::InstalledPackage,
 }
 
 impl Apps {
@@ -47,7 +49,8 @@ impl Apps {
             return Err(refuse("package identity changed".to_owned()));
         }
         Ok(OriginalLaunch {
-            package_hash: installed.package_id_hex,
+            package_hash: installed.package_id_hex.clone(),
+            installed,
         })
     }
 }

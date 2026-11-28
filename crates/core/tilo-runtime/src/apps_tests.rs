@@ -726,24 +726,35 @@ tilo_test_env::scenario! {
     }
 }
 
-// On Linux a tilolang app's window is a session's spare window process, bound to the app: the
-// daemon starts no window process of its own for one, and a launch that would is refused before
-// the launcher runs.
+// With no Tilo session, the daemon opens a tilolang app's window itself: the spare window process a
+// session starts, connected to the person's Wayland display and bound over its link to the app and
+// the instance its tilolang process runs, as a session binds one.
 #[cfg(target_os = "linux")]
 tilo_test_env::scenario! {
-    fn a_linux_daemon_starts_no_window_process_for_a_tilolang_app;
+    fn a_linux_daemon_opens_a_tilolang_apps_window_with_no_session;
 
-    phase the_window_launch_is_refused_and_nothing_runs;
+    phase the_spare_window_starts_on_the_display_bound_to_the_instance;
     {
+        use runtime_portal::process_link::{Packet as _, ToProcess};
+        use std::os::unix::fs::FileExt as _;
         let (_temp, root) = canonical_temp();
         let mut store = Store::new(&root);
+        let surface = b"{\"surface\":1}";
         store.install(
             VIEWER,
-            &manifest(VIEWER, "gui", "runtime = \"tilolang/1.0.0\"\n"),
-            &[("probe", b"binary")],
+            &manifest(VIEWER, "gui", "runtime = \"tilolang/1.0.0\"\n").replace(
+                "kind = \"app\"\n",
+                "kind = \"app\"\nruntime = \"tilo-runtime/2026.1\"\n",
+            ),
+            &[
+                ("probe", b"binary"),
+                ("app.wasm", b"module"),
+                ("surface.json", surface),
+            ],
         );
+        // The person's display: a compositor stand-in that takes the window's connection.
         let display = root.join("wayland-0");
-        std::fs::write(&display, b"").unwrap();
+        let compositor = std::os::unix::net::UnixListener::bind(&display).unwrap();
         let mut environment = tilo_test_env::ScopedEnv::new();
         environment.set("WAYLAND_DISPLAY", &display);
         let said = root.join("said");
@@ -755,24 +766,75 @@ tilo_test_env::scenario! {
         let apps = apps(&store, &root, vec![launcher.path().to_owned()]);
         let app = apps.launchable(VIEWER).unwrap();
         let original = apps.original_launch(&app).unwrap();
-        let sockets = apps.sockets.clone();
-        let refused = linux::launch(
+        let manifest = launcher::manifest::read_manifest(&app.manifest_path).unwrap();
+        let (window_end, _host_end) = runtime_portal::process_link::pair().unwrap();
+        let mut launch = linux::window(
             &apps,
-            &app,
-            WORKSPACE,
-            &sockets,
-            &original,
-            Shows::Window,
-            None,
-            &Runs::default(),
+            (&app, WORKSPACE),
+            (&manifest, &original),
+            instances::HostedWindow {
+                instance: 7,
+                patch: window_end,
+            },
         )
-        .map(drop)
-        .unwrap_err();
-        assert!(refused.contains("spare window"), "{refused}");
-        assert!(
-            !std::path::Path::new(&format!("{}.args", said.display())).exists(),
-            "the launcher never ran"
+        .unwrap();
+
+        let handed = wait_for(&format!("{}.args", said.display()));
+        let handed: Vec<&str> = handed.lines().collect();
+        assert_eq!(
+            handed,
+            [
+                launcher::run::tilolang_window::SUBCOMMAND,
+                "--runtime",
+                "tilolang/1.0.0",
+                "--app-runtime",
+                "tilo-runtime/2026.1",
+                "--workspace-id",
+                WORKSPACE,
+            ],
+            "the launcher starts the spare window, in its own sandbox"
         );
+        compositor
+            .accept()
+            .expect("the window's display connection reached the person's compositor");
+
+        // What the launcher hands the window with its release: its display, its patch connection
+        // and the app it is bound to.
+        let link = launch.window_link.take().expect("the window's link");
+        assert!(matches!(
+            ToProcess::receive(&link),
+            Ok(Some(ToProcess::Display { .. }))
+        ));
+        assert!(matches!(
+            ToProcess::receive(&link),
+            Ok(Some(ToProcess::Patch { instance: 7, .. }))
+        ));
+        let Ok(Some(ToProcess::Bind {
+            binding,
+            module,
+            shell_ui,
+            surface: Some(sent_surface),
+        })) = ToProcess::receive(&link)
+        else {
+            panic!("the window is bound to the app");
+        };
+        assert_eq!(
+            (binding.app.as_str(), binding.workspace.as_str(), binding.window.instance),
+            (VIEWER, WORKSPACE, 7)
+        );
+        assert_eq!(
+            binding.surface_hash.as_deref(),
+            Some(blake3::hash(surface).to_hex().as_str())
+        );
+        assert!(shell_ui.is_none(), "no shell runs beside it");
+        let read = |fd: runtime_portal::process_link::Descriptor, len: usize| {
+            let mut bytes = vec![0; len];
+            std::fs::File::from(fd).read_exact_at(&mut bytes, 0).unwrap();
+            bytes
+        };
+        assert_eq!(read(module, 6), b"module", "its signed module");
+        assert_eq!(read(sent_surface, surface.len()), surface, "its signed surface");
+        launch.kill();
     }
 }
 

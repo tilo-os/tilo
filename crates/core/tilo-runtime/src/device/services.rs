@@ -4412,6 +4412,9 @@ fn shell_services(
     if let Some(processes) = shell_processes(parts.apps, parts.workspaces) {
         parts.shell_links.serve_processes(processes);
     }
+    // While no shell is linked, no Tilo session draws a tilolang app's window: the daemon opens it.
+    #[cfg(target_os = "linux")]
+    parts.apps.see_shells(Arc::clone(parts.shell_links));
     services.shell = Some(Arc::new(super::shell::services(
         parts.workspaces,
         parts.shell_links,

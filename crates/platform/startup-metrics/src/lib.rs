@@ -396,6 +396,31 @@ pub fn launch_first_present(surface_id: u64, frame_seq: u64) {
     );
 }
 
+/// The app whose window this process draws on a desktop that is not Tilo's, where no compositor
+/// of ours says when its first frame was presented: the process says it itself
+/// ([`own_first_present`]).
+static PRESENTS_ITSELF: OnceLock<(String, Instant)> = OnceLock::new();
+
+/// This process's window is `app`'s, on a desktop whose compositor measures no launch: its first
+/// presented frame is said by the process ([`own_first_present`]), timed from now.
+pub fn presents_itself(app: &str) {
+    let _ = PRESENTS_ITSELF.set((app.to_owned(), Instant::now()));
+}
+
+/// The first frame of this process's window was presented: said, as a Tilo compositor says it of
+/// the windows it shows, by a process that [`presents_itself`]; nothing otherwise.
+pub fn own_first_present() {
+    let Some((app, bound)) = PRESENTS_ITSELF.get() else {
+        return;
+    };
+    tracing::info!(
+        target: LAUNCH_LATENCY_TARGET,
+        package_id = %app,
+        bind_to_first_present_us = bound.elapsed().as_micros(),
+        "application first frame presented"
+    );
+}
+
 pub fn launch_window_closed(surface_id: u64) {
     let retired = {
         let mut launches = launch_table();

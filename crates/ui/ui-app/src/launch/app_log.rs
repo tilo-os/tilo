@@ -7,6 +7,8 @@
 /// `tracing_subscriber::fmt::try_init` with `env-filter` is errors only, and a sandbox clears
 /// `RUST_LOG`: a refused settings write, a person record that could not open, an action a control could
 /// not deliver, all logged as warnings, never reached the journal, and a lost write left no trace.
+/// The launch-latency line a window on a desktop that is not Tilo's says of its own first frame
+/// (`tilo_startup_metrics::own_first_present`) is kept as well.
 pub(super) fn init_app_log() {
     let environment = crate::process::environment();
     let prefix = app_log_prefix(
@@ -17,8 +19,12 @@ pub(super) fn init_app_log() {
             .or(environment.identity.app_name.as_deref()),
         environment.identity.continuity_instance.as_deref(),
     );
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        tracing_subscriber::EnvFilter::new(format!(
+            "warn,{}=info",
+            tilo_startup_metrics::LAUNCH_LATENCY_TARGET
+        ))
+    });
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_ansi(false)

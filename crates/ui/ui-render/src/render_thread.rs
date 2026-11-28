@@ -704,6 +704,7 @@ pub fn spawn_render_thread_deferred(
                 if target_valid && !first_present_recorded {
                     first_present_recorded = true;
                     tilo_startup_metrics::mark("first-frame-presented");
+                    tilo_startup_metrics::own_first_present();
                     if let Some(device) = render_cx.devices.get(surface.dev_id) {
                         renderer.start_deferred_pipelines(
                             &device.device,

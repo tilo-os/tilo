@@ -60,7 +60,7 @@ pub(crate) type FindsLauncher = Box<dyn Fn() -> Result<Launcher, String> + Send 
 
 /// A window's instance, started in its app's process: the window takes the window's end of its
 /// patch connection on its link, as the window `instance`.
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 pub(crate) struct HostedWindow {
     pub instance: u64,
     pub patch: Descriptor,
@@ -630,7 +630,7 @@ impl Instances {
     /// # Errors
     /// The device is no one's yet, the app is no tilolang app installed here, or its instance
     /// could not be started.
-    #[cfg(any(target_os = "macos", windows))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     pub(crate) fn open_window(
         &self,
         app: &str,

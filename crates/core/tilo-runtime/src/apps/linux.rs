@@ -34,8 +34,8 @@ pub(super) fn launch(
     open: Option<&str>,
     runs: &super::Runs,
 ) -> Result<Launch, String> {
-    // A tilolang app's window is a session's spare window process, bound to the app's instance;
-    // the daemon starts the app's instance alone (`Apps::start_tilolang_window`).
+    // A tilolang app's instance runs in the app's tilolang process; its window is a spare window
+    // process bound to that instance, as a session's is.
     let manifest = launcher::manifest::read_manifest(&app.manifest_path)
         .map_err(|error| format!("refusing to launch {}: {error}", app.app_id))?;
     if shows == super::Shows::Window
@@ -45,11 +45,8 @@ pub(super) fn launch(
             .as_deref()
             .is_some_and(launcher::manifest::is_tilolang)
     {
-        return Err(format!(
-            "refusing to launch {}: a tilolang app's window on Linux is a session's spare window \
-             process, and its instance runs in the app's tilolang process",
-            app.app_id
-        ));
+        let hosted = apps.hosted_window(&app.app_id, workspace)?;
+        return window(apps, (app, workspace), (&manifest, original), hosted);
     }
     spawn(
         apps,
@@ -136,6 +133,140 @@ fn spawn(
     let mut child = command
         .spawn()
         .map_err(|error| format!("could not start {}: {error}", launcher.display()))?;
+    Ok(Launch {
+        stderr: said_by(&mut child),
+        pid: child.id(),
+        child,
+        registration: Some(registration),
+        origin_reader,
+        joined,
+        _link: None,
+        window_link: None,
+    })
+}
+
+/// Open the window of `app`'s instance `hosted` in `workspace` on the person's own Wayland
+/// display, where no Tilo session draws it: the spare window process a session starts
+/// (`tilo-launcher tilolang-window`, in the same sandbox), handed a connection to the display and
+/// bound over its link to the app and the instance, exactly as a session binds one
+/// (`tilolang_process::window::spare`). The launcher waits at its launch hold until the launch is
+/// recorded, and is handed the link with its release.
+pub(super) fn window(
+    apps: &Apps,
+    (app, workspace): (&InstalledApp, &str),
+    (manifest, original): (
+        &launcher::manifest::ManifestView,
+        &super::original::OriginalLaunch,
+    ),
+    hosted: super::instances::HostedWindow,
+) -> Result<Launch, String> {
+    use runtime_portal::process_link::{Binding, Packet as _, ToProcess, WindowRequest};
+    let refuse = |why: String| format!("refusing to open {}'s window: {why}", app.app_id);
+    let runtime = launcher::manifest::code_runtime(manifest, &app.payload_root)
+        .ok_or_else(|| refuse("it is no tilolang app".to_owned()))?;
+    let app_runtime = manifest
+        .runtime
+        .as_deref()
+        .ok_or_else(|| refuse("it names no Tilo runtime".to_owned()))?;
+    let (module, surface) = window_files(&original.installed).map_err(refuse)?;
+    let display = std::os::unix::net::UnixStream::connect(wayland_socket()?)
+        .map_err(|error| refuse(format!("the Wayland display: {error}")))?;
+    let (ours, theirs) = runtime_portal::process_link::pair()
+        .map_err(|error| refuse(format!("its link: {error}")))?;
+    let (surface, surface_hash) = surface.map_or((None, None), |(fd, hash)| (Some(fd), Some(hash)));
+    [
+        ToProcess::Display {
+            wayland: std::os::fd::OwnedFd::from(display),
+        },
+        ToProcess::Patch {
+            instance: hosted.instance,
+            patch: hosted.patch,
+        },
+        ToProcess::Bind {
+            binding: Box::new(Binding {
+                app: app.app_id.to_string(),
+                workspace: workspace.to_owned(),
+                surface_hash,
+                window: WindowRequest {
+                    instance: hosted.instance,
+                    reveal: None,
+                    open: None,
+                    visitor: false,
+                },
+            }),
+            module,
+            // No shell runs beside it.
+            shell_ui: None,
+            surface,
+        },
+    ]
+    .into_iter()
+    .try_for_each(|packet| packet.send(&ours))
+    .map_err(|error| refuse(format!("its link: {error}")))?;
+    let launcher = resolve_launcher(&apps.launcher_candidates)?;
+    let mut command = Command::new(&launcher);
+    command
+        .arg(launcher::run::tilolang_window::SUBCOMMAND)
+        .args(["--runtime", runtime, "--app-runtime", app_runtime])
+        .arg("--workspace-id")
+        .arg(workspace);
+    if !package_store::dev_env::DEV_ENV_OVERRIDES {
+        for name in launcher::dev_env::DEV_OVERRIDE_VARS {
+            command.env_remove(name);
+        }
+    }
+    let registration = launcher::launch_hold::install(&mut command)
+        .map_err(|error| refuse(format!("the launcher's launch hold: {error}")))?;
+    command.stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("could not start {}: {error}", launcher.display()))?;
+    drop(command);
+    Ok(Launch {
+        stderr: said_by(&mut child),
+        pid: child.id(),
+        child,
+        registration: Some(registration),
+        origin_reader: None,
+        joined: Vec::new(),
+        _link: Some(ours),
+        window_link: Some(theirs),
+    })
+}
+
+/// What a window of `installed` is bound with, read through its signed record as a session reads
+/// it: its compiled module and its `surface.toml` with the file's hash, each in a sealed memfd.
+fn window_files(
+    installed: &package_store::registry::InstalledPackage,
+) -> Result<(std::os::fd::OwnedFd, Option<(std::os::fd::OwnedFd, String)>), String> {
+    let mut files = package_store::integrity::signed_files(
+        installed,
+        &[
+            runtime_portal::process_link::MODULE_FILE,
+            package_store::integrity::SURFACE_FILE,
+        ],
+    )
+    .map_err(|error| format!("its package: {error}"))?
+    .into_iter();
+    let (module, surface) = (files.next().flatten(), files.next().flatten());
+    let module = module.ok_or("its module is not the one its package signed")?;
+    let sealed = |name: &str, bytes: &[u8]| {
+        tilo_render_protocol::shm::sealed_blob(name, bytes)
+            .map_err(|error| format!("its {name}: {error}"))
+    };
+    let surface = match surface {
+        Some(bytes) => Some((
+            sealed("surface", &bytes)?,
+            blake3::hash(&bytes).to_hex().to_string(),
+        )),
+        None => None,
+    };
+    Ok((sealed("module", &module)?, surface))
+}
+
+/// What `child` says on its standard error, kept (bounded) to answer a start that ends as it
+/// starts, and carried on to the daemon's own standard error, its log among them.
+fn said_by(child: &mut std::process::Child) -> std::sync::Arc<std::sync::Mutex<String>> {
     let stderr = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     if let Some(mut pipe) = child.stderr.take() {
         let captured = std::sync::Arc::clone(&stderr);
@@ -162,14 +293,7 @@ fn spawn(
             })
             .ok();
     }
-    Ok(Launch {
-        stderr,
-        pid: child.id(),
-        child,
-        registration: Some(registration),
-        origin_reader,
-        joined,
-    })
+    stderr
 }
 
 /// A capture's instance joins its workspace over the connections made for it: the launch names the

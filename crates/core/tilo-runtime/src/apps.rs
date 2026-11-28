@@ -181,6 +181,10 @@ pub struct Apps {
     retry: Retry,
     /// Who starts a decided launch's process: this daemon, or the seat's shell.
     executor: executor::Executor,
+    /// The person's shell links, once the device serves shells: while one stands, a Tilo session
+    /// draws a tilolang app's window, else this daemon opens it on the person's display.
+    #[cfg(target_os = "linux")]
+    shells: OnceLock<Arc<tilo_app_host::shell::ShellLinks>>,
     /// The launches ordered of the seat's shell that it has not taken yet.
     orders: Arc<executor::SeatOrders>,
     /// Every launch this daemon decided, by ticket: what a connection is admitted as.
@@ -316,6 +320,8 @@ impl Apps {
             device_grants: tilo_peer_state::DeviceGrants::unkept(),
             grants: OnceLock::new(),
             executor: executor::Executor::Local,
+            #[cfg(target_os = "linux")]
+            shells: OnceLock::new(),
             orders: Arc::default(),
             tickets: Arc::default(),
             #[cfg(feature = "test-support")]
@@ -399,6 +405,12 @@ impl Apps {
     /// The person's device answers: what the capture this runtime brokers asks.
     pub(crate) const fn device_grants(&self) -> &tilo_peer_state::DeviceGrants {
         &self.device_grants
+    }
+
+    /// Read whether a Tilo session runs from `shells` from now on: the device's shell links.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn see_shells(&self, shells: Arc<tilo_app_host::shell::ShellLinks>) {
+        let _ = self.shells.set(shells);
     }
 
     /// Read what a launch into this runtime's workspace is granted from
@@ -748,7 +760,7 @@ impl Apps {
     ///
     /// # Errors
     /// As [`Self::origin_connection`] and [`instances::Instances::open_window`].
-    #[cfg(any(target_os = "macos", windows))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     fn hosted_window(&self, app: &str, workspace: &str) -> Result<instances::HostedWindow, String> {
         let origin = self.origin_connection(app, workspace)?;
         let window = self.instances.open_window(app, workspace, origin)?;
@@ -1519,21 +1531,29 @@ impl Apps {
             .map_err(|error| format!("could not watch the launched app: {error}"))
     }
 
-    /// Start what the window of the tilolang app `app` in `workspace` runs: an instance of the
-    /// app in this device's tilolang host, shown nowhere here. The window is the person's
-    /// layout's, drawn by the session that shows it; on Linux a window's process is a session's
-    /// alone, so a runtime with no session starts the app's code and never a window process that
-    /// would hold none of the app's data.
+    /// Start the window of the tilolang app `app` in `workspace`: an instance of the app in this
+    /// device's tilolang host, and the window that shows it. While a Tilo session runs, the window
+    /// is the person's layout's, drawn by the session's spare window process; with none (a
+    /// person's own desktop, GNOME), this daemon starts that window process itself, on the
+    /// person's Wayland display ([`linux::launch`]), and watches it.
     #[cfg(target_os = "linux")]
     fn start_tilolang_window(&self, app: &str, workspace: &str) -> Result<(), String> {
-        let started =
-            self.instances
-                .start_window(app, workspace, self.origin_connection(app, workspace)?);
-        if started.is_ok() {
-            // A person opening the app is a change: what stopped coming up here is tried again.
-            self.failures.forget(workspace, app);
+        if self.shells.get().is_some_and(|shells| shells.any_live()) {
+            let started = self.instances.start_window(
+                app,
+                workspace,
+                self.origin_connection(app, workspace)?,
+            );
+            if started.is_ok() {
+                // A person opening the app is a change: what stopped coming up here is tried
+                // again.
+                self.failures.forget(workspace, app);
+            }
+            return started;
         }
-        started
+        let launch = self.start_showing(app, workspace, Shows::Window, None, &Runs::default())?;
+        self.watch(app, launch, || {})
+            .map_err(|error| format!("could not watch {app}'s window: {error}"))
     }
 }
 
@@ -1940,8 +1960,11 @@ pub struct Launch {
     #[cfg(target_os = "macos")]
     app: launcher_macos::LaunchedApp,
     /// A tilolang window's link, which its patch connection came on: held while the window runs.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     _link: Option<runtime_portal::process_link::Descriptor>,
+    /// The window's end of a tilolang window's link, handed to the launcher with its release.
+    #[cfg(target_os = "linux")]
+    window_link: Option<std::os::fd::OwnedFd>,
     /// The tilolang window, in its app's container.
     #[cfg(windows)]
     app: crate::device::capabilities::Confined,
@@ -1972,9 +1995,10 @@ impl Launch {
             // connector with the release; a capture's joined instance's connections follow, in the
             // order the launcher takes them.
             let links: Vec<std::os::fd::OwnedFd> = self
-                .origin_reader
+                .window_link
                 .take()
                 .into_iter()
+                .chain(self.origin_reader.take())
                 .chain(std::mem::take(&mut self.joined))
                 .collect();
             let links: Vec<_> = links.iter().map(std::os::fd::AsFd::as_fd).collect();

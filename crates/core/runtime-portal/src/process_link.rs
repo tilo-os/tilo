@@ -754,13 +754,16 @@ pub struct Module {
 /// every package that names the runtime was compiled against, which no package carries itself.
 pub const STD_FILE: &str = "lib/tilo.std.wasm";
 
+/// Where a tilolang package's payload keeps its compiled module.
+pub const MODULE_FILE: &str = "app.wasm";
+
 impl Module {
     /// The module the package payload at `payload` holds.
     ///
     /// # Errors
     /// The payload's read error.
     pub fn read(payload: &std::path::Path) -> io::Result<Self> {
-        let wasm = std::fs::read(payload.join("app.wasm"))?;
+        let wasm = std::fs::read(payload.join(MODULE_FILE))?;
         let ids = match std::fs::read_to_string(payload.join("app.ids")) {
             Ok(ids) => ids,
             Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),

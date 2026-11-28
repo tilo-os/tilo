@@ -105,6 +105,13 @@ impl ShellLinks {
         lock(&self.live).contains(&seat)
     }
 
+    /// Whether any seat has a shell link standing now: a Tilo session runs and draws the
+    /// person's windows.
+    #[must_use]
+    pub fn any_live(&self) -> bool {
+        !lock(&self.live).is_empty()
+    }
+
     /// The seat's shell link began: `false` when one stands already, which is refused.
     #[must_use]
     pub fn began(&self, seat: u64) -> bool {
