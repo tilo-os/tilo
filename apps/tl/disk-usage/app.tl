@@ -336,12 +336,12 @@ view places_page(a: Analyzer) {
     let recent = a.recents.sort_by(r -> r.seen, desc).filter(r -> not a_place(r.path)).take(5)
     std.page(a) {
         content: {
+            row(gap: .tight, wrap: true) {
+                ui.Button("Choose a folder", icon: .folder_open, role: .primary) {
+                    on press: file.choose_folder(open_place(a))
+                } as choose_folder
+            }
             ui.Section(title: "Places") {
-                row(gap: .tight, wrap: true) {
-                    ui.Button("Choose a folder", icon: .folder_open, role: .primary) {
-                        on press: file.choose_folder(open_place(a))
-                    } as choose_folder
-                }
                 place_row(a, "~")
                 place_row(a, "/var/workspace")
                 place_row(a, "/")
