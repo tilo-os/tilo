@@ -2167,6 +2167,19 @@ on = ["dispatch"]
 heavy = true
 
 [[check]]
+name = "apple-client-compile-macos"
+# The Swift package in dist/apple, compiled with the command line tools alone: no XCTest, so no
+# tests, and no iPhone SDK. The macOS SDK carries the shell's own modules, the Mac app, and the
+# notice and widget extensions, whose UIKit-only parts are `#if os(iOS)`; TiloPhone, and the
+# iPhone half of every bundle, needs Xcode and is built by apple-client-macos. Each target is
+# built as the package names it, so one that has not landed yet is no error. This says a push
+# does not break the Swift client where no Xcode is available.
+run = "set -eu\nif ! xcrun --find swift >/dev/null 2>&1; then\n  echo 'this Mac has no Swift toolchain, so nothing of the Swift client in dist/apple can be compiled here' >&2\n  exit 1\nfi\ncd dist/apple\nbuild() { xcrun swift build --scratch-path ../target/apple.noindex/swiftpm-mac --target \"$1\"; }\n# The package's own targets, as it names them, so one that has not landed yet is not an error.\ntargets=$(xcrun swift package describe --type json | python3 -c 'import json,sys; print(\" \".join(t[\"name\"] for t in json.load(sys.stdin).get(\"targets\",[]) if t[\"name\"] in {\"ShellCore\",\"ShellWeb\",\"TiloMac\",\"TiloNotice\"} or \"Widget\" in t[\"name\"]))')\nfor target in $targets; do build \"$target\"; done\n"
+requires = ["os=macos", "arch=arm64"]
+timeout_secs = 1800
+on = ["main", "idle", "stable"]
+
+[[check]]
 name = "sdk-macos"
 # Installs packages (npm, PyPI, rustup) from hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
