@@ -19,6 +19,19 @@ mod cases {
     /// A PDF's bytes, as far as the test reads them: only that they are there.
     const PDF: &[u8] = b"%PDF-1.4 the test's document";
 
+    /// A page drawn as a 4 × 4 picture, each pixel its own, so a crop of part of it is other
+    /// pixels than the whole.
+    const PAGE: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04, 0x08, 0x06, 0x00, 0x00, 0x00, 0xa9,
+        0xf1, 0x9e, 0x7e, 0x00, 0x00, 0x00, 0x36, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x0d, 0xc8,
+        0x41, 0x01, 0x00, 0x30, 0x0c, 0x02, 0x31, 0x94, 0x54, 0x09, 0x4a, 0xaa, 0x04, 0x25, 0x53,
+        0x82, 0xbf, 0x5b, 0xf3, 0x8c, 0x24, 0x61, 0x0d, 0x91, 0xa9, 0x16, 0xc9, 0x83, 0x6d, 0xe2,
+        0xa5, 0xce, 0x45, 0x8c, 0xb3, 0x24, 0xa1, 0x79, 0x17, 0x5d, 0xdc, 0x90, 0x3e, 0xda, 0xf2,
+        0x01, 0xb8, 0xf1, 0x20, 0xd1, 0xca, 0x93, 0x82, 0x32, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+        0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
     /// One glyph of a page's text, at its place in the page's display space.
     fn glyph(text: &str, line: u32, x: f32, y: f32, w: f32) -> String {
         format!(
@@ -99,7 +112,9 @@ mod cases {
         }
 
         fn picture(&self, _bytes: &[u8], _page: i64, _width: i64) -> Result<Vec<u8>, String> {
-            Ok(b"\x89PNG\r\n\x1a\n".to_vec())
+            // A 4 × 4 picture whose pixels differ, so a crop of part of it is other pixels than
+            // the whole.
+            Ok(PAGE.to_vec())
         }
 
         fn import(&self, _bytes: &[u8]) -> Result<String, String> {
@@ -142,7 +157,7 @@ mod cases {
             rt.set_clock(|| "2026-11-24T09:00:00Z".to_owned());
             let app = App::compile(SOURCE, &[]);
             authority.trust(&app.load(&rt));
-            for action in ["copy_selected", "copy_page"] {
+            for action in ["copy_selected", "copy_page", "copy_region"] {
                 authority.grant_outside(&app.action(action));
             }
             let lib = rt.create_root("Library").unwrap();
@@ -420,6 +435,70 @@ mod cases {
             assert_eq!(reader.clipboard.text(), "Hello world");
         }
 
+        phase a_part_of_a_page_is_copied_as_a_picture;
+        {
+            let reader = Reader::new();
+            let doc = reader.open();
+            let first = reader.page(&doc, 0);
+            reader.call(
+                "show_page",
+                vec![
+                    Value::resource(&doc),
+                    Value::resource(&first),
+                    Value::Int(900),
+                ],
+            );
+            reader.call(
+                "copy_region",
+                vec![
+                    Value::resource(&doc),
+                    Value::resource(&first),
+                    Value::List(vec![Value::Float(0.0), Value::Float(0.0)]),
+                    Value::List(vec![Value::Float(0.5), Value::Float(0.5)]),
+                ],
+            );
+            let held = reader
+                .clipboard
+                .held()
+                .expect("part of the page is copied as a picture");
+            assert_eq!(held.0, "image/png", "a picture pastes as a picture");
+            assert_ne!(
+                held.1,
+                PAGE.to_vec(),
+                "the copy is the part the box covers, not the whole page"
+            );
+
+            // A box of no size, and a page that is not drawn, copy nothing.
+            reader.clipboard.clear();
+            reader.call(
+                "copy_region",
+                vec![
+                    Value::resource(&doc),
+                    Value::resource(&first),
+                    Value::List(vec![Value::Float(0.5), Value::Float(0.5)]),
+                    Value::List(vec![Value::Float(0.5), Value::Float(0.5)]),
+                ],
+            );
+            assert!(
+                reader.clipboard.held().is_none(),
+                "a box of no size copies nothing"
+            );
+            let second = reader.page(&doc, 1);
+            reader.call(
+                "copy_region",
+                vec![
+                    Value::resource(&doc),
+                    Value::resource(&second),
+                    Value::List(vec![Value::Float(0.0), Value::Float(0.0)]),
+                    Value::List(vec![Value::Float(0.5), Value::Float(0.5)]),
+                ],
+            );
+            assert!(
+                reader.clipboard.held().is_none(),
+                "a page that is not drawn copies nothing"
+            );
+        }
+
         phase finding_counts_the_pages_and_the_words_it_finds;
         {
             let reader = Reader::new();
@@ -693,6 +772,10 @@ mod cases {
             assert!(
                 bar_shown.contains("Zoom in") && bar_shown.contains("Fit width"),
                 "the toolbar's controls stand in the window's bar:\n{bar_shown}"
+            );
+            assert!(
+                bar_shown.contains("Picture"),
+                "the tool menu offers a copy of part of the page as a picture:\n{bar_shown}"
             );
         }
 

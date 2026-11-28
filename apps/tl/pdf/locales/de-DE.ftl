@@ -1104,6 +1104,7 @@ d-ibtlwzis = Betrachter
     .w-note = Notiz
     .w-text-box = Textfeld
     .w-sign = Unterschreiben
+    .w-picture = Bild
     .w-colour = Farbe
     .w-rail = Seitenleiste
     .w-save-a-copy = Kopie speichern
@@ -1240,6 +1241,15 @@ d-xd7zuh3x = Den Text der Seite kopieren
     .doc = Kopiert jedes Wort, das eine Seite zeigt.
 
 d-xd7zuh3x-p = P
+
+d-fpwdcfk7 = Ein Teil der Seite als Bild kopieren
+    .doc = Kopiert den Teil einer Seite, den die Person aufgezogen hat, als eigenes Bild — für eine Abbildung oder eine Tabelle aus dem PDF.
+
+d-fpwdcfk7-p = P
+
+d-fpwdcfk7-start = Anfang
+
+d-fpwdcfk7-end = Ende
 
 d-2uq5pptz-stroke = Strich
 

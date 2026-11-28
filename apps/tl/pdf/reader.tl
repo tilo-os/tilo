@@ -229,6 +229,8 @@ view reader_head(
                     .text_cursor
                 } else if tool == "sign" {
                     .square_pen
+                } else if tool == "picture" {
+                    .image
                 } else if tool == "select" { .mouse_pointer_2 } else { .highlighter },
             ) {
                 menu: {
@@ -258,6 +260,9 @@ view reader_head(
                     }
                     ui.MenuItem("Sign", icon: .square_pen) {
                         on choose: set(tool, "sign")
+                    }
+                    ui.MenuItem("Picture", icon: .image) {
+                        on choose: set(tool, "picture")
                     }
                 }
             }
@@ -460,10 +465,16 @@ view page_sheet(
                     .then(read_page(d, p))
                     .then(set(note, link_said(d, p, at)))
                     .then(
-                        set(from, if tool == "select" { .some(at) } else { .none }),
+                        set(
+                            from,
+                            if tool == "select" or tool == "picture" { .some(at) } else { .none },
+                        ),
                     )
                     .then(
-                        set(to, if tool == "select" { .some(at) } else { .none }),
+                        set(
+                            to,
+                            if tool == "select" or tool == "picture" { .some(at) } else { .none },
+                        ),
                     )
                     .then(set(stroke, if tool == "ink" { at } else { [] }))
                 on drag_at(at: List<Float>): set(to, .some(at))
@@ -473,13 +484,33 @@ view page_sheet(
                             if tool == "ink" { [stroke, at].flat_map(x -> x) } else { stroke },
                         ),
                     )
-                on release_at: release(d, p, tool, colour, from, to, stroke)
-                    .then(set(note, released_note(tool, from, to)))
-                    .then(set(from, .none))
-                    .then(set(to, .none))
-                    .then(set(stroke, []))
-                    .then(set(sel_from, picked_from(p, from, to)))
-                    .then(set(sel_to, picked_to(p, from, to)))
+                on release_at: {
+                    // The picture tool takes the box the person dragged over as a copy of the
+                    // page's part, never as a marking.
+                    if tool == "picture" {
+                        let said = if picture == .none {
+                            "The page is not drawn yet"
+                        } else if box_big_enough(p, from, to) {
+                            "Copied part of the page"
+                        } else { "Drag over the part of the page to copy" }
+                        copy_region(d, p, from ?? [], to ?? [])
+                            .then(set(note, said))
+                            .then(set(from, .none))
+                            .then(set(to, .none))
+                    } else {
+                        release(d, p, tool, colour, from, to, stroke)
+                            .then(
+                                set(note, released_note(tool, from, to)),
+                            )
+                            .then(set(from, .none))
+                            .then(set(to, .none))
+                            .then(set(stroke, []))
+                            .then(
+                                set(sel_from, picked_from(p, from, to)),
+                            )
+                            .then(set(sel_to, picked_to(p, from, to)))
+                    }
+                }
             }
             // The fields and signatures the file places, standing over the picture where it puts
             // them rather than in a column under it.
@@ -678,7 +709,11 @@ action release(
                 draw_ink(d, p, colour, [[e.at(0) ?? 0.0, e.at(1) ?? 0.0]])
             }
         }
-    } else if tool != "select" and tool != "note" and tool != "text" and tool != "sign" {
+    } else if tool != "select"
+        and tool != "note"
+        and tool != "text"
+        and tool != "sign"
+        and tool != "picture" {
         if let s = start {
             if let e = end {
                 let words = run_rects(p, runs_in(p, s, e))
@@ -719,6 +754,17 @@ fn pressed_note(tool: Text) -> Text {
     } else if tool == "text" {
         "Added a text box"
     } else if tool == "sign" { "Signed the page" } else if tool == "ink" { "Drawing" } else { "" }
+}
+
+/// Whether the box a person dragged over is big enough to be a picture of something.
+fn box_big_enough(p: Page, start: Option<List<Float>>, end: Option<List<Float>>) -> Bool {
+    if let from = start {
+        if let to = end {
+            let across = ((from.at(0) ?? 0.0) - (to.at(0) ?? 0.0)).abs() * p.width
+            let down = ((from.at(1) ?? 0.0) - (to.at(1) ?? 0.0)).abs() * p.height
+            return across >= 3.0 and down >= 3.0
+        } else { false }
+    } else { false }
 }
 
 /// What letting go says, when it marked something.

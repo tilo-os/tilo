@@ -1131,6 +1131,30 @@ action copy_page(d: Document, p: Page) uses clipboard (icon: .copy, label: "Copy
     clipboard.copy(page_words(p))
 }
 
+/// Copies the part of a page the person dragged over as a picture of its own, for a figure or a
+/// table taken out of the PDF. The box is two corners in fractions of the page's own box, which
+/// is the drawn picture's too; a box of no size, or a page that is not drawn, copies nothing.
+action copy_region(
+    d: Document,
+    p: Page,
+    start: List<Float>,
+    end: List<Float>,
+) uses clipboard, image (icon: .image, label: "Copy part of the page as a picture") {
+    let x = (start.at(0) ?? 0.0).min(end.at(0) ?? 0.0)
+    let y = (start.at(1) ?? 0.0).min(end.at(1) ?? 0.0)
+    let across = (start.at(0) ?? 0.0).max(end.at(0) ?? 0.0) - x
+    let down = (start.at(1) ?? 0.0).max(end.at(1) ?? 0.0) - y
+    if across * p.width >= 3.0 and down * p.height >= 3.0 {
+        if let picture = d.pictures.find(x -> x.page == p) {
+            let file = File.at("Page {p.source_page}.png", picture.url)
+            match file.cropped(x, y, across, down) {
+                .ok(part) => clipboard.copy_image(part),
+                .err(_) => {}
+            }
+        }
+    }
+}
+
 /// The runs of `p` the box from `start` to `end` covers, as fractions of the page's box: the
 /// first and last of them, counted in, or none when the box covers no words.
 fn runs_in(p: Page, start: List<Float>, end: List<Float>) -> List<Int> {
