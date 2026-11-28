@@ -932,3 +932,153 @@ fn choosing_a_route_and_letting_the_catalogue_decide_say_so() {
         "{said:?}"
     );
 }
+
+/// The texts an app said in passing since last asked.
+fn said(app: &Pane) -> Vec<String> {
+    app.host
+        .runtime()
+        .take_said()
+        .into_iter()
+        .map(|said| said.text)
+        .collect()
+}
+
+/// The keys of the nodes of `kind`, in order.
+fn keys_of_kind(node: &UiNode, kind: &str, into: &mut Vec<String>) {
+    if node.kind == kind {
+        into.push(node.key.clone());
+    }
+    for child in &node.children {
+        keys_of_kind(child, kind, into);
+    }
+}
+
+#[test]
+fn the_window_says_what_it_is_doing_while_a_program_opens_and_ends() {
+    let app = installed_full();
+    let _ = said(&app);
+    app.call("open_program", vec![Value::text("adobe-reader")]);
+    assert_eq!(
+        said(&app),
+        ["Opening the app…"],
+        "the row state says the program is opening"
+    );
+    assert!(
+        app.sent.names().iter().any(|name| name == "launch"),
+        "{:?}",
+        app.sent.names()
+    );
+    app.call("quit_program", vec![Value::text("adobe-reader")]);
+    assert_eq!(said(&app), ["Ending the app…"]);
+    assert!(
+        app.sent.names().iter().any(|name| name == "stop"),
+        "{:?}",
+        app.sent.names()
+    );
+    app.call("open_appliance_program", vec![Value::text("adobe-reader")]);
+    assert_eq!(said(&app), ["Opening the app in the Windows appliance…"]);
+}
+
+#[test]
+fn a_setup_says_how_it_starts_and_what_it_removed() {
+    let app = installed_full();
+    let _ = said(&app);
+    app.call("install_in_capsule", vec![]);
+    assert_eq!(said(&app), ["Starting setup in a private capsule…"]);
+    assert!(
+        app.sent
+            .names()
+            .iter()
+            .any(|name| name == "install-private-capsule"),
+        "{:?}",
+        app.sent.names()
+    );
+    app.call("install_in_windows", vec![]);
+    assert_eq!(said(&app), ["Opening Windows setup…"]);
+    app.call("run_setup_again", vec![Value::text("Adobe Reader")]);
+    assert_eq!(said(&app), ["Retrying setup…"]);
+    app.call("add_to_windows_apps", vec![Value::text("adobe-reader")]);
+    assert_eq!(said(&app), ["Adding the app to Windows Apps…"]);
+    app.call("delete_setup_data", vec![Value::text("Adobe Reader")]);
+    assert_eq!(
+        said(&app),
+        ["The app and all its data were deleted."],
+        "the setup this test holds has one program"
+    );
+    app.call("remove_launcher", vec![Value::text("adobe-reader")]);
+    assert_eq!(
+        said(&app),
+        ["Launcher removed. The app and its data were kept."]
+    );
+}
+
+#[test]
+fn windows_support_arriving_is_said_once() {
+    let mut installing = support();
+    installing["state"] = serde_json::json!("installing");
+    let app = installed(reading(vec![reader_app()], appliance(), None, installing));
+    // Windows support's reading, named by the device package itself: the test does not
+    // spell the type out.
+    let support_ty = tilolang_tilo::platform::named_platform_packages(SOURCE)
+        .expect("the platform's packages read")
+        .into_iter()
+        .find(|meta| meta.app == "so.tilo.device")
+        .expect("the device package")
+        .named_roots
+        .iter()
+        .find(|root| root.published.as_deref() == Some("windows-compat"))
+        .map(|root| root.ty.clone())
+        .expect("the Windows support reading");
+    let support_reading =
+        ResourceRef::parse_id("windows-compat", format!("so.tilo.device#{support_ty}"))
+            .expect("a resource id");
+    app.host
+        .runtime()
+        .set_reading(
+            &support_reading,
+            r#"{"available":true,"state":"installing","summary":"","size":null,"problem":null,
+                "pending":[],"progress":null,"step":null,"offered":[]}"#,
+        )
+        .expect("the Windows support reading");
+    // The window makes what this device keeps of the app, as opening it does.
+    let watch = app
+        .host
+        .package("so.tilo.windows")
+        .expect("the Windows package")
+        .meta
+        .types
+        .iter()
+        .find(|ty| ty.name == "SupportWatch")
+        .expect("SupportWatch")
+        .id
+        .clone();
+    app.host
+        .root_resource("so.tilo.windows", &watch)
+        .expect("the device's watch");
+    app.call("install_support", vec![]);
+    assert!(
+        app.sent.names().iter().any(|name| name == "install"),
+        "{:?}",
+        app.sent.names()
+    );
+    let _ = said(&app);
+    // The support arrives in the device's reading; the window hears it and says so, once.
+    app.host
+        .runtime()
+        .set_reading(&windows(), &full())
+        .expect("the support is ready");
+    let window = app.window();
+    let mut timers = Vec::new();
+    keys_of_kind(window.tree(), "ui.Timer", &mut timers);
+    assert_eq!(timers.len(), 1, "the window waits for the support");
+    window.fire(&timers[0], "tick").expect("the clock strikes");
+    assert_eq!(
+        said(&app),
+        ["Windows support is installed. You can open the program now."],
+        "the arrival is said once"
+    );
+    let window = app.window();
+    let mut timers = Vec::new();
+    keys_of_kind(window.tree(), "ui.Timer", &mut timers);
+    assert!(timers.is_empty(), "nothing more waits once it has arrived");
+}

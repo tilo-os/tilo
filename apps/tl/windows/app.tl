@@ -24,6 +24,14 @@ type Windows {
 
 root windows: Windows
 
+/// What this device asked of Windows support, so its arrival is heard once.
+type SupportWatch {
+    /// The person started the install here; when the support is ready, they are told once.
+    installing: Bool = false
+}
+
+device root support_watch: SupportWatch
+
 default view window for Windows
 
 /// The route stored for `program`, when someone chose one.
@@ -292,19 +300,115 @@ action use_recommendation(w: Windows, program: Text) {
     notice("This app opens the recommended way again.", kind: .success)
 }
 
+/// Open a program, saying so while it opens.
+action open_program(program: Text) (icon: .play) {
+    notice("Opening the app…", kind: .info)
+    device.launch(device.windows_apps, program: program)
+}
+
+/// End a program, saying so while it ends.
+action quit_program(program: Text) (icon: .square) {
+    notice("Ending the app…", kind: .info)
+    device.stop(device.windows_apps, program: program)
+}
+
+/// Open a program in the Windows appliance, saying so while it opens.
+action open_appliance_program(program: Text) (icon: .monitor) {
+    notice("Opening the app in the Windows appliance…", kind: .info)
+    device.launch_vm_fallback(device.windows_apps, program: program)
+}
+
 /// Install the installer the person chose, or the one a file manager opened here.
 primary action installed(w: Windows, file: File) (
     icon: .plus,
     label: "Install Windows application",
     opens: ["application/vnd.microsoft.portable-executable", "application/x-msi", .exe, .msi],
 ) {
+    notice("Checking the installer and starting setup…", kind: .info)
     device.install(device.windows_apps, path: .some(file.path))
 }
 
 /// Set up the appliance from the Windows ISO the person chose.
 action imported_iso(file: File) (icon: .monitor, label: "Import Windows ISO") {
+    notice("Checking the Windows installation media…", kind: .info)
     device.import_iso(device.windows_apps, path: .some(file.path))
     notice("Windows media was accepted.", kind: .success)
+}
+
+/// Set a waiting setup up in a private capsule, saying so while it starts.
+action install_in_capsule() (icon: .shield) {
+    notice("Starting setup in a private capsule…", kind: .info)
+    device.install_private_capsule(device.windows_apps)
+}
+
+/// Set a waiting setup up in the Windows appliance, saying so while Windows opens.
+action install_in_windows() (icon: .monitor) {
+    notice("Opening Windows setup…", kind: .info)
+    device.install_windows_appliance(device.windows_apps)
+}
+
+/// Add a program the appliance published to Windows Apps, saying so while it is added.
+action add_to_windows_apps(program: Text) {
+    notice("Adding the app to Windows Apps…", kind: .info)
+    device.publish(device.windows_apps, program: program)
+}
+
+/// Run a program's setup again, saying so while it retries.
+action run_setup_again(program: Text) {
+    notice("Retrying setup…", kind: .info)
+    device.retry_install(device.windows_apps, capsule: program)
+}
+
+/// Continue a setup in the Windows appliance, saying so while Windows opens.
+action continue_in_windows(capsule: Text) {
+    notice("Continuing setup in the Windows appliance…", kind: .info)
+    device.escalate_install(device.windows_apps, capsule: capsule)
+}
+
+/// Remove a program's launcher, and say what stayed.
+action remove_launcher(program: Text) {
+    device.remove_launcher(device.windows_apps, program: program)
+    notice("Launcher removed. The app and its data were kept.", kind: .info)
+}
+
+/// Run a program's own uninstaller, saying so while it runs.
+action uninstall_program(program: Text) {
+    let ws = device.windows_apps
+    let in_appliance = if let item = ws.apps.find(item -> item.id == program) {
+        item.route == .vm
+    } else { false }
+    if in_appliance {
+        notice("Running the app's uninstaller in the Windows appliance…", kind: .info)
+    } else {
+        notice("Running the app's uninstaller…", kind: .info)
+    }
+    device.uninstall(device.windows_apps, program: program)
+}
+
+/// Delete a setup and everything it stored, and say what went.
+action delete_setup_data(capsule: Text) {
+    let ws = device.windows_apps
+    let programs = setup_programs(ws, capsule)
+    device.delete_data(device.windows_apps, capsule: capsule)
+    if programs.len() == 1 {
+        notice("The app and all its data were deleted.", kind: .info)
+    } else {
+        notice("The setup's apps and all their data were deleted.", kind: .info)
+    }
+}
+
+/// Install Windows support, and hear when it is there.
+action install_support() (icon: .download) {
+    support_watch.installing = true
+    device.install(device.windows_compat)
+}
+
+/// Says the support the person asked for is installed, once it is ready.
+action support_settled() {
+    if support_watch.installing and device.windows_apps.support.state == .ready {
+        notice("Windows support is installed. You can open the program now.", kind: .success)
+        support_watch.installing = false
+    }
 }
 
 /// Open the appliance's recovery desktop.
@@ -317,42 +421,49 @@ action recovery_desktop() (icon: .wrench, label: "Open recovery desktop") {
 
 /// Start the appliance.
 action start_windows() (icon: .play, label: "Start Windows") {
+    notice("Starting Windows…", kind: .info)
     device.start(device.windows_apps)
     notice("Windows has started.", kind: .success)
 }
 
 /// Restart the appliance.
 action restart_windows() (icon: .rotate_cw, label: "Restart Windows") {
+    notice("Restarting Windows…", kind: .info)
     device.restart(device.windows_apps)
     notice("Windows has restarted.", kind: .success)
 }
 
 /// Suspend the appliance.
 action suspend_windows() (icon: .pause, label: "Suspend Windows") {
+    notice("Suspending Windows…", kind: .info)
     device.suspend(device.windows_apps)
     notice("Windows has been suspended.", kind: .success)
 }
 
 /// Resume the appliance.
 action resume_windows() (icon: .play, label: "Resume Windows") {
+    notice("Resuming Windows…", kind: .info)
     device.resume(device.windows_apps)
     notice("Windows has resumed.", kind: .success)
 }
 
 /// Shut the appliance down.
 action shutdown_windows() (icon: .power, label: "Shut down Windows") {
+    notice("Shutting down Windows…", kind: .info)
     device.shutdown(device.windows_apps)
     notice("Windows has been shut down.", kind: .success)
 }
 
 /// Connect the appliance for activation, for a while.
 action temporary_network() (icon: .wifi, label: "Connect for activation") {
+    notice("Connecting Windows temporarily…", kind: .info)
     device.temporary_network(device.windows_apps)
     notice("Windows has a temporary activation connection.", kind: .success)
 }
 
 /// Connect the appliance for Windows Update, for a while.
 action update_network() (icon: .download, label: "Connect for Windows Update") {
+    notice("Connecting Windows temporarily…", kind: .info)
     device.update_network(device.windows_apps)
     notice("Windows has a temporary update connection.", kind: .success)
 }
@@ -366,6 +477,7 @@ action revoke_network() (icon: .x, label: "End temporary network access") {
 /// Open the document the person chose in `program`.
 action opened_file(w: Windows, program: device.WindowsApp, file: File) {
     require program.portal_file_open_available "This program cannot receive a file"
+    notice("Opening the file read-only in Windows…", kind: .info)
     device.open_file(device.windows_apps, program: program.id, path: .some(file.path))
 }
 
@@ -426,6 +538,11 @@ view window(w: Windows) {
             }
         }
         stack {
+            // The support the person asked for arrives in the device's reading: the window
+            // hears it and says so once.
+            if support_watch.installing {
+                every 2s: support_settled()
+            }
             if let end = ws.ended {
                 if let why = end.error {
                     ui.Banner("{end.name} could not open", message: why, kind: .error)
@@ -508,7 +625,7 @@ view support_banner(ws: device.WindowsApps) {
             kind: .warning,
             action: "Install",
         ) {
-            on act: device.install(device.windows_compat)
+            on act: install_support()
         }
     } else if ws.support.state == .failed {
         ui.Banner(
@@ -517,7 +634,7 @@ view support_banner(ws: device.WindowsApps) {
             kind: .error,
             action: "Try again",
         ) {
-            on act: device.install(device.windows_compat)
+            on act: install_support()
         }
     } else if ws.support.state == .installing {
         ui.Banner(
@@ -554,7 +671,7 @@ view app_page(
             kind: .error,
             action: if program.can_retry_install { "Run the setup again" } else { "" },
         ) {
-            on act: device.retry_install(device.windows_apps, capsule: program.capsule)
+            on act: run_setup_again(program.capsule)
         }
     }
     if needs_support(route) {
@@ -562,11 +679,11 @@ view app_page(
     }
     row(gap: .tight, wrap: true) {
         ui.Button("Open", icon: .play, role: .primary) {
-            on press: device.launch(device.windows_apps, program: program.id)
+            on press: open_program(program.id)
         }
         if program.status == .running and program.route != .vm {
             ui.Button("Stop", icon: .square, role: .secondary) {
-                on press: device.stop(device.windows_apps, program: program.id)
+                on press: quit_program(program.id)
             }
         }
         if program.route == .vm {
@@ -575,7 +692,7 @@ view app_page(
             }
         } else if program.vm_fallback_available {
             ui.Button("Open in Windows", icon: .monitor, role: .secondary) {
-                on press: device.launch_vm_fallback(device.windows_apps, program: program.id)
+                on press: open_appliance_program(program.id)
             }
         }
     }
@@ -722,15 +839,12 @@ view manage_row(
             row(gap: .tight, wrap: true) {
                 if program.can_publish_vm_candidate {
                     ui.Button("Add to Windows Apps", role: .secondary) {
-                        on press: device.publish(device.windows_apps, program: program.id)
+                        on press: add_to_windows_apps(program.id)
                     }
                 }
                 if program.can_retry_install {
                     ui.Button("Run the setup again", role: .secondary) {
-                        on press: device.retry_install(
-                            device.windows_apps,
-                            capsule: program.capsule,
-                        )
+                        on press: run_setup_again(program.capsule)
                     }
                 }
                 if program.can_escalate_install_to_vm {
@@ -741,7 +855,7 @@ view manage_row(
                 }
                 if program.can_remove_launcher {
                     ui.Button("Remove the launcher", role: .secondary) {
-                        on press: device.remove_launcher(device.windows_apps, program: program.id)
+                        on press: remove_launcher(program.id)
                     }
                 }
                 if program.can_vendor_uninstall {
@@ -878,14 +992,14 @@ view pending_page(ws: device.WindowsApps) {
                     value: "Recommended",
                     icon: .monitor,
                 ) {
-                    on activate: device.install_windows_appliance(device.windows_apps)
+                    on activate: install_in_windows()
                 }
                 ui.ListRow(
                     "A private capsule",
                     secondary: "Only this program, kept apart from the rest of the computer.",
                     icon: .shield,
                 ) {
-                    on activate: device.install_private_capsule(device.windows_apps)
+                    on activate: install_in_capsule()
                 }
             } else {
                 ui.ListRow(
@@ -894,14 +1008,14 @@ view pending_page(ws: device.WindowsApps) {
                     value: "Recommended",
                     icon: .shield,
                 ) {
-                    on activate: device.install_private_capsule(device.windows_apps)
+                    on activate: install_in_capsule()
                 }
                 ui.ListRow(
                     "Windows",
                     secondary: "In the Windows appliance, beside the programs Wine cannot run.",
                     icon: .monitor,
                 ) {
-                    on activate: device.install_windows_appliance(device.windows_apps)
+                    on activate: install_in_windows()
                 }
             }
         }
@@ -930,7 +1044,7 @@ view confirmation_dialogs(
             secondary: "Cancel",
             destructive: true,
         ) {
-            on act_primary: device.delete_data(device.windows_apps, capsule: confirm_target)
+            on act_primary: delete_setup_data(confirm_target)
             on act_secondary: set(confirm_kind, "")
             on dismiss: set(confirm_kind, "")
         }
@@ -946,7 +1060,7 @@ view confirmation_dialogs(
             secondary: "Cancel",
             destructive: false,
         ) {
-            on act_primary: device.escalate_install(device.windows_apps, capsule: confirm_target)
+            on act_primary: continue_in_windows(confirm_target)
             on act_secondary: set(confirm_kind, "")
             on dismiss: set(confirm_kind, "")
         }
@@ -962,7 +1076,7 @@ view confirmation_dialogs(
             secondary: "Cancel",
             destructive: true,
         ) {
-            on act_primary: device.uninstall(device.windows_apps, program: confirm_target)
+            on act_primary: uninstall_program(confirm_target)
             on act_secondary: set(confirm_kind, "")
             on dismiss: set(confirm_kind, "")
         }

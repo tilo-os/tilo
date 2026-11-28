@@ -38,11 +38,13 @@ d-eixkuayr = Empfehlung verwenden
 d-eixkuayr-program = Programm
 
 d-6efyasbu = Windows-Anwendung installieren
+    .w-checking-the-installer-and-starting-setup = Das Installationsprogramm wird geprüft, und die Einrichtung beginnt…
     .doc = Das Installationsprogramm installieren, das die Person gewählt hat, oder das, das ein Dateimanager hier geöffnet hat.
 
 d-6efyasbu-file = Datei
 
 d-5bb7zjnm = Windows-ISO importieren
+    .w-checking-the-windows-installation-media = Die Windows-Installationsmedien werden geprüft…
     .doc = Die Windows-Maschine aus dem Windows-ISO einrichten, das die Person gewählt hat.
     .w-windows-media-was-accepted = Windows-Medien wurden angenommen.
 
@@ -53,30 +55,37 @@ d-vcxxtpm7 = Wiederherstellungs-Desktop öffnen
     .w-the-windows-setup-and-recovery-desktop = Der Windows-Einrichtungs- und Wiederherstellungsdesktop ist offen.
 
 d-i2uoznn5 = Windows starten
+    .w-starting-windows = Windows wird gestartet…
     .doc = Die Windows-Maschine starten.
     .w-windows-has-started = Windows wurde gestartet.
 
 d-ysu5u6q3 = Windows neu starten
+    .w-restarting-windows = Windows wird neu gestartet…
     .doc = Die Windows-Maschine neu starten.
     .w-windows-has-restarted = Windows wurde neu gestartet.
 
 d-2laszyib = Windows anhalten
+    .w-suspending-windows = Windows wird angehalten…
     .doc = Die Windows-Maschine anhalten.
     .w-windows-has-been-suspended = Windows wurde angehalten.
 
 d-7ecwpiem = Windows fortsetzen
+    .w-resuming-windows = Windows wird fortgesetzt…
     .doc = Die Windows-Maschine fortsetzen.
     .w-windows-has-resumed = Windows läuft wieder.
 
 d-4ltkrolo = Windows herunterfahren
+    .w-shutting-down-windows = Windows wird heruntergefahren…
     .doc = Die Windows-Maschine herunterfahren.
     .w-windows-has-been-shut-down = Windows wurde heruntergefahren.
 
 d-ja3iikds = Für die Aktivierung verbinden
+    .w-connecting-windows-temporarily = Windows wird vorübergehend verbunden…
     .doc = Die Windows-Maschine für eine Weile zur Aktivierung verbinden.
     .w-windows-has-a-temporary-activation-connection = Windows hat eine vorübergehende Verbindung zur Aktivierung.
 
 d-3jpdidlo = Für Windows Update verbinden
+    .w-connecting-windows-temporarily = Windows wird vorübergehend verbunden…
     .doc = Die Windows-Maschine für eine Weile für Windows Update verbinden.
     .w-windows-has-a-temporary-update-connection = Windows hat eine vorübergehende Verbindung für Windows Update.
 
@@ -85,6 +94,7 @@ d-vynm7ten = Temporären Netzzugang beenden
     .w-the-temporary-windows-connection-was-revoked = Die vorübergehende Windows-Verbindung wurde beendet.
 
 d-xa7fjun4 = Datei geöffnet
+    .w-opening-the-file-read-only-in = Die Datei wird schreibgeschützt in Windows geöffnet…
     .doc = Das Dokument, das die Person gewählt hat, in `program` öffnen.
     .w-this-program-cannot-receive-a-file = Dieses Programm kann keine Datei empfangen
 
@@ -311,3 +321,86 @@ d-4nhz6ji3 = Seite der wartenden Einrichtung
     .w-recommended = Empfohlen
     .w-a-private-capsule = Eine private Kapsel
     .w-only-this-program-kept-apart-from = Nur dieses Programm, getrennt vom Rest des Computers.
+
+d-6gmbahsm = Unterstützung beobachten
+    .doc = Was dieses Gerät von der Windows-Unterstützung verlangt hat, damit ihre Ankunft einmal gehört wird.
+    .noun = { $count ->
+        [one] Beobachtung
+       *[other] Beobachtungen
+    }
+
+d-gpm24vx6 = Installiert
+    .doc = Die Person hat die Installation hier begonnen; wenn die Unterstützung bereit ist, wird sie einmal informiert.
+
+d-6gmbahsm-filter-installing = Installiert
+
+d-jyijoooz = Programm öffnen
+    .doc = Öffnet ein Programm und sagt es, während es öffnet.
+    .w-opening-the-app = Das Programm wird geöffnet…
+
+d-jyijoooz-program = Programm
+
+d-3zoylawj = Programm beenden
+    .doc = Beendet ein Programm und sagt es, während es endet.
+    .w-ending-the-app = Das Programm wird beendet…
+
+d-3zoylawj-program = Programm
+
+d-koalzepv = Programm in der Windows-Umgebung öffnen
+    .doc = Öffnet ein Programm in der Windows-Umgebung und sagt es, während es öffnet.
+    .w-opening-the-app-in-the-windows = Das Programm wird in der Windows-Umgebung geöffnet…
+
+d-koalzepv-program = Programm
+
+d-ycoz2fki = In einer Kapsel installieren
+    .doc = Richtet eine wartende Einrichtung in einer privaten Kapsel ein und sagt es, während sie startet.
+    .w-starting-setup-in-a-private-capsule = Die Einrichtung in einer privaten Kapsel beginnt…
+
+d-zc6sraj4 = In Windows installieren
+    .doc = Richtet eine wartende Einrichtung in der Windows-Umgebung ein und sagt es, während Windows öffnet.
+    .w-opening-windows-setup = Die Windows-Einrichtung wird geöffnet…
+
+d-trv6w6b5 = Zu den Windows-Apps hinzufügen
+    .doc = Fügt ein von der Umgebung veröffentlichtes Programm den Windows-Apps hinzu und sagt es, während es hinzugefügt wird.
+    .w-adding-the-app-to-windows-apps = Das Programm wird den Windows-Apps hinzugefügt…
+
+d-trv6w6b5-program = Programm
+
+d-knfoxawe = Einrichtung erneut ausführen
+    .doc = Führt die Einrichtung eines Programms erneut aus und sagt es, während es es erneut versucht.
+    .w-retrying-setup = Die Einrichtung wird erneut versucht…
+
+d-knfoxawe-program = Programm
+
+d-pjribplf = In Windows fortsetzen
+    .doc = Setzt eine Einrichtung in der Windows-Umgebung fort und sagt es, während Windows öffnet.
+    .w-continuing-setup-in-the-windows-appliance = Die Einrichtung wird in der Windows-Umgebung fortgesetzt…
+
+d-pjribplf-capsule = Kapsel
+
+d-ryum63sk = Die Verknüpfung entfernen
+    .doc = Entfernt die Verknüpfung eines Programms und sagt, was geblieben ist.
+    .w-launcher-removed-the-app-and-its = Verknüpfung entfernt. Das Programm und seine Daten wurden behalten.
+
+d-ryum63sk-program = Programm
+
+d-6s2gq2is = Programm deinstallieren
+    .doc = Führt das eigene Deinstallationsprogramm eines Programms aus und sagt es, während es läuft.
+    .w-running-the-app-s-uninstaller-in = Das Deinstallationsprogramm läuft in der Windows-Umgebung…
+    .w-running-the-app-s-uninstaller = Das Deinstallationsprogramm läuft…
+
+d-6s2gq2is-program = Programm
+
+d-6rqdvfee = Einrichtungsdaten löschen
+    .doc = Löscht eine Einrichtung und alles, was sie gespeichert hat, und sagt, was ging.
+    .w-the-app-and-all-its-data = Das Programm und alle seine Daten wurden gelöscht.
+    .w-the-setup-s-apps-and-all = Die Programme der Einrichtung und alle ihre Daten wurden gelöscht.
+
+d-6rqdvfee-capsule = Kapsel
+
+d-62uadggj = Windows-Unterstützung installieren
+    .doc = Installiert die Windows-Unterstützung und hört, wenn sie da ist.
+
+d-szp4wv6l = Unterstützung angekommen
+    .doc = Sagt, dass die von der Person angeforderte Unterstützung installiert ist, sobald sie bereit ist.
+    .w-windows-support-is-installed-you-can = Die Windows-Unterstützung ist installiert. Du kannst das Programm jetzt öffnen.
