@@ -340,17 +340,23 @@ pub fn package(app: &str) -> Vec<u8> {
     std::fs::read(tapp).expect("the built .tapp reads")
 }
 
-/// Install the apps of [`APPS`] that `apps` names, by package id, from the run's build
-/// ([`built`]): what a session's tests install when they open some of the apps and not all.
+/// Install the apps `apps` names, by package id, from the run's build ([`built`]): what a
+/// session's tests install when they open some of the apps and not all. Answers their ids.
 ///
 /// # Panics
-/// The store refuses one, or a file cannot be written.
+/// The run built no app of a name, the store refuses one, or a file cannot be written.
 pub fn install_named(store: &Path, apps: &[&str]) -> Vec<String> {
+    let built = built();
     let mut installed: Vec<String> = Vec::new();
-    for (app, tapp) in &built().apps {
-        if !apps.contains(&app.as_str()) {
-            continue;
-        }
+    for name in apps {
+        let (app, tapp) = built
+            .apps
+            .iter()
+            .find(|(app, _)| app == name)
+            .unwrap_or_else(|| {
+                let ids: Vec<&str> = built.apps.iter().map(|(app, _)| app.as_str()).collect();
+                panic!("this run built no app {name}; it built {ids:?}")
+            });
         let package = std::fs::File::open(tapp).expect("the built .tapp reads");
         let source = tapp.display().to_string();
         package_store::PackageStore::at(store)
