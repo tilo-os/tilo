@@ -159,8 +159,12 @@ def at_path(value, path: str):
 
 def asked_rows(reading) -> list:
     """The invocations a workspace's invocations reading holds: the calls the
-    dispatch keeps, each as a record of its own, under the reader's `items`."""
-    items = reading.get("items") if isinstance(reading, dict) else None
+    dispatch keeps, each as a record of its own, under the first record's `items`
+    — a reading answers `records`, each with its record's `value`."""
+    records = reading.get("records") if isinstance(reading, dict) else None
+    first = records[0] if isinstance(records, list) and records else None
+    value = first.get("value") if isinstance(first, dict) else None
+    items = value.get("items") if isinstance(value, dict) else None
     return [row for row in items or [] if isinstance(row, dict)]
 
 

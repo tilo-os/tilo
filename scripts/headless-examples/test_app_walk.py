@@ -246,24 +246,30 @@ class TheSessionAWalkStartsIn(unittest.TestCase):
 
 
 class TheAsksAWalkReads(unittest.TestCase):
-    """A program's question is a `tilo.invocations` record, and the workspace's invocations
-    reading answers its calls under `items`. A walk that looked for another shape saw no
-    question at all, so every file chooser's answer timed out with nothing asked."""
+    """A program's question is a `tilo.invocations` record, and a reading of it answers
+    `records`, each with its record's `value`, whose `items` are the calls. A walk that read
+    the calls a level too high saw no question at all, so every file chooser's answer timed
+    out with nothing asked."""
 
-    def test_the_invocations_reading_holds_its_calls_under_items(self):
+    def test_the_invocations_reading_holds_its_calls_under_its_records_value_items(self):
         reading = {
-            "items": [
-                {"id": "a", "status": "waiting", "asked": {"files": {}}},
-                {"id": "b", "status": "ended"},
-            ],
-            "total": 2,
-            "waiting": 1,
+            "records": [{"value": {
+                "items": [
+                    {"id": "a", "status": "waiting", "asked": {"files": {}}},
+                    {"id": "b", "status": "ended"},
+                ],
+                "total": 2,
+                "waiting": 1,
+            }}],
+            "revision": "1",
         }
         self.assertEqual([row["id"] for row in walk.asked_rows(reading)], ["a", "b"])
 
     def test_a_reading_of_another_shape_holds_none(self):
         self.assertEqual(walk.asked_rows(None), [])
-        self.assertEqual(walk.asked_rows({"records": [{"value": {}}]}), [])
+        self.assertEqual(walk.asked_rows({"records": []}), [])
+        # The calls a level too high, as a walk that missed the reading's records read them.
+        self.assertEqual(walk.asked_rows({"items": [{"id": "a"}]}), [])
 
 
 class TheAppRootAWalkReads(unittest.TestCase):
