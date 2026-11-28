@@ -214,6 +214,12 @@ fn cases_of(node: &UiNode) -> Vec<Case> {
     clippy::cast_possible_truncation,
     reason = "layout weights and sizes are small values far inside f32"
 )]
+/// The weight a node fills its container with: `fill: 2` for a share of it, or `fill: true` for
+/// all of it, which is how a view writes a control's or a call's own fill.
+fn fill_weight(node: &UiNode) -> Option<f32> {
+    number(node, "fill").or_else(|| flag(node, "fill").then_some(1.0))
+}
+
 fn number(node: &UiNode, name: &str) -> Option<f32> {
     match prop(node, name) {
         Some(Value::Float(number)) => Some(*number as f32),
@@ -590,7 +596,7 @@ fn page_once_from(node: &UiNode, inside: bool, rows: bool) -> UiNode {
 
 /// How a child is sized in its container: `fill`, `min:`, `max:` bound its inline size.
 pub(crate) fn fit_of(node: &UiNode) -> Fit {
-    let mut fit = number(node, "fill").map_or_else(Fit::hug, Fit::fill);
+    let mut fit = fill_weight(node).map_or_else(Fit::hug, Fit::fill);
     // A grid's `min` is its columns' least width, not its own: it takes the width it is given and
     // holds as many such columns as fit, one where none does.
     if node.kind != "grid" {
@@ -615,10 +621,10 @@ fn placement(parent: &UiNode, child: &UiNode) -> Placement {
 /// and `child` is all it holds and asks nothing of its own: a call of a view stands for what the
 /// view draws.
 fn fragment_fill(parent: &UiNode, inherited: Option<f32>, child: &UiNode) -> Option<f32> {
-    if parent.kind != "fragment" || parent.children.len() != 1 || number(child, "fill").is_some() {
+    if parent.kind != "fragment" || parent.children.len() != 1 || fill_weight(child).is_some() {
         return None;
     }
-    number(parent, "fill").or(inherited)
+    fill_weight(parent).or(inherited)
 }
 
 fn placement_in(parent: &UiNode, inherited: Option<f32>, child: &UiNode) -> Placement {
@@ -637,7 +643,7 @@ fn placement_in(parent: &UiNode, inherited: Option<f32>, child: &UiNode) -> Plac
             .iter()
             .any(|sibling| sibling.kind == "spacer")
         && (is_container(&child.kind) || child.kind == "embed")
-        && number(child, "fill").is_none()
+        && fill_weight(child).is_none()
     {
         fit = Fit::fill(1.0);
         fit.width.min = length(child, "min");
@@ -843,7 +849,7 @@ fn content_kept(old: &UiNode, new: &UiNode) -> bool {
 fn pace_swap(swapped: &mut ui::widget::Swapped, node: &UiNode) {
     swapped.set_feel(feel(node).unwrap_or_default());
     let fill = if flag(node, "fill") {
-        number(node, "fill").unwrap_or(1.0)
+        fill_weight(node).unwrap_or(1.0)
     } else {
         0.0
     };
@@ -1443,7 +1449,7 @@ impl Reconciler {
             if placement.offset.is_none() {
                 placement.offset = offset(parent, fragment);
             }
-            passed = number(fragment, "fill").or(passed);
+            passed = fill_weight(fragment).or(passed);
             if prop(child, "min").is_none()
                 && let Some(min) = length(fragment, "min")
             {
@@ -1459,7 +1465,7 @@ impl Reconciler {
             }
         }
         // The child's own arguments win; else it takes the weight the fragments pass on.
-        if let Some(weight) = passed.filter(|_| number(child, "fill").is_none()) {
+        if let Some(weight) = passed.filter(|_| fill_weight(child).is_none()) {
             let (min, max) = (placement.fit.width.min, placement.fit.width.max);
             placement.fit = Fit::fill(weight);
             placement.fit.width.min = min;
@@ -3406,6 +3412,32 @@ mod tests {
         let built = reconciler().build(view);
         let harness = ui::headless::Driver::new(ui::State::new(), window_content(built), size);
         harness.targets().into_iter().collect()
+    }
+
+    /// A control that fills takes its row's room: a panel written `fill: true` (a boolean, as a
+    /// view writes a control's own fill) stands as wide as the row, never as wide as what it
+    /// holds, so a long field inside a phone's panel cannot widen the panel past the display.
+    #[test]
+    fn a_control_that_fills_takes_its_rows_room() {
+        let mut field = node("ui.TextInput", "field");
+        field.props.insert("fill".to_owned(), Value::Bool(true));
+        let mut row = node("row", "bar");
+        row.children = vec![field];
+        let built = reconciler().build(&row);
+        let harness =
+            ui::headless::Driver::new(ui::State::new(), window_content(built), (304, 360));
+        let rect = harness
+            .inspection()
+            .root
+            .nodes()
+            .into_iter()
+            .find(|node| node.widget == "TextInput")
+            .map(|node| node.rect)
+            .expect("the field is laid out");
+        assert!(
+            (rect[2] - 304.0).abs() < 1.0,
+            "the field fills its row: {rect:?}"
+        );
     }
 
     /// `fill` in the language lowers to a part's `Fit::fill`, and a scroll view to a
