@@ -76,6 +76,52 @@ impl HeldOpen {
     }
 }
 
+/// The release to install before `app` runs in a workspace whose policy is `policy`: the one
+/// this device's package store holds, where the workspace has not given the app its own records
+/// (it runs no version of it). `None` where it runs the app already, or the device holds no
+/// signed package of it. What an open checks, and what a session checks before the apps it runs
+/// itself keep their records in a workspace.
+#[must_use]
+pub fn release_to_install(
+    policy: &tilo_action_policy::WorkspacePolicy,
+    app: &str,
+) -> Option<AppRelease> {
+    let given = roles::app_records_grant_id(app);
+    if policy.grants.iter().any(|grant| grant.id == given) {
+        return None;
+    }
+    held_release(app)
+}
+
+/// The workspace `workspace`'s own `install` of `release`, leaving a version it already runs
+/// alone ([`IF_ABSENT`]): the one install an app gets before it runs in a workspace, whoever
+/// asks it.
+#[must_use]
+pub fn install_request(workspace: &str, release: &AppRelease) -> InvokeRequest {
+    let mut argument = serde_json::Map::new();
+    argument.insert("app".into(), release.app.clone().into());
+    argument.insert("version".into(), release.version.clone().into());
+    argument.insert("package".into(), release.package.clone().into());
+    argument.insert("publisher".into(), release.publisher.clone().into());
+    if !release.surface.is_empty() {
+        argument.insert("surface".into(), release.surface.clone().into());
+    }
+    argument.insert(IF_ABSENT.into(), true.into());
+    InvokeRequest {
+        asks: false,
+        invocation: InvocationId::new(),
+        target: RemoteActionTarget::workspace_governance(workspace, roles::governance::INSTALL_APP),
+        argument: InvokeArgument::Json(argument),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    }
+}
+
 impl AppBrokerState {
     /// The release to install before `caller` opens `app` in `workspace`: the one this device's
     /// package store holds, where a person opens an app the workspace has not given its own
@@ -89,16 +135,7 @@ impl AppBrokerState {
         if app.unconfined || !caller.acting().is_person() {
             return None;
         }
-        let given = roles::app_records_grant_id(&app.package_id);
-        if workspace
-            .policy
-            .grants
-            .iter()
-            .any(|grant| grant.id == given)
-        {
-            return None;
-        }
-        held_release(&app.package_id)
+        release_to_install(&workspace.policy, &app.package_id)
     }
 
     /// Install `release` in the open's workspace as the person opening it, through the
@@ -111,31 +148,7 @@ impl AppBrokerState {
         open: HeldOpen,
         name: String,
     ) {
-        let mut argument = serde_json::Map::new();
-        argument.insert("app".into(), release.app.clone().into());
-        argument.insert("version".into(), release.version.clone().into());
-        argument.insert("package".into(), release.package.clone().into());
-        argument.insert("publisher".into(), release.publisher.clone().into());
-        if !release.surface.is_empty() {
-            argument.insert("surface".into(), release.surface.clone().into());
-        }
-        argument.insert(IF_ABSENT.into(), true.into());
-        let install = InvokeRequest {
-            asks: false,
-            invocation: InvocationId::new(),
-            target: RemoteActionTarget::workspace_governance(
-                &open.workspace,
-                roles::governance::INSTALL_APP,
-            ),
-            argument: InvokeArgument::Json(argument),
-            context: None,
-            confirmation: None,
-            revision: None,
-            on_behalf_of: None,
-            wait_ms: None,
-            appearance: None,
-            signed: None,
-        };
+        let install = install_request(&open.workspace, release);
         // The install is the person's own call, owned as the open was: a person at this device's
         // shell owns each of their calls by its own id.
         let origin = open.origin.as_ref().map(|origin| match origin {

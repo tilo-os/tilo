@@ -115,6 +115,20 @@ fn targets_ending(device: &Device, suffix: &str) -> Vec<String> {
         .collect()
 }
 
+/// The apps a session runs itself are installed in the workspace before their records move there,
+/// through the workspace's own install, as opening one installs it: the site, which holds no
+/// package of them, runs Notes once the laptop keeps its apps' records in the workspace.
+#[test]
+fn the_apps_a_session_runs_are_installed_where_their_records_go() {
+    seed_the_apps();
+    let (site, _ada, laptop, _phone) = two_devices_of_one_person_with_apps();
+    assert!(
+        site.runs(NOTES),
+        "the workspace runs Notes once the laptop keeps its records there\n{}",
+        laptop.diagnostic()
+    );
+}
+
 /// A window moved from the laptop onto a screen of the phone: the window's menu offers the phone's
 /// screen, the phone opens the same app on the same record there, and the laptop's window closes.
 /// With the phone off, the window stays on the laptop and the person is told why.

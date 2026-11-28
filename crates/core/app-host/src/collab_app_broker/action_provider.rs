@@ -44,6 +44,7 @@ pub(super) mod delivering;
 mod directory;
 mod hosted;
 mod install_on_open;
+pub use install_on_open::{install_request, release_to_install};
 mod launch_child;
 mod own_device;
 mod publishers;

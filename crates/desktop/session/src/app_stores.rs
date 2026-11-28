@@ -2,11 +2,17 @@
 //! is in once the device's daemon holds it: the store the app's windows open, so the services,
 //! the windows, an agent's programs and the person's other devices read and change one copy.
 
+use tilo_lock::MutexRecover as _;
+
 impl crate::Shared {
     /// Keep the apps' resources the services run over in the workspace the person is in, once the
     /// session holds it: the store the app's windows open, so the service, the windows, an agent's
     /// programs and the person's other devices read and change one copy.
-    pub(crate) fn keep_app_stores(&self, runtime: &tokio::runtime::Handle) {
+    pub(crate) fn keep_app_stores(
+        &self,
+        runtime: &tokio::runtime::Handle,
+        dispatch: Option<&dyn crate::app_wire::WorkspaceActions>,
+    ) {
         if *self.app_stores.borrow() == AppStores::Kept {
             return;
         }
@@ -32,6 +38,18 @@ impl crate::Shared {
             return;
         }
         let workspace = workspace.to_string();
+        // An app's records are the workspace's only once it runs the app: each it runs no version
+        // of yet is installed first, as opening the app there installs it, so every device
+        // holding the workspace decides the app's writes by the surface it installed.
+        match self.install_apps(&workspace, standing, dispatch) {
+            Installed::All => {}
+            Installed::Waits(on) => return waits(on),
+            Installed::Refused(why) => {
+                tracing::warn!(%why, "the apps the session runs were not installed in the workspace");
+                *self.app_stores.borrow_mut() = AppStores::Refused(standing, why);
+                return;
+            }
+        }
         let Some(store) = (self.held_stores)(workspace.clone(), runtime) else {
             return waits("this device's workspace service holds no store of the workspace");
         };
@@ -66,11 +84,115 @@ impl crate::Shared {
     }
 }
 
+impl crate::Shared {
+    /// Install, through the workspace's own `install` as an open does
+    /// ([`tilo_app_host::install_request`]), each app the session's services run that `workspace`
+    /// runs no version of: whether all of them run there now, the move waits, or the workspace
+    /// refused one.
+    fn install_apps(
+        &self,
+        workspace: &str,
+        standing: u64,
+        dispatch: Option<&dyn crate::app_wire::WorkspaceActions>,
+    ) -> Installed {
+        if let AppStores::Installing(asked) = &*self.app_stores.borrow() {
+            let answers = asked.answers.lock_recover();
+            if let Some(Err(why)) = answers.iter().find(|answer| answer.is_err()) {
+                return Installed::Refused(why.clone());
+            }
+            if answers.len() < asked.count {
+                return Installed::Waits("the workspace installs the apps the session runs");
+            }
+        }
+        let Some(policy) = self
+            .view
+            .as_ref()
+            .and_then(|view| view.policy(workspace).ok())
+        else {
+            return Installed::Waits("the workspace's policy has not reached this device yet");
+        };
+        let releases: Vec<_> = self
+            .services
+            .borrow()
+            .apps()
+            .iter()
+            .filter_map(|app| tilo_app_host::release_to_install(&policy, app))
+            .collect();
+        if releases.is_empty() {
+            return Installed::All;
+        }
+        // Installed, and the workspace's policy is yet to say so here: its grants arrive with
+        // the next standing of the workspace.
+        if matches!(&*self.app_stores.borrow(), AppStores::Installing(asked) if asked.standing == standing)
+        {
+            return Installed::Waits("the workspace's policy has not shown the apps installed yet");
+        }
+        let Some(dispatch) = dispatch else {
+            return Installed::Waits("the session has no dispatch to install the apps with");
+        };
+        let asked = InstallsAsked {
+            standing,
+            count: releases.len(),
+            answers: std::sync::Arc::default(),
+        };
+        for release in &releases {
+            let answers = std::sync::Arc::clone(&asked.answers);
+            let app = release.app.clone();
+            dispatch
+                .follow(
+                    workspace.to_owned(),
+                    tilo_app_host::install_request(workspace, release),
+                )
+                .then(move |answer| {
+                    let answer = answer
+                        .unwrap_or_else(|| Err("the device's dispatch never answered".to_owned()))
+                        .map(drop)
+                        .map_err(|why| format!("{app} was not installed: {why}"));
+                    answers.lock_recover().push(answer);
+                });
+        }
+        *self.app_stores.borrow_mut() = AppStores::Installing(asked);
+        Installed::Waits("the workspace installs the apps the session runs")
+    }
+}
+
+/// Whether the apps the session runs run in the workspace it moves their records to.
+enum Installed {
+    /// Every one of them runs there.
+    All,
+    /// The move waits on this.
+    Waits(&'static str),
+    /// The workspace refused to install one, saying why.
+    Refused(String),
+}
+
+/// The installs a session asked of a workspace before moving its apps' records there, and their
+/// answers as they come.
+#[derive(Clone, Debug)]
+pub(crate) struct InstallsAsked {
+    /// How the workspace stood on the device's daemon when they were asked.
+    standing: u64,
+    /// How many were asked.
+    count: usize,
+    /// Each one's answer, as it ended.
+    answers: std::sync::Arc<std::sync::Mutex<Vec<Result<(), String>>>>,
+}
+
+impl PartialEq for InstallsAsked {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.answers, &other.answers)
+    }
+}
+
+impl Eq for InstallsAsked {}
+
 /// Where moving the apps' resources into the workspace the person is in stands.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum AppStores {
     /// Not moved yet, and what the move waits on.
     Waiting(&'static str),
+    /// Waiting for the workspace to install the apps the session runs, as asked.
+    Installing(InstallsAsked),
     /// The workspace refused them, saying why, while it stood here on the device's daemon.
     Refused(u64, String),
     /// Every app's resources are kept there.
@@ -87,6 +209,9 @@ impl std::fmt::Display for AppStores {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Waiting(on) => write!(f, "waiting: {on}"),
+            Self::Installing(_) => {
+                f.write_str("waiting: the workspace installs the apps the session runs")
+            }
             Self::Refused(_, why) => write!(f, "refused: {why}"),
             Self::Kept => f.write_str("kept"),
         }

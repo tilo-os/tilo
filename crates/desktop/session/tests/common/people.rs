@@ -508,6 +508,17 @@ impl Site {
         tilo_desktop_model::shared_resource::read(&document, None).map(|shell| shell.tree)
     }
 
+    /// Whether the workspace runs `app`, as the site keeps its governance now: some version of it
+    /// was installed there.
+    pub fn runs(&self, app: &str) -> bool {
+        self.runtime.block_on(async {
+            self.workspaces
+                .state(&self.workspace)
+                .await
+                .is_some_and(|state| state.governance().app_version(app).is_some())
+        })
+    }
+
     /// The verdicts the workspace holds on writes, as the site keeps them
     /// now, described for a step that waited for one: what the site refused,
     /// of whose write, and why.

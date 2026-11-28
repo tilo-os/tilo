@@ -68,8 +68,16 @@ impl Session {
         self.shared.table.follow_media();
         steps.step("media");
         // The apps' resources the services run over are the workspace's, once the session holds it.
-        self.shared
-            .keep_app_stores(self.automation_runtime.handle());
+        let dispatch = self
+            .app_wire
+            .as_ref()
+            .and_then(|wire| wire.dispatch.clone());
+        self.shared.keep_app_stores(
+            self.automation_runtime.handle(),
+            dispatch
+                .as_deref()
+                .map(|dispatch| dispatch as &dyn crate::app_wire::WorkspaceActions),
+        );
         steps.step("app stores");
         let mut services = self.shared.services.borrow_mut();
         // What the records the services keep themselves reference: each record's content, kept in

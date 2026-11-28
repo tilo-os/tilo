@@ -46,6 +46,7 @@ pub use tilo_invocation_journal::serve_as as serve_receipts_as;
 /// When a re-check of what was already admitted is due, and the announcements it waits on.
 pub use tilo_workspace_keys::schedule as policy_schedule;
 pub mod collab_app_broker;
+pub use collab_app_broker::action_provider::{install_request, release_to_install};
 pub mod collab_broker;
 /// The workspaces' governance state and their durable op history, held on every host.
 pub use tilo_broker_core::{collab_core, collab_history};
