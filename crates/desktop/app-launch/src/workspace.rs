@@ -91,7 +91,7 @@ impl Workspace {
     /// workspace's files resource, and a folder on this device only once the
     /// person picks it, which is a choice kept for that app alone.
     #[must_use]
-    pub fn grants_for_launch(&self, app: &str, home: Option<PathBuf>) -> LaunchGrants {
+    pub fn grants_for_launch(&self, app: &str) -> LaunchGrants {
         let mut grants = self.grants.for_app(app);
         grants.author = self.may_change(app);
         // A workspace only ever refuses the person's devices; their own answers allow them.
@@ -109,9 +109,6 @@ impl Workspace {
                 .through(app),
             );
         }
-        // The parameter stays for the launchers' callers: a device mints no folder's grant here
-        // any more, for Files or for any other app.
-        let _ = home;
         grants
     }
 
@@ -182,7 +179,7 @@ impl Workspace {
         launcher::capabilities::write_capability_file(
             &self.directory,
             app,
-            &self.grants_for_launch(app, tilo_paths::home()),
+            &self.grants_for_launch(app),
         )
     }
 }
@@ -192,6 +189,7 @@ mod tests {
     use tilo_app_package::manifest::{NetMode, SandboxNet};
 
     use super::*;
+    use tilo_permissions::caps::Access;
     use tilo_permissions::caps::CapOverride;
     use tilo_permissions::caps::Scope;
 
@@ -231,10 +229,9 @@ mod tests {
         // No app is handed this machine's home by standing, Files included: a folder on the
         // device is the person's to pick, and Files shows the workspace's own tree otherwise.
         workspace.person = "person-7".to_owned();
-        let home = PathBuf::from("/home/you");
         assert!(
             workspace
-                .grants_for_launch("so.tilo.file-explorer", Some(home.clone()))
+                .grants_for_launch("so.tilo.file-explorer")
                 .is_empty(),
             "Files is handed no folder of this device by standing"
         );
@@ -243,9 +240,7 @@ mod tests {
             "the workspace's synced record never names this machine's home"
         );
         assert!(
-            workspace
-                .grants_for_launch("so.tilo.notes", Some(home))
-                .is_empty(),
+            workspace.grants_for_launch("so.tilo.notes").is_empty(),
             "no other app browses the device's files"
         );
 
@@ -372,7 +367,7 @@ mod tests {
         let filtered = read(&path);
         assert_eq!(
             filtered,
-            workspace.grants_for_launch("so.tilo.notes", None),
+            workspace.grants_for_launch("so.tilo.notes"),
             "the launcher reads what was granted to this app, not the workspace's other grants"
         );
         assert_eq!(filtered.sandbox.len(), 1);
@@ -400,9 +395,6 @@ mod tests {
         // Every launch path writes what it is granted where the launcher reads it, and a launch
         // granted nothing writes no file at all: Files opens on the workspace's own tree here,
         // whatever home this machine runs as.
-        let Some(home) = tilo_paths::home() else {
-            return;
-        };
         assert_eq!(
             workspace
                 .write_grants("so.tilo.file-explorer")
@@ -411,7 +403,7 @@ mod tests {
             "Files is handed no folder of this device, so no capability file is written"
         );
         assert_eq!(
-            workspace.grants_for_launch("so.tilo.file-explorer", Some(home)),
+            workspace.grants_for_launch("so.tilo.file-explorer"),
             LaunchGrants::default(),
             "the launcher is handed only what the workspace granted"
         );
