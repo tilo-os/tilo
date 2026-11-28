@@ -70,22 +70,27 @@ impl NameHost for Installed {
 /// knows otherwise. The sheet a view draws is the one place a name is resolved, so a rename, a
 /// new member or one removed moves every view with the host's next read.
 pub struct HostNames {
-    host: Rc<RefCell<Option<crate::host::Host>>>,
+    /// The instance's host, not held: the host's runtime holds these names, and a strong hold
+    /// here would keep the host, and the instance's connection, after the instance ended.
+    host: std::rc::Weak<RefCell<Option<crate::host::Host>>>,
     otherwise: Rc<dyn NameHost>,
 }
 
 impl HostNames {
     /// The names read from `host`'s last members read, and what its embedder knows otherwise.
     #[must_use]
-    pub fn new(otherwise: Rc<dyn NameHost>, host: Rc<RefCell<Option<crate::host::Host>>>) -> Self {
-        Self { host, otherwise }
+    pub fn new(otherwise: Rc<dyn NameHost>, host: &Rc<RefCell<Option<crate::host::Host>>>) -> Self {
+        Self {
+            host: Rc::downgrade(host),
+            otherwise,
+        }
     }
 
     /// The row the workspace keeps for `member`, as the host last read it.
     fn row(&self, member: &MemberId) -> Option<collab_types::Member> {
-        let host = self.host.borrow();
-        let host = host.as_ref()?;
-        host.member_rows().get(member).cloned()
+        let host = self.host.upgrade()?;
+        let host = host.borrow();
+        host.as_ref()?.member_rows().get(member).cloned()
     }
 }
 
@@ -217,7 +222,7 @@ mod host_names_tests {
     #[test]
     fn a_member_is_named_by_what_they_are_until_the_members_resource_names_them() {
         let host: Rc<RefCell<Option<crate::host::Host>>> = Rc::default();
-        let names = HostNames::new(Rc::new(Installed), Rc::clone(&host));
+        let names = HostNames::new(Rc::new(Installed), &host);
         assert_eq!(
             names.name(&person(
                 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

@@ -2357,6 +2357,15 @@ fn receipt_of(
     }
 }
 
+impl Drop for Hosted {
+    /// The published surface holds the host, whose runtime holds the platform that holds the
+    /// surface: let go of it, or the instance and its connection outlive it, and the broker goes
+    /// on listing it as the app's running provider.
+    fn drop(&mut self) {
+        self.surface.borrow_mut().take();
+    }
+}
+
 impl Hosted {
     /// The instance `spec` of `bundle` on `connection`, its resources in `store` and their content
     /// in `content`, its words read by `phrases` and written in `formats`.

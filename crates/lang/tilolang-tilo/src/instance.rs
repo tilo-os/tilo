@@ -561,8 +561,7 @@ impl Instance {
         transport: Box<dyn Transport>,
     ) -> Self {
         let host: Rc<RefCell<Option<Host>>> = Rc::default();
-        let names: Rc<dyn NameHost> =
-            Rc::new(crate::names::HostNames::new(names, Rc::clone(&host)));
+        let names: Rc<dyn NameHost> = Rc::new(crate::names::HostNames::new(names, &host));
         Self {
             app: config.app,
             root_view: config.root,

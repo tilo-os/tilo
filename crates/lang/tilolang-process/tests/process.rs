@@ -998,12 +998,14 @@ tilo_test_env::scenario! {
 
     phase an_instance_ends_when_its_window_closes;
     {
-        let (mut host, mut window, _sent, _inbox, _route) = running("ada");
+        let (mut host, mut window, sent, _inbox, _route) = running("ada");
         settle(&mut host, &mut window);
         assert!(!host.is_empty());
         drop(window);
         host.turn();
         assert!(host.is_empty(), "the instance ended with its window");
+        // Its connection goes with it: the broker lists no provider for an ended instance.
+        assert_eq!(Rc::strong_count(&sent), 1, "the ended instance kept its connection");
     }
 
     phase a_slow_open_does_not_hold_up_another_instances_frame;
