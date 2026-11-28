@@ -19,7 +19,7 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, mpsc};
 
 use serde::{Deserialize, Serialize};
-use tilo_connectivity_service::device::{Change, Device as _, OsDevice};
+use tilo_connectivity_service::device::{Change, Device, OsDevice};
 use tilo_device_surfaces::devices::ConnectionView;
 use tilo_service::{Asked, Question};
 use tilo_workspace_service::workspaces::person_workspace::devices::{Devices, Tether, TetherStage};
@@ -226,7 +226,7 @@ impl Tethering {
             Step::Join => {
                 let (sender, sharing) = (self.sender.clone(), self.sharing.clone());
                 std::thread::spawn(move || {
-                    let joined = sharing.device(Arc::new(OsDevice)).change(&Change::Join {
+                    let joined = sharing.device(radio()).change(&Change::Join {
                         network: turn.network.clone(),
                         password: None,
                         hidden: false,
@@ -243,7 +243,7 @@ impl Tethering {
             Step::StopSharing => {
                 let sender = self.sender.clone();
                 std::thread::spawn(move || {
-                    if let Err(error) = os_actions::set_hotspot(false) {
+                    if let Err(error) = stop_hotspot() {
                         tracing::warn!(%error, "the shared hotspot did not stop");
                     }
                     let _ = sender.send(Done {
@@ -255,7 +255,7 @@ impl Tethering {
             Step::Leave => {
                 let sender = self.sender.clone();
                 std::thread::spawn(move || {
-                    if let Err(error) = OsDevice.change(&Change::Leave {
+                    if let Err(error) = radio().change(&Change::Leave {
                         network: turn.network.clone(),
                     }) {
                         tracing::warn!(%error, "the phone's hotspot was not left");
@@ -402,16 +402,81 @@ pub(crate) fn connection(record: &Devices, local: &str) -> Option<ConnectionView
     })
 }
 
+/// The environment a development build's tests set to keep a share off this machine's
+/// `NetworkManager`: the hotspot and the joins happen on a radio in memory.
+const TEST_RADIO_ENV: &str = "TILO_TETHER_RADIO";
+
+/// Whether this build runs a share on the radio in memory: a development build, told by its
+/// environment, and never a released one.
+fn test_radio() -> bool {
+    cfg!(debug_assertions) && std::env::var_os(TEST_RADIO_ENV).is_some_and(|value| value == "test")
+}
+
+/// This device's own radio, whose changes join and leave networks.
+fn radio() -> Arc<dyn Device> {
+    #[cfg(debug_assertions)]
+    if test_radio() {
+        return Arc::new(TestRadio);
+    }
+    Arc::new(OsDevice)
+}
+
 /// Start this phone's hotspot as `network` under a fresh passphrase, and share that passphrase
 /// with the person's devices as a saved network's is shared.
 fn start_sharing(sharing: &WifiSharing, network: &str) -> Result<(), String> {
     let password = hex::encode(tilo_network_actor::fabric::nonzero::<12>());
-    os_actions::configure_hotspot(&os_actions::HotspotConfiguration {
-        ssid: network.to_owned(),
-        password: password.clone(),
-        band: os_actions::HotspotBand::Automatic,
-    })?;
+    if !test_radio() {
+        os_actions::configure_hotspot(&os_actions::HotspotConfiguration {
+            ssid: network.to_owned(),
+            password: password.clone(),
+            band: os_actions::HotspotBand::Automatic,
+        })?;
+    }
     sharing.share_hotspot(network, &password)
+}
+
+/// Stop the hotspot this phone shared.
+fn stop_hotspot() -> Result<(), String> {
+    if test_radio() {
+        return Ok(());
+    }
+    os_actions::set_hotspot(false)
+}
+
+/// A radio in memory for a development build's tests: the phone's hotspot is in range, and
+/// leaving it always works. The passphrase a protected hotspot needs is proven by the Wi-Fi
+/// continuity checks, which keep this seam about the share itself.
+#[cfg(debug_assertions)]
+struct TestRadio;
+
+#[cfg(debug_assertions)]
+impl Device for TestRadio {
+    fn read(&self) -> tilo_connectivity_service::device::Readings {
+        tilo_connectivity_service::device::Readings::default()
+    }
+
+    fn change(&self, change: &Change) -> Result<(), String> {
+        match change {
+            Change::Join { .. } | Change::Leave { .. } => Ok(()),
+            _ => Err("the test's radio joins and leaves networks only".to_owned()),
+        }
+    }
+
+    fn scan_operators(&self, _modem: &str) -> Result<Vec<os_actions::Operator>, String> {
+        Err("this radio has no modem".to_owned())
+    }
+
+    fn send_code(&self, _modem: &str, _command: &str) -> Result<os_actions::CodeAnswer, String> {
+        Err("this radio has no modem".to_owned())
+    }
+
+    fn answer_code(&self, _modem: &str, _response: &str) -> Result<os_actions::CodeAnswer, String> {
+        Err("this radio has no modem".to_owned())
+    }
+
+    fn cancel_code(&self, _modem: &str) -> Result<(), String> {
+        Err("this radio has no modem".to_owned())
+    }
 }
 
 /// The share this device takes part in that is under way at `now_ms`: the key of the device the

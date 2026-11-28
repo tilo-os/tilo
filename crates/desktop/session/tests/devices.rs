@@ -32,6 +32,8 @@ use tilo_session::platform::fabric::{
 };
 use tilo_session::surfaces::Surface;
 use tilo_session::{AppActions, AppLists, Lists, Options, Session};
+use tilo_workspace_service::workspaces::person_workspace::devices::TetherStage;
+use tilo_workspace_service::workspaces::person_workspace::tethering::network_name;
 
 type Arguments = serde_json::Map<String, serde_json::Value>;
 
@@ -583,6 +585,115 @@ fn a_device_that_cannot_play_is_not_sent_what_plays_here() {
         "a device that cannot play is not sent what plays here: {:?}",
         harness.sent()
     );
+}
+
+/// The person uses their phone's connection from their laptop: pressing the phone's row asks the
+/// phone's person, whose yes starts the hotspot the laptop joins; the row says it is connected,
+/// and stopping it ends the share.
+///
+/// The phone's side is its record write, which its session makes when its person answers, and the
+/// hotspot and the join run on a radio in memory (`TILO_TETHER_RADIO`): this harness's daemons
+/// hold no action-service link to each other, so a second live session would see this one away.
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the radio is this test process's own, read as its session starts, and nextest runs \
+              every test in a process of its own"
+)]
+fn a_laptop_uses_its_phones_connection_and_stops_it() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    // SAFETY: nextest runs this test in a process of its own, and the session reads this as it
+    // starts on the test's own thread.
+    unsafe { std::env::set_var("TILO_TETHER_RADIO", "test") };
+    let mut harness = session(&[("phone", "Phone", true, true)], Rc::new(Host::default()));
+    // The person's record is followed before the press: the session asks the phone about a share
+    // through it.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        harness.step();
+        if harness
+            .reading()
+            .is_some_and(|reading| !reading.access.is_empty())
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the session follows the person's record of their devices"
+        );
+    }
+
+    // The person presses the phone's row: the laptop asks the phone for its connection.
+    harness
+        .session
+        .invoke(
+            tilo_session::DEVICES_RESOURCE,
+            "use-connection",
+            &serde_json::from_value(serde_json::json!({ "device": key_of("phone") }))
+                .expect("arguments"),
+        )
+        .expect("the person asks for the phone's connection");
+    let local = hex::encode(harness.local);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let asked = loop {
+        harness.step();
+        if let Some(asked) = harness.daemon.tether(&local) {
+            break asked;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the laptop asks the phone for its connection"
+        );
+    };
+    assert_eq!(asked.phone, key_of("phone"));
+    assert_eq!(asked.stage, TetherStage::Asked);
+
+    // The phone's person says yes: the phone writes the hotspot it shares.
+    let network = network_name("Phone");
+    harness.daemon.start_tether(&local, &network);
+
+    // The laptop joins it, and the row says it is connected over it.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let connection = loop {
+        harness.step();
+        if let Some(connection) = harness.reading().and_then(|reading| reading.connection)
+            && connection.joined
+        {
+            break connection;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the laptop joins the phone's hotspot"
+        );
+    };
+    assert!(
+        !connection.sharing,
+        "the laptop uses the connection; the phone shares it"
+    );
+    assert_eq!(connection.label, "Phone");
+    assert_eq!(connection.network, network);
+
+    // The person stops it from the row that says it is connected.
+    harness
+        .session
+        .invoke(
+            tilo_session::DEVICES_RESOURCE,
+            "stop-connection",
+            &Arguments::new(),
+        )
+        .expect("the person stops using the phone's connection");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        harness.step();
+        if harness
+            .reading()
+            .and_then(|reading| reading.connection)
+            .is_none()
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the share ends and the row goes");
+    }
 }
 
 #[test]

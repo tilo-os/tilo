@@ -186,6 +186,13 @@ pub struct TestDaemon {
     /// Every ask a session's shell made of this daemon, by resource and action, as it made it:
     /// what a test counts to tell a follow from a poll.
     asks: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    /// The person's record of their devices, followed once for the tests that read and change it:
+    /// a follower read once and dropped again reads nothing of it.
+    record: std::sync::OnceLock<
+        crate::followed_resource::FollowedResource<
+            tilo_workspace_service::workspaces::person_workspace::devices::Devices,
+        >,
+    >,
     _dir: tempfile::TempDir,
 }
 
@@ -402,6 +409,7 @@ impl TestDaemon {
             speakers,
             identity: std::sync::OnceLock::new(),
             asks,
+            record: std::sync::OnceLock::new(),
             _dir: dir,
         }
     }
@@ -481,6 +489,55 @@ impl TestDaemon {
             member.as_str(),
             std::sync::Arc::new(|| {}),
         )
+    }
+
+    /// The person's record of their devices as `device` asked, read through this daemon once and
+    /// held.
+    fn person_record(
+        &self,
+    ) -> &crate::followed_resource::FollowedResource<
+        tilo_workspace_service::workspaces::person_workspace::devices::Devices,
+    > {
+        self.record.get_or_init(|| self.person_devices())
+    }
+
+    /// The share `device` asked for, as the record of the person's devices holds it now: the ask
+    /// its phone's person answers.
+    pub fn tether(
+        &self,
+        device: &str,
+    ) -> Option<tilo_workspace_service::workspaces::person_workspace::devices::Tether> {
+        let record = self.person_record();
+        let _ = record.read_now();
+        record
+            .get()
+            .tethers
+            .get(&tilo_resource::Id::from_raw(device.to_owned()))
+            .cloned()
+    }
+
+    /// Answer the share `device` asked for with `network` here, as the phone's session writes its
+    /// person's yes: what the device that asked joins.
+    pub fn start_tether(&self, device: &str, network: &str) {
+        use tilo_workspace_service::workspaces::person_workspace::devices::Devices;
+        let record = self.person_record();
+        let asking = tilo_resource::Id::from_raw(device.to_owned());
+        settle(record, |kept| kept.tethers.get(&asking).is_some());
+        let asked = record
+            .get()
+            .tethers
+            .get(&asking)
+            .cloned()
+            .expect("the device asked for a share");
+        record
+            .invoke(&Devices::ANSWER_TETHER.with((
+                device.to_owned(),
+                asked.asked_ms,
+                network.to_owned(),
+                false,
+                tilo_clock::unix_now_ms_i64(),
+            )))
+            .expect("the share is answered");
     }
 
     /// The certificate of `device`, one of `label`'s, as this fixture's person certifies it.
