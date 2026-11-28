@@ -17,8 +17,8 @@ use tilo_action_services::{
     workspace_invocations::Invocation as InvocationRecord, workspace_invocations::InvocationStatus,
 };
 use tilo_actions::remote::{
-    ActionCallError, Caller, InvocationReceipt, InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE,
-    Pending, ReceiptStatus, RemoteActionTarget, pending,
+    ActionCallError, Caller, CataloguePage, InvocationReceipt, InvokeArgument, InvokeRequest,
+    MAX_CATALOGUE_PAGE, Pending, ReceiptStatus, RemoteActionTarget, pending,
 };
 use tilo_actions::tree::{Address, app_of};
 use tilo_actions::{
@@ -67,45 +67,9 @@ impl AppBrokerState {
         };
         let invocation = request.invocation;
         self.action_query(caller, &asked).map(move |page| {
-            // A catalogue that could not be read answers so, with the reason: the code that asked
-            // says it in its own words instead of failing at the call. What it answers is the
-            // `Catalogue` record, the offers and the reason beside them.
-            let (actions, failure) = match page {
-                Ok(page) => {
-                    let actions: Vec<serde_json::Value> = page
-                        .rows
-                        .into_iter()
-                        .filter(|row| app.as_ref().is_none_or(|app| row.app_id == *app))
-                        .filter_map(|row| {
-                            let action = row.action?;
-                            Some(serde_json::json!({
-                                "address": format!(
-                                    "{}/{}#{}",
-                                    row.app_id, action.address.resource, action.address.action
-                                ),
-                                "app": row.app_id,
-                                "app_label": app_label(&row.app_id),
-                                "label": action.action_label,
-                                "resource": action.resource_label,
-                                "resource_kind": row.resource.kind,
-                                "resource_id": row.resource.id,
-                                "kind": if action.contract.kind == ActionKind::Read { "read" } else { "effect" },
-                                "params": action.params.iter().map(|param| serde_json::json!({
-                                    "name": param.name,
-                                    "ty": param_type_name(param.ty),
-                                    "required": param.required,
-                                })).collect::<Vec<_>>(),
-                                "confirms": !matches!(action.contract.confirmation, ConfirmationPolicy::None),
-                            }))
-                        })
-                        .collect();
-                    (actions, String::new())
-                }
-                Err(error) => (Vec::new(), error.to_string()),
-            };
             Ok(completed(
                 invocation,
-                serde_json::json!({ "offers": actions, "failure": failure }),
+                catalogue_answer(page, app.as_deref()),
             ))
         })
     }
@@ -341,6 +305,51 @@ fn app_label(app: &str) -> String {
     tilo_actions::field_type::label_of(app.rsplit('.').next().unwrap_or(app))
 }
 
+/// What `actions.catalogue` answers: the actions offered, or why they could not be read, as the
+/// `Catalogue` record the language declares. A catalogue that could not be read answers so rather
+/// than failing the call, so the code that asked says it in its own words.
+fn catalogue_answer(
+    page: Result<CataloguePage, ActionCallError>,
+    app: Option<&str>,
+) -> serde_json::Value {
+    let (offers, failure) = match page {
+        Ok(page) => (catalogue_offers(page, app), String::new()),
+        Err(error) => (Vec::new(), error.to_string()),
+    };
+    serde_json::json!({ "offers": offers, "failure": failure })
+}
+
+/// The rows of `page` this caller is offered, as the `Offered` records code reads, kept to one
+/// app's when `app` names it.
+fn catalogue_offers(page: CataloguePage, app: Option<&str>) -> Vec<serde_json::Value> {
+    page.rows
+        .into_iter()
+        .filter(|row| app.is_none_or(|app| row.app_id == app))
+        .filter_map(|row| {
+            let action = row.action?;
+            Some(serde_json::json!({
+                "address": format!(
+                    "{}/{}#{}",
+                    row.app_id, action.address.resource, action.address.action
+                ),
+                "app": row.app_id,
+                "app_label": app_label(&row.app_id),
+                "label": action.action_label,
+                "resource": action.resource_label,
+                "resource_kind": row.resource.kind,
+                "resource_id": row.resource.id,
+                "kind": if action.contract.kind == ActionKind::Read { "read" } else { "effect" },
+                "params": action.params.iter().map(|param| serde_json::json!({
+                    "name": param.name,
+                    "ty": param_type_name(param.ty),
+                    "required": param.required,
+                })).collect::<Vec<_>>(),
+                "confirms": !matches!(action.contract.confirmation, ConfirmationPolicy::None),
+            }))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -368,6 +377,27 @@ mod tests {
             "a call names the resource it acts on"
         );
         assert!(address_parts(&Address::parse("so.tilo.notes/notes.note:1").unwrap()).is_none());
+    }
+
+    /// A catalogue that could not be read answers its reason where the actions would stand, and
+    /// one that was read names no failure: the language's `Catalogue` record.
+    #[test]
+    fn a_catalogue_says_what_was_offered_or_why_it_could_not_be_read() {
+        let failed = catalogue_answer(
+            Err(ActionCallError::Unavailable {
+                reason: "the registry is off".to_owned(),
+            }),
+            None,
+        );
+        assert_eq!(failed["offers"], serde_json::json!([]));
+        assert_eq!(
+            failed["failure"],
+            serde_json::json!("remote actions are unavailable: the registry is off")
+        );
+
+        let read = catalogue_answer(Ok(CataloguePage::default()), Some("so.tilo.notes"));
+        assert_eq!(read["offers"], serde_json::json!([]));
+        assert_eq!(read["failure"], serde_json::json!(""));
     }
 
     /// A call kept as its asked record reads as the invocation that waits; a denied one is the
