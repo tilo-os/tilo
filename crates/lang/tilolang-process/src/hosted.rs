@@ -2967,18 +2967,8 @@ impl Hosted {
                     let store = self.store.clone();
                     let person = self.spec.person.clone();
                     let app = self.spec.app.clone();
-                    let uses: Vec<String> = self.callees.apps.keys().cloned().collect();
                     Rc::new(move |address: &str, state: &str| {
-                        let declared = tilolang_tilo::publish::app_of_address(address)
-                            .is_some_and(|target| uses.iter().any(|used| used == target));
-                        crate::personal::shown_at(
-                            &*store.port(),
-                            &person,
-                            &app,
-                            declared,
-                            address,
-                            state,
-                        )
+                        crate::personal::shown_at(&*store.port(), &person, &app, address, state)
                     })
                 },
                 prefs: self

@@ -87,8 +87,10 @@ impl PersonalDocument {
 }
 
 /// What the person's own state of the app `address` names keeps of the resource `address`'s
-/// declared `state`: the system's shell, that app itself, or an app that declares it uses that
-/// app may read it; another app is refused. `None` when no window keeps one.
+/// declared `state`: the system's shell and that app itself read it, and nobody else. An app's
+/// own package declaring that it uses another app grants it nothing here: a third app reads
+/// this state only through a grant the person or the workspace makes, which no view state has
+/// yet. `None` when no window keeps one.
 ///
 /// # Errors
 /// `address` names no app, or `reader` may not read that app's windows' state.
@@ -96,15 +98,14 @@ pub fn shown_at(
     port: &dyn Port,
     person: &str,
     reader: &str,
-    uses: bool,
     address: &str,
     state: &str,
 ) -> Result<Option<serde_json::Value>, String> {
     let app = tilolang_tilo::publish::app_of_address(address)
         .ok_or_else(|| format!("`{address}` names no app"))?;
-    if !(reader == tilolang_tilo::shell::SHELL_APP || reader == app || uses) {
+    if !(reader == tilolang_tilo::shell::SHELL_APP || reader == app) {
         return Err(format!(
-            "{reader} may not read the state {app}'s windows keep"
+            "{reader} may not read the state {app}'s windows keep without a grant"
         ));
     }
     personal::shown_json(port, app, person, address, state)
@@ -125,36 +126,26 @@ mod tests {
     }
 
     /// The read the host makes: the shell and the app itself read a window's state; another app
-    /// is refused unless it declares it uses that app, and only the person's own state is read.
+    /// is refused however it declares its own uses, and only the person's own state is read.
     #[test]
-    fn a_windows_state_reads_for_the_shell_its_app_and_what_it_uses() {
+    fn a_windows_state_reads_for_the_shell_and_its_app_and_for_no_other() {
         let port = LocalPort::in_memory();
         personal::keep(&port, "so.tilo.notes", "ada", &[find()]).expect("kept");
         let address = "so.tilo.notes/notes/n1";
-        let read = |reader: &str, uses: bool, person: &str| {
-            shown_at(&port, person, reader, uses, address, "find")
-        };
+        let read = |reader: &str, person: &str| shown_at(&port, person, reader, address, "find");
         assert_eq!(
-            read("so.tilo.shell", false, "ada").expect("the shell reads"),
+            read("so.tilo.shell", "ada").expect("the shell reads"),
             Some(serde_json::json!({"query": "x"}))
         );
+        assert!(read("so.tilo.notes", "ada").expect("its app").is_some());
+        // `so.tilo.tasks` declares in its own package that it uses Notes; a package grants
+        // itself nothing, so the read is still refused.
         assert!(
-            read("so.tilo.notes", false, "ada")
-                .expect("its app")
-                .is_some()
-        );
-        assert!(
-            read("so.tilo.tasks", false, "ada").is_err(),
-            "another app is refused"
-        );
-        assert!(
-            read("so.tilo.tasks", true, "ada")
-                .expect("an app that uses it")
-                .is_some(),
-            "a declared use reads it"
+            read("so.tilo.tasks", "ada").is_err(),
+            "an app that declares a use is refused: only a grant reads this"
         );
         assert_eq!(
-            read("so.tilo.shell", false, "bo").expect("nobody else's"),
+            read("so.tilo.shell", "bo").expect("nobody else's"),
             None,
             "another person keeps nothing here"
         );
