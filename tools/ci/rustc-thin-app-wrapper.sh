@@ -32,6 +32,25 @@ for argument in "$@"; do
     previous="$argument"
 done
 
+# The runtime, its engines and the program every tilolang app runs link
+# through runtime-dylib-lazy-link.py, which runs the linker cargo chose (the
+# last `-C linker=`, else cc) for the real link. The flavor stays the target's
+# default, as it is for any linker name rustc does not recognise.
+dylib_link=()
+if [ "$(uname -s)" = Linux ]; then
+    chosen=""
+    previous=""
+    for argument in "$@"; do
+        case "$previous:$argument" in
+            -C:linker=*) chosen="${argument#linker=}" ;;
+            *:-Clinker=*) chosen="${argument#-Clinker=}" ;;
+        esac
+        previous="$argument"
+    done
+    export TILO_LAZY_LINK_CC="${chosen:-cc}"
+    dylib_link=(-C "linker=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/runtime-dylib-lazy-link.py")
+fi
+
 case ":${TILO_THIN_BIN_CRATES:-}:" in
     *":${crate_name}:"*)
         # An engine's check binary names the engine library itself
@@ -52,6 +71,16 @@ case ":${TILO_THIN_BIN_CRATES:-}:" in
         if [ -n "${TILO_THIN_LINK_MAP_DIR:-}" ]; then
             mkdir -p "$TILO_THIN_LINK_MAP_DIR"
             link_map+=("-C" "link-arg=-Wl,-Map=$TILO_THIN_LINK_MAP_DIR/$crate_name.map")
+        fi
+        # The program every tilolang app runs is the one app binary that maps
+        # a media framework, and it maps it only for an app that plays media.
+        # Link GStreamer and GLib as the runtime links them: out of DT_NEEDED,
+        # served by trampolines that load them on the first decode, so Clocks
+        # and Notes map them never. No other app binary links them.
+        lazy=()
+        if [ "$crate_name" = "tilolang_process" ]; then
+            export TILO_LAZY_LINK_ROLE=app
+            lazy=("${dylib_link[@]}")
         fi
         # Release validation raises the parent profile's codegen-unit count to
         # keep the shared runtime build fast. A thin app inherits that parent
@@ -77,7 +106,7 @@ case ":${TILO_THIN_BIN_CRATES:-}:" in
         if [ "${TILO_THIN_OPTIMIZE:-size}" = speed ]; then
             exec "${compiler_command[@]}" "$@" -C prefer-dynamic \
                 -C link-arg=-Wl,-z,pack-relative-relocs ${link_map[@]+"${link_map[@]}"} \
-                ${engine_dirs[@]+"${engine_dirs[@]}"}
+                ${lazy[@]+"${lazy[@]}"} ${engine_dirs[@]+"${engine_dirs[@]}"}
         fi
         folding=()
         target=""
@@ -101,28 +130,9 @@ case ":${TILO_THIN_BIN_CRATES:-}:" in
             -C llvm-args=--enable-merge-functions \
             -C llvm-args=--enable-machine-outliner=always \
             -C link-arg=-Wl,-z,pack-relative-relocs \
-            "${folding[@]}" "${link_map[@]}" ${engine_dirs[@]+"${engine_dirs[@]}"}
+            "${folding[@]}" "${link_map[@]}" ${lazy[@]+"${lazy[@]}"} ${engine_dirs[@]+"${engine_dirs[@]}"}
         ;;
 esac
-
-# The runtime and its engines link through runtime-dylib-lazy-link.py, which
-# runs the linker cargo chose (the last `-C linker=`, else cc) for the real
-# link. The flavor stays the target's default, as it is for any linker name
-# rustc does not recognise.
-dylib_link=()
-if [ "$(uname -s)" = Linux ]; then
-    chosen=""
-    previous=""
-    for argument in "$@"; do
-        case "$previous:$argument" in
-            -C:linker=*) chosen="${argument#linker=}" ;;
-            *:-Clinker=*) chosen="${argument#-Clinker=}" ;;
-        esac
-        previous="$argument"
-    done
-    export TILO_LAZY_LINK_CC="${chosen:-cc}"
-    dylib_link=(-C "linker=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/runtime-dylib-lazy-link.py")
-fi
 
 if [ "$crate_name" = "runtime_dylib" ]; then
     # Every app process applies this library's dynamic relocations before

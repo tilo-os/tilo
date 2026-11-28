@@ -44,6 +44,10 @@ Every link, lazy libraries or not, also sheds code no app can reach:
 The runtime's engine libraries (crates/engines/loadable/*) link through this
 script too (`TILO_LAZY_LINK_ROLE`), without the lazy libraries:
 
+- `app`: the one program every tilolang app runs (`tilolang-process`). It is
+  the only executable that maps a media framework, and links it as the runtime
+  does: out of `DT_NEEDED`, loaded on the first decode. It exports nothing a
+  dependant names, so its export list is left whole;
 - `engine`: an engine that apps or other engines compile against as a crate.
   Like the runtime, it keeps rustc's export list (a dependant may name any
   item of the crates in it) and sheds the code nothing exported reaches;
@@ -90,7 +94,7 @@ CRATE_ROOT = re.compile(r"C(?:s[0-9A-Za-z]*_)?([0-9]+)")
 MANGLED = re.compile(r"_R|_ZN")
 NM_BATCH = 64
 PROGRAM = "runtime-dylib-lazy-link"
-ROLES = ("runtime", "engine", "entry-engine")
+ROLES = ("runtime", "app", "engine", "entry-engine")
 
 
 class LinkError(Exception):
@@ -639,11 +643,13 @@ def main(argv: list[str]) -> int:
               file=sys.stderr)
         return 1
     arguments, response = expand(argv)
-    hidden = narrow_exports(arguments, role)
+    # An app counts as the runtime for the lazy libraries only: it has no
+    # dependants whose export list to narrow, so rustc's is left whole.
+    hidden = 0 if role == "app" else narrow_exports(arguments, role)
     if os.environ.get("TILO_LAZY_LINK_VERBOSE"):
         print(f"{PROGRAM}: {hidden} symbols not exported", file=sys.stderr)
     kept, names = split_libraries(arguments)
-    if role != "runtime" or not names:
+    if role not in ("runtime", "app") or not names:
         return subprocess.run([linker, *argv, *GC]).returncode
     try:
         directories = search_directories(arguments)
