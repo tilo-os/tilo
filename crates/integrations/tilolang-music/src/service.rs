@@ -640,6 +640,10 @@ pub enum SpotifyOp {
         kind: String,
         offset: i64,
     },
+    /// Take `key` out of the person's Spotify library, leaving it on Spotify.
+    UnsavePlaylist {
+        key: String,
+    },
 }
 
 impl SpotifyOp {
@@ -670,6 +674,7 @@ impl SpotifyOp {
             Self::EditPlaylist { .. } => "edit_playlist",
             Self::AddToPlaylist { .. } => "playlist_add",
             Self::RemoveFromPlaylist { .. } => "playlist_remove",
+            Self::UnsavePlaylist { .. } => "unsave_playlist",
             Self::Queue => "queue",
             Self::AddToQueue { .. } => "add_to_queue",
             Self::SavedPage { .. } => "saved_page",

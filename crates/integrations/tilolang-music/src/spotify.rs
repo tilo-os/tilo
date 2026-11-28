@@ -268,6 +268,7 @@ impl Spotify {
             } => self.edit_playlist(key, name, description),
             SpotifyOp::AddToPlaylist { key, uri } => self.add_to_playlist(key, uri),
             SpotifyOp::RemoveFromPlaylist { key, uri } => self.remove_from_playlist(key, uri),
+            SpotifyOp::UnsavePlaylist { key } => self.unsave_playlist(key),
             SpotifyOp::Queue => self.queue(),
             SpotifyOp::AddToQueue { uri } => self.add_to_queue(uri),
             SpotifyOp::SavedPage { kind, offset } => self.saved_page(kind, *offset),
@@ -658,6 +659,14 @@ impl Spotify {
             Some(&json!({"tracks":[{"uri": uri}]})),
         )?;
         self.playlist_reply(id)
+    }
+
+    /// Take a playlist out of the person's Spotify library: it stays on Spotify, and this
+    /// account no longer keeps it.
+    fn unsave_playlist(&self, key: &str) -> Result<SpotifyReply, Refusal> {
+        let id = id_of(key);
+        self.delete(&format!("me/playlists/{id}/followers"), &[], None)?;
+        Ok(SpotifyReply::default())
     }
 
     /// A playlist as a write left it, keyed as the app names it.

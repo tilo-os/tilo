@@ -882,6 +882,7 @@ fn spotify_ask(name: &str, args: &[String]) -> Option<SpotifyOp> {
             key: arg(0),
             uri: arg(1),
         },
+        "unsave_playlist" => SpotifyOp::UnsavePlaylist { key: arg(0) },
         "queue" => SpotifyOp::Queue,
         "add_to_queue" => SpotifyOp::AddToQueue { uri: arg(0) },
         "saved_page" => SpotifyOp::SavedPage {

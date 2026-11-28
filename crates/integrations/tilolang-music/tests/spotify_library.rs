@@ -305,6 +305,11 @@ fn a_playlist_is_made_renamed_and_given_songs_as_spotify_takes_them() {
             uri: "spotify:track:track-1".to_owned(),
         })
         .unwrap();
+    spotify
+        .op(&SpotifyOp::UnsavePlaylist {
+            key: "spotify:playlist:pl-1".to_owned(),
+        })
+        .unwrap();
     let seen = stand.seen();
     assert_eq!(seen[1].method, "PUT");
     assert_eq!(seen[1].target, "/v1/playlists/pl-1");
@@ -321,6 +326,11 @@ fn a_playlist_is_made_renamed_and_given_songs_as_spotify_takes_them() {
     assert_eq!(
         seen[5].body, r#"{"tracks":[{"uri":"spotify:track:track-1"}]}"#,
         "a removal names the song it takes out"
+    );
+    assert_eq!(seen[7].method, "DELETE");
+    assert_eq!(
+        seen[7].target, "/v1/me/playlists/pl-1/followers",
+        "taking a playlist out of the library unfollows it, and leaves it on Spotify"
     );
 }
 

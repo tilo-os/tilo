@@ -505,6 +505,8 @@ d-gpcmrwgr = Künstler
     .w-artists-like-them = Ähnliche Künstler
 
 d-uvzkg6uq = Playlist
+    .w-only-the-owner-can-rename-this = Nur der Besitzer kann diese Playlist umbenennen. Titel hinzuzufügen oder zu entfernen erfordert Besitzer- oder Mitarbeiterrechte.
+    .w-remove-spotify-playlist-from-your-library = Spotify-Playlist aus der Bibliothek entfernen
     .w-this-playlist-has-no-songs-yet = This playlist has no songs yet
 
 d-sum4fpxx = Eigene Playlist
@@ -546,6 +548,7 @@ d-uuxbyy6e = Künstler
     .w-no-artists-yet = No artists yet
 
 d-5hj6kcvh = Playlists
+    .w-your-playlists = Deine Playlists
     .w-no-playlists-of-your-own-yet = No playlists of your own yet
     .w-new-playlist = New playlist
 
@@ -797,3 +800,16 @@ d-nvvyoutq = Mehr von Spotify
 
 d-nvvyoutq-kind = Art
 
+d-zo64432r = Titel einer Playlist hinzufügen
+    .doc = Fügt `song` zu `m` hinzu, einmal: was ein auf die Zeile der Playlist gezogener Titel ausführt.
+
+d-zo64432r-song = Titel
+
+d-xa6fx7du = Spotify-Playlist aus der Bibliothek entfernen
+    .doc = Nimmt die Playlist aus der Spotify-Bibliothek dieser Person: Sie bleibt auf Spotify, und dieses Konto führt sie nicht mehr.
+    .did = entfernte eine Playlist
+    .w-only-a-spotify-playlist-is-taken = Nur eine Spotify-Playlist wird aus Spotify genommen
+
+d-xa6fx7du-pl = Playlist
+
+d-lufkkccb = Playlist entfernen~present

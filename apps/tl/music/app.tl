@@ -549,6 +549,20 @@ view playlist(pl: Playlist) {
             if pl.description != "" {
                 text(pl.description, role: .caption, secondary: true)
             }
+            if pl.key.starts_with("spotify:") {
+                text(
+                    "Only the owner can rename this playlist. Adding or removing songs requires owner or collaborator access.",
+                    role: .caption,
+                    secondary: true,
+                )
+                ui.Button(
+                    "Remove Spotify playlist from your library",
+                    icon: .trash,
+                    role: .destructive,
+                ) {
+                    on press: unsave_playlist(lib, pl)
+                }
+            }
             track_list(lib, songs, "This playlist has no songs yet")
         }
     }
@@ -593,6 +607,14 @@ view mixtape(m: Mixtape) {
         }
         stack(gap: .related) {
             text(m.name, role: .title)
+            let covers = mixtape_covers(lib, m)
+            if not covers.is_empty() {
+                ui.MediaGrid(size: .small) {
+                    for cover in covers {
+                        ui.MediaCard(title: "", picture: cover)
+                    }
+                }
+            }
             if m.spotify != "" {
                 text("On Spotify", role: .caption, secondary: true)
             }
@@ -762,12 +784,17 @@ view track_list(lib: Library, songs: List<Track>, empty: Text) {
             on activate(x: Track): play_song(x)
             for song in songs {
                 ui.ListItem(item: song) {
-                    ui.ListRow(
-                        title: song.title,
-                        secondary: row_line(song),
-                        meta: .none,
-                        icon: if now_playing(lib) == song.id { .speaker } else { .music },
-                    )
+                    // Picked up, a song travels as itself: a playlist's row takes it, here or
+                    // beside this window. The shared drag carries the resource, not a private
+                    // gesture.
+                    ui.DragSource("tl:so.tilo.music:{song.id}", title: song.title) {
+                        ui.ListRow(
+                            title: song.title,
+                            secondary: row_line(song),
+                            meta: .none,
+                            icon: if now_playing(lib) == song.id { .speaker } else { .music },
+                        )
+                    }
                 }
             }
         }
@@ -819,15 +846,19 @@ view mixtape_list(lib: Library) {
                 on act: new_mixtape(lib, "New playlist")
             }
         } else {
-            ui.MediaGrid(size: .regular) {
+            ui.Section(title: "Your playlists") {
                 for m in lib.mixtapes.sort_by(.name, asc) {
-                    ui.MediaCard(
-                        m,
-                        title: m.name,
-                        picture: m.cover,
-                        meta: [count_text(m.tracks.len())],
-                    ) {
-                        on activate: open(m)
+                    // A playlist takes a song dropped on it, from this window's search or
+                    // another.
+                    ui.DropTarget {
+                        on drop(song: Track): mixtape_add_dropped(m, song)
+                        ui.ListRow(
+                            title: m.name,
+                            secondary: count_text(m.tracks.len()),
+                            icon: .list_music,
+                        ) {
+                            on activate: open(m)
+                        }
                     }
                 }
             }
@@ -1365,6 +1396,21 @@ action restore_rec(lib: Library, t: Track) (icon: .eye, label: "Suggest this aga
     lib.taste.hidden.remove(t.id)
 }
 
+/// The pictures that stand for `m`: its own cover when the person chose one, else the first
+/// four different covers of its songs, in the playlist's order.
+fn mixtape_covers(lib: Library, m: Mixtape) -> List<Text> {
+    if m.cover != "" {
+        return [m.cover]
+    }
+    let out: List<Text> = []
+    for song in m.tracks.flat_map(item -> lib.tracks.filter(t -> t.id == item.ref)) {
+        if song.cover != "" and out.index_of(song.cover) == .none and out.len() < 4 {
+            out = [out, [song.cover]].flat_map(part -> part)
+        }
+    }
+    out
+}
+
 /// The song that plays, while it plays, so a row marks it.
 fn now_playing(lib: Library) -> Text {
     if let p = lib.playing {
@@ -1555,6 +1601,11 @@ action mixtape_add(m: Mixtape, t: Track) (icon: .list) {
     }
 }
 
+/// Adds `song` to `m`, once: what a song dropped on the playlist's row runs.
+action mixtape_add_dropped(m: Mixtape, song: Track) {
+    mixtape_add(m, song)
+}
+
 /// Takes a song out of a mixtape, and out of the Spotify playlist it is.
 action mixtape_remove(m: Mixtape, t: Track) (icon: .trash) {
     if let item = m.tracks.find(i -> i.ref == t.id) { m.tracks.remove(item) }
@@ -1573,6 +1624,18 @@ action rename_mixtape(m: Mixtape, name: Text) (icon: .pencil) {
 action describe_mixtape(m: Mixtape, description: Text) {
     m.description = description
     send_playlist(m)
+}
+
+/// Takes `pl` out of the person's Spotify library: it stays on Spotify, and this account no
+/// longer keeps it.
+destructive action unsave_playlist(lib: Library, pl: Playlist) (
+    icon: .trash,
+    label: "Remove Spotify playlist from your library",
+    did: "removed a playlist",
+) {
+    require pl.key.starts_with("spotify:") "Only a Spotify playlist is taken out of Spotify"
+    outside("music.spotify", ["unsave_playlist", pl.key])
+    lib.playlists.remove(pl)
 }
 
 /// Sends a playlist's name and description to Spotify, which is the copy its person reads on

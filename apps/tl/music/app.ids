@@ -157,6 +157,8 @@ mixtape#play_mixtape_button = 3z46xuh2
 mixtape.about = 7d6m7p3s
 mixtape.typed = mc7hj22e
 mixtape_add@Mixtape = mxym7u3g
+mixtape_add_dropped@Mixtape = zo64432r
+mixtape_covers = 3o7wm6oq
 mixtape_list = 5hj6kcvh
 mixtape_remove@Mixtape = 4k4f6fox
 new_mixtape@Library = xfhbh7qm
@@ -224,6 +226,8 @@ track#like_song = 4favmrph
 track#play_song = z7k5tdzl
 track_list = 2kdq7ch4
 transfer_playback@Library = s5u526ny
+unsave_playlist@Library = xa6fx7du
+unsave_playlist@Library~present = lufkkccb
 update_taste@Library = ywyw4kwy
 
 # retired
